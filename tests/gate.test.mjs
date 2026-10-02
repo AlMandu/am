@@ -173,7 +173,10 @@ test('programExists finds PATH programs, repo scripts and shell builtins', () =>
   mkdirSync(path.join(repo, 'DevTools'));
   writeFileSync(path.join(repo, 'DevTools', 'gate-build.cmd'), '@echo off\r\n');
   assert.equal(programExists('node -e "1"', repo), true);
-  assert.equal(programExists('DevTools\\gate-build.cmd Assembly-CSharp.csproj', repo), true);
+  const sep = process.platform === 'win32' ? '\\' : '/';
+  assert.equal(programExists(`DevTools${sep}gate-build.cmd Assembly-CSharp.csproj`, repo), true);
+  // /bin/sh reads the backslash as an escape, so this path cannot run off Windows.
+  if (process.platform !== 'win32') assert.equal(programExists('DevTools\\gate-build.cmd x', repo), false);
   assert.equal(programExists('DevTools/missing.cmd x', repo), false);
   assert.equal(programExists('exit 0', repo), true);
   assert.equal(programExists('am-gate-no-such-command-xyz --flag', repo), false);
