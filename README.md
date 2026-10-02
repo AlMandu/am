@@ -28,19 +28,19 @@ Claude Code 와 Codex CLI 에서 쓰는 가벼운 개발 워크플로 플러그�
 
 ## 설치
 
-`<저장소>` 자리에는 로컬 경로(예: `C:\Projects\am`)나, 공개한 뒤의 GitHub 주소를 넣습니다.
+저장소는 GitHub 비공개 저장소 [shanash/am](https://github.com/shanash/am) 입니다. 설치하는 사람의 GitHub 계정이 이 저장소에 접근할 수 있어야 하고(협업자로 초대), 그 계정의 SSH 키가 이 컴퓨터에 등록돼 있어야 합니다. 플러그인을 고치는 사람은 SSH 주소 대신 로컬 경로(예: `C:\Projects\am`)로 설치하면, 커밋하지 않은 수정도 바로 시험할 수 있습니다.
 
 **Claude Code**
 
 ```
-/plugin marketplace add <저장소>
+/plugin marketplace add git@github.com:shanash/am.git
 /plugin install am@am-workflow
 ```
 
 **Codex CLI**
 
 ```
-codex plugin marketplace add <저장소>
+codex plugin marketplace add git@github.com:shanash/am.git
 codex plugin add am@am-workflow
 ```
 

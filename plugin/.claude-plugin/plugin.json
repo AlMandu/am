@@ -3,5 +3,7 @@
   "version": "0.1.0",
   "description": "가벼운 plan → check → commit 워크플로. 커밋 직전에 프로젝트의 빌드·테스트 명령(am-gate.json)을 돌려 실패하면 막는다. Claude Code·Codex 공용.",
   "author": { "name": "Seonghun" },
+  "homepage": "https://github.com/shanash/am",
+  "repository": "https://github.com/shanash/am",
   "keywords": ["workflow", "plan", "verification", "commit-gate", "unity", "codex"]
 }
