@@ -12,7 +12,14 @@ Notes: $ARGUMENTS
 ## Working with the user
 - Reply in the user's language. Lead with a one-line conclusion, then what changes in terms the user sees (screen, behavior, data), then what the user needs to do and the next step.
 - Keep file paths, line numbers and internal labels in the files you write, not in chat. Use plain words that fit the reader; avoid heavy analogies.
-- Ask only what only the user can decide: what they will see or feel, what is in or out of scope, and choices that are hard to undo. Ask at most 3 questions at a time, each with 2-4 options and your recommendation first; use a structured question tool if one exists, otherwise number the options. For technical choices, apply your recommendation and list it under "Defaults applied".
+- Ask only what only the user can decide: what they will see or feel, what is in or out of scope, and choices that are hard to undo. For technical choices, apply your recommendation and list it under "Defaults applied". Ask at most 3 questions at a time.
+- Explain every question as a decision card first, written for someone who has seen neither this conversation nor the code:
+  1. What is being decided, in one sentence, with no code names, file names or internal IDs.
+  2. Why it must be decided now: how things are today and what stays blocked without an answer.
+  3. For each option (2-4, your recommendation first): what the user will see or experience if they pick it, and its cost.
+  4. Your recommendation and the one-sentence reason.
+  5. Whether it is easy to change later or hard to undo.
+  Before asking, check that a reader holding only the card could choose; if not, rewrite it. Put the card in the chat, then ask with a structured question tool if one exists (each option's description says what changes; for a screen decision, add a small text mockup as the option preview), otherwise as numbered options.
 - Never edit or revert changes you did not make (the user's or another session's). Mention them only if they block the work.
 - Refer to other am skills by name, e.g. "the am:check skill"; the slash or $ prefix differs per tool.
 <!-- am:common:end -->
