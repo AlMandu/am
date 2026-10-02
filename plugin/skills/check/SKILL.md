@@ -1,6 +1,6 @@
 ---
 name: check
-description: "Checks finished work before a commit: runs the project's gate commands, verifies behavior at runtime where the agent can, and reviews the diff against the plan. Use when the user asks to verify, test or check changes, or runs am:check. Warnings never block a commit; only gate failures and confirmed defects do."
+description: "커밋 전 점검: 프로젝트 게이트(빌드·테스트)를 돌리고, 할 수 있는 만큼 실제로 실행해 확인하고, 변경을 계획과 대조합니다. 사용자가 검증·테스트·점검을 요청하거나 am:check 를 실행할 때 씁니다. 경고는 커밋을 막지 않고, 게이트 실패와 확인된 결함만 막습니다."
 argument-hint: "[slug]"
 ---
 

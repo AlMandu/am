@@ -1,7 +1,7 @@
 ---
 name: plan
-description: "Plans a non-trivial change before coding: confirms intent, explores the code, asks only the decisions the user must make, and writes a short plan file. Also resumes implementation from an existing plan. Use when the user runs am:plan; small, obvious edits do not need it."
-argument-hint: "<what to build or fix | existing slug>"
+description: "큰 변경을 시작하기 전에 의도를 확인하고, 사용자만 정할 수 있는 것만 묻고, 짧은 계획 문서(.am/<slug>/plan.md)를 씁니다. 기존 계획의 slug 를 주면 이어서 구현합니다. 작고 결과가 뻔한 수정에는 필요 없습니다."
+argument-hint: "<만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: commit
-description: "Commits the current task's changes as clear, logical commits behind the commit gate. Use when the user asks to commit, save or wrap up the work, or runs am:commit. Never pushes."
-argument-hint: "[notes]"
+description: "이번 작업의 변경만 논리 단위로 커밋합니다(커밋 게이트 통과 후). 사용자가 커밋·저장·마무리를 요청하거나 am:commit 을 실행할 때 씁니다. push 는 하지 않습니다."
+argument-hint: "[메모]"
 ---
 
 # am:commit

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 (2026-10-02)
+
+- 명령 입력 중 보이는 스킬 안내(`description`, `argument-hint`)를 한국어로 바꿈. 스킬 본문은 그대로 영어.
+
 ## 0.1.0 (2026-10-02)
 
 - 첫 릴리스: 스킬 3개(`am:plan`, `am:check`, `am:commit`)와 커밋 게이트 훅. Claude Code 와 Codex CLI 0.160 에서 같은 파일로 동작한다.
