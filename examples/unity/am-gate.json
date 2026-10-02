@@ -1,0 +1,7 @@
+{
+  "timeoutMs": 300000,
+  "commands": [
+    { "name": "build-runtime", "run": "DevTools\\gate-build.cmd Assembly-CSharp.csproj" },
+    { "name": "build-editor", "run": "DevTools\\gate-build.cmd Assembly-CSharp-Editor.csproj" }
+  ]
+}

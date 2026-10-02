@@ -1,0 +1,17 @@
+{
+  "description": "am commit gate: runs the blocking commands in am-gate.json before a git commit",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/hook.mjs'))\"",
+            "timeout": 900
+          }
+        ]
+      }
+    ]
+  }
+}
