@@ -6,7 +6,7 @@
     {
       "name": "am",
       "source": "./plugin",
-      "description": "가벼운 plan → check → commit 워크플로와 커밋 게이트(Claude Code·Codex 공용)"
+      "description": "가벼운 plan → do → check → commit 워크플로와 커밋 게이트(Claude Code·Codex 공용)"
     }
   ]
 }

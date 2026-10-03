@@ -1,6 +1,6 @@
 ---
 name: plan
-description: "큰 변경을 시작하기 전에 의도를 확인하고, 사용자만 정할 수 있는 것만 묻고, 짧은 계획 문서(.am/<slug>/plan.md)를 씁니다. 기존 계획의 slug 를 주면 이어서 구현합니다. 작고 결과가 뻔한 수정에는 필요 없습니다."
+description: "큰 변경을 시작하기 전에 의도를 확인하고, 사용자만 정할 수 있는 것만 묻고, 짧은 계획 문서(.am/<slug>/plan.md)를 씁니다. 기존 slug 를 주면 그 계획을 다시 열어 질문·수정을 이어 갑니다(구현은 am:do). 작고 결과가 뻔한 수정에는 필요 없습니다."
 argument-hint: "<만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 ---
@@ -25,8 +25,8 @@ Request: $ARGUMENTS
 - Refer to other am skills by name, e.g. "the am:check skill"; the slash or $ prefix differs per tool.
 <!-- am:common:end -->
 
-## Resume an existing plan
-If the argument names a slug whose `.am/<slug>/plan.md` exists and has no open decisions, implement it now by the rules at the top of that file. Do not plan again.
+## Existing plan
+If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from scratch. Ask its open decisions or apply the requested changes and record them in plan.md, then finish as in step 7: implement only if the user said go, otherwise point to the am:do skill.
 
 ## Steps
 1. Restate the goal in 1-3 lines from the user's point of view. Ask first only if two reasonable readings lead to different results.
@@ -38,7 +38,7 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists and has no open d
 
    ```markdown
    # <title>
-   > Implementation rules: 1) do the Steps in order 2) run each step's check 3) for a bug, record the reproduction result before fixing it 4) log any deviation under Change log 5) when done, use the am:check skill
+   > Implement with the am:do skill. Rules: 1) do the Steps in order 2) run each step's check and mark the step done 3) for a bug, record the reproduction result before fixing it 4) log any deviation under Change log 5) when done, use the am:check skill
    ## Summary      goal, what changes for the user, main risk (8 lines or fewer)
    ## Decisions    user decisions; "Defaults applied": choice - one-line reason
    ## Files        path - what changes
@@ -49,4 +49,4 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists and has no open d
    ## Next         one line
    ```
 
-7. Ask the open decisions (rules above). End with one line saying you will record the answers and stop, and that adding "go" to the answer continues straight into implementation. Record the answers under Decisions. If the user said go, implement by the rules in plan.md; otherwise stop with the summary and the next step.
+7. Ask the open decisions (rules above). End with one line saying you will record the answers and stop, and that adding "go" to the answer continues straight into implementation. Record the answers under Decisions. If the user said go, read the am:do skill file (`${CLAUDE_PLUGIN_ROOT}/skills/do/SKILL.md`; if the placeholder was not replaced, `skills/do/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its Steps for this slug; if you cannot read it, implement by the rules at the top of plan.md. Otherwise stop with the summary and the next step (the am:do skill).
