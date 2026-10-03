@@ -35,7 +35,7 @@ Target: $ARGUMENTS
    - `error`: say what could not run
    If `node` itself is missing, report the gate as not run.
 3. Runtime. Follow the project's runtime-check instructions (a "Runtime check" section in CLAUDE.md or AGENTS.md, or a file they point to). Do what you can yourself first: run the app or editor commands, read logs, capture the screen, run probes. For a bug fix, repeat the plan's reproduction and compare it with the result recorded before the fix. Hand the human only what you cannot do: at most 5 items, each "where / what to do / what they should see".
-4. Review. One reviewer (a subagent if available, otherwise a separate pass by you) compares the code diff with the plan (missing, extra, different) and looks for defects. Give the reviewer code files only; list asset and generated files (.prefab, .unity, .asset, .meta, lock files) by name. Keep a finding only if it comes with a concrete failure scenario (inputs, then the wrong result).
+4. Review. One reviewer (a subagent if available, otherwise a separate pass by you) compares the code diff with the plan (missing, extra, different) and looks for defects. Give the reviewer code files only; list asset and generated files (.prefab, .unity, .asset, .meta, .uasset, .umap, lock files) by name. Keep a finding only if it comes with a concrete failure scenario (inputs, then the wrong result).
 5. Verdict:
    - BLOCK: gate `fail`, a confirmed defect, or a planned step missing without a reason.
    - NOTE: everything else, including steps dropped with a reason in the Change log or by the user. Notes never block a commit.

@@ -85,6 +85,15 @@ Codex 는 플러그인 훅을 사용자가 신뢰해야 실행합니다. 설치 
 
 Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 에디터 없이 컴파일하는 `gate-build.cmd` 와 런타임 확인 절 예시가 들어 있습니다.
 
+언리얼(UE5) 예시는 [examples/unreal](examples/unreal/) 에 있습니다. `am-gate.json` 은 저장소 루트에, `ue-gate.mjs` 는 `DevTools/` 에 복사하고, `runtime-check.md` 의 절은 프로젝트 CLAUDE.md 나 AGENTS.md 에 붙여 넣습니다.
+
+- 커밋 때 C++ 빌드와 자동화 테스트(Automation)가 돌고, 실패하면 커밋을 막습니다. 차단 메시지에는 실패한 테스트 이름과 첫 오류, 또는 컴파일 오류 줄이 나옵니다. 블루프린트 전체 컴파일은 느려서 `am:check` 에서만 돕니다.
+- 에디터를 켜 둔 채 커밋해도 됩니다. 게이트는 프로젝트(.uproject, Source, Config, Content, Plugins)를 `Saved/AmGate` 에 복사해 그곳에서 DebugGame 으로 빌드·테스트합니다. 그래서 열린 에디터가 코드를 다시 불러오지 않고, 추적 중인 설정 파일도 바뀌지 않습니다. 대신 열린 에디터에 반영하려면 따로 Live Coding 이나 재시작이 필요합니다.
+- 처음 한 번은 사본에서 C++ 전체를 컴파일합니다. 큰 프로젝트는 설치 직후 `node DevTools/ue-gate.mjs build` 를 손으로 한 번 돌려 두세요(게이트의 빌드 제한은 600초).
+- 사본은 맥 APFS 에서는 복제(clone)라 디스크를 거의 쓰지 않고, 복제가 안 되는 파일 시스템에서는 Content 크기만큼 씁니다. 바뀐 파일만 다시 복사하고, `Saved/AmGate` 를 지우면 다음 실행에서 새로 만듭니다.
+- 옵션: `--project <경로.uproject>`(루트나 한 단계 아래에 하나뿐이면 생략), `--filter <테스트 접두어>`(기본값은 프로젝트 이름, 맞는 테스트가 없으면 실패), `--config Development`. 엔진은 `.uproject` 의 엔진 버전으로 찾고, 못 찾으면 환경 변수 `UE_ROOT` 에 엔진 폴더를 지정합니다. `node DevTools/ue-gate.mjs info` 로 찾은 경로를 확인할 수 있습니다.
+- 맥(UE 5.8)에서 실측했습니다. 윈도우 경로는 엔진 소스를 보고 작성했고 아직 실측하지 않았습니다. UE4 는 지원하지 않습니다.
+
 ### 런타임 확인 안내
 
 `am:check` 는 프로젝트 CLAUDE.md 나 AGENTS.md 의 "Runtime check" 절을 읽고 그대로 실행 확인을 합니다. 앱 실행 명령, 로그 위치, 캡처 방법, 프로브 실행법을 적어 두면 에이전트가 직접 확인하는 범위가 넓어집니다.
@@ -95,6 +104,7 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 - 게이트는 안전망이지 보안 장치가 아닙니다. 스크립트 안에서 하는 커밋, MCP git 도구, 사람이 터미널에서 직접 한 커밋은 거치지 않습니다.
 - 게이트는 스테이징된 내용이 아니라 작업 트리 전체를 빌드합니다.
 - Unity 예시 게이트는 .csproj 에 아직 들어가지 않은 새 .cs 파일을 컴파일하지 않습니다. 그래서 런타임 확인 첫 항목을 에디터 재컴파일로 둡니다.
+- 언리얼 예시 사본에는 위 다섯 가지만 들어갑니다. `.uproject` 가 프로젝트 밖 폴더를 상대 경로로 가리키면(예: 추가 플러그인 폴더) 사본에서는 그 경로를 찾지 못합니다. 심볼릭 링크·정션은 복사하지 않고 출력에 알립니다.
 
 ## 업데이트
 

@@ -1,0 +1,8 @@
+{
+  "timeoutMs": 300000,
+  "commands": [
+    { "name": "build-editor", "run": "node DevTools/ue-gate.mjs build", "timeoutMs": 600000 },
+    { "name": "automation-test", "run": "node DevTools/ue-gate.mjs test" },
+    { "name": "blueprints", "run": "node DevTools/ue-gate.mjs blueprints", "blocking": false }
+  ]
+}
