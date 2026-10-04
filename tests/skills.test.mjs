@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
+const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 const LIMITS = { plan: 120, check: 120, commit: 80, do: 80 };
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
 const common = (text) => {
@@ -35,4 +36,21 @@ test('am:plan and am:do are user-invoked only in both tools', () => {
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
   }
+});
+
+test('the second-opinion agent stays pinned and read-only, and the common rules send choices to it', () => {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(readFileSync(AGENT, 'utf8'));
+  assert.ok(m, 'frontmatter');
+  const fm = Object.fromEntries(m[1].split('\n').map((line) => {
+    const i = line.indexOf(':');
+    return [line.slice(0, i), line.slice(i + 1).trim()];
+  }));
+  // Claude Code ignores a misspelled key without an error, which would silently unpin the agent.
+  assert.deepEqual(Object.keys(fm).sort(), ['description', 'effort', 'model', 'name', 'tools']);
+  assert.equal(fm.name, 'second-opinion');
+  assert.equal(fm.model, 'claude-opus-5-5'); // full ID: the `opus` alias follows the main session's Opus version
+  assert.equal(fm.effort, 'xhigh');
+  assert.equal(fm.tools, 'Read, Grep, Glob');
+  assert.match(fm.description, /^"[^"]{40,}"$/);
+  assert.match(common(read('plan')), /am:second-opinion subagent/);
 });

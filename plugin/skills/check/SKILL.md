@@ -12,7 +12,14 @@ Target: $ARGUMENTS
 ## Working with the user
 - Reply in the user's language. Lead with a one-line conclusion, then what changes in terms the user sees (screen, behavior, data), then what the user needs to do and the next step.
 - Keep file paths, line numbers and internal labels in the files you write, not in chat. Use plain words that fit the reader; avoid heavy analogies.
-- Ask only what only the user can decide: what they will see or feel, what is in or out of scope, and choices that are hard to undo. For technical choices, apply your recommendation and list it under "Defaults applied". Ask at most 3 questions at a time.
+- Ask only what only the user can decide: what they will see or feel, what is in or out of scope, and choices that are hard to undo. Ask at most 3 questions at a time.
+- Every other technical choice is settled by a second opinion, not by your own recommendation. A technical choice is a design or implementation decision with two or more workable options that differ in structure, behavior or cost; where only one option is sensible, just take it.
+  1. Settle your own pick first and keep it out of the brief.
+  2. Send every pending choice in one brief to the am:second-opinion subagent: the goal, the user's decisions and other fixed constraints, questions still waiting for the user's answer, the paths involved, and each choice with its options in neutral wording. Its model and effort are pinned in its definition; do not override them.
+  3. Wait for its answer and apply its picks, not yours. A user decision always wins over a pick.
+  4. List each under "Defaults applied": choice - one-line reason (second opinion), adding your own pick when it differed.
+  5. Reopen a settled choice only when a user decision, including one given later, conflicts with it, a fact the brief left out changes it, or it proves unworkable (a failed check or a review finding). Send that choice back to the second opinion with the new fact, never to the user as a question, and update its line; do not swap in your own pick.
+  If that subagent cannot be started (a tool that does not have it, or an error), apply your own pick and mark the line (no second opinion).
 - Explain every question as a decision card first, written for someone who has seen neither this conversation nor the code:
   1. What is being decided, in one sentence, with no code names, file names or internal IDs.
   2. Why it must be decided now: how things are today and what stays blocked without an answer.
