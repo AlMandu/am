@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // am-orchestrator
 // 큰 설계 문서를 작은 작업으로 쪼개고, 작업마다 am 플러그인의 plan → 구현 → check → commit 흐름을
-// `claude -p` 로 순서대로 돌린다. 의존성 없음, Node 18 이상.
+// `claude -p` 로 돌린다. 서로 무관한 작업은 별도 작업 공간(git worktree)에서 동시에. 의존성 없음, Node 18 이상.
 //
 // - am 저장소(shanash/am)는 "배치 러너 없음"이 규칙이므로 이 스크립트는 am 바깥에 둔다.
 // - am 의 스킬 본문과 게이트(gate.mjs)는 복사하지 않고, 설치된 플러그인의 것을 그대로 쓴다.
@@ -40,6 +40,8 @@ export function defaults() {
     pluginDir: '', // 적으면 모든 호출에 --plugin-dir 로 넘긴다(플러그인을 설치하지 않고 로컬 경로로 쓸 때)
     skillMode: 'auto', // auto | slash(/am:plan 호출) | inline(SKILL.md 를 읽어 지시문으로 전달)
     branch: 'orch/{run}', // 실행용 브랜치. '' 이면 현재 브랜치에서 진행
+    parallel: 3, // 동시에 진행할 작업 수. 함께 도는 작업은 저마다 별도 작업 공간(git worktree)에서 구현한다. 1 이면 하나씩
+    worktreeSetup: [], // 새 작업 공간 안에서 먼저 돌릴 셸 명령(예: "npm ci"). 환경 변수 ORCH_MAIN_REPO 에 원래 저장소 경로가 있다
     requireGate: true, // am-gate.json 이 없으면 실행을 시작하지 않는다
     orchestratorGate: true, // check 뒤, commit 전에 오케스트레이터가 gate.mjs 를 직접 한 번 더 돌린다
     maxFixRounds: 2, // 작업 하나에서 BLOCK → 수정 → 재점검을 몇 번까지 할지
@@ -74,6 +76,8 @@ const fail = (msg) => {
   throw new Halt(msg);
 };
 const say = (s = '') => process.stdout.write(`${s}\n`);
+/** 작업 하나의 진행 줄. 여러 작업이 함께 돌면 줄 앞에 작업 ID 를 붙인다. */
+const log = (ctx, s) => say(ctx.tag ? s.replace(/^(\s*)/, `$1[${ctx.tag}] `) : s);
 const now = () => new Date().toISOString();
 const slashes = (p) => p.split(path.sep).join('/');
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -189,22 +193,23 @@ function killTree(child) {
   }
 }
 
-let activeChild = null; // 지금 돌고 있는 자식 프로세스(세션이나 게이트). 중단 신호를 받으면 함께 끝낸다
+const activeChildren = new Set(); // 지금 돌고 있는 자식 프로세스(세션, 게이트). 중단 신호를 받으면 함께 끝낸다
 let onInterrupt = null; // 중단 신호를 받았을 때 상태를 정리하는 함수(run 이 등록)
 
-/** 명령 하나를 실행하고 출력을 모은다. 절대 reject 하지 않는다. */
-function exec(cmd, args, { cwd, timeoutMs }) {
+/** 명령 하나를 실행하고 출력을 모은다. args 가 null 이면 cmd 를 셸 명령으로 돌린다. 절대 reject 하지 않는다. */
+function exec(cmd, args, { cwd, timeoutMs, env }) {
   return new Promise((resolve) => {
-    const target = resolveCommand(cmd);
     let child;
     try {
-      const opts = { cwd, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
-      child = target.shell ? spawn([target.file, ...args].map(winQuote).join(' '), { ...opts, shell: true }) : spawn(target.file, args, opts);
+      const opts = { cwd, env, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
+      const target = args === null ? null : resolveCommand(cmd);
+      if (!target) child = spawn(cmd, { ...opts, shell: true });
+      else child = target.shell ? spawn([target.file, ...args].map(winQuote).join(' '), { ...opts, shell: true }) : spawn(target.file, args, opts);
     } catch (err) {
       resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message });
       return;
     }
-    activeChild = child;
+    activeChildren.add(child);
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
@@ -218,7 +223,7 @@ function exec(cmd, args, { cwd, timeoutMs }) {
     const finish = (r) => {
       if (settled) return;
       settled = true;
-      if (activeChild === child) activeChild = null;
+      activeChildren.delete(child);
       clearTimeout(timer);
       resolve({ stdout, stderr, timedOut, spawnError: null, ...r });
     };
@@ -231,7 +236,7 @@ function git(repo, args, { allowFail = false, env } = {}) {
   const r = spawnSync('git', ['-c', 'core.quotepath=off', ...args], { cwd: repo, encoding: 'utf8', windowsHide: true, env, maxBuffer: 256 * 1024 * 1024 });
   if (r.error) fail(`git 을 실행하지 못했습니다: ${r.error.message}`);
   if (r.status !== 0 && !allowFail) fail(`git ${args.join(' ')} 실패\n${(r.stderr || r.stdout || '').trim()}`);
-  return { code: r.status, out: (r.stdout || '').trimEnd() };
+  return { code: r.status, out: (r.stdout || '').trimEnd(), err: (r.stderr || '').trim(), signal: r.signal };
 }
 const head = (repo) => git(repo, ['rev-parse', 'HEAD']).out.trim();
 
@@ -313,7 +318,7 @@ function discard(ctx, dir, files, why) {
     const seen = (ctx.state.restored ||= {});
     for (const f of files) seen[f] = (seen[f] || 0) + 1;
   }
-  say(`    ${why} ${files.length}개를 되돌림: ${files.slice(0, 3).join(', ')}${files.length > 3 ? ' …' : ''}`);
+  log(ctx, `    ${why} ${files.length}개를 되돌림: ${files.slice(0, 3).join(', ')}${files.length > 3 ? ' …' : ''}`);
 }
 
 /** am 과 같은 방식: 폴더가 git 에서 제외돼 있지 않으면 그 안에 `*` 한 줄짜리 .gitignore 를 둔다. */
@@ -400,7 +405,8 @@ function baseContext(repo) {
   // doctor 가 적어 둔 경로가 플러그인 업데이트로 사라졌으면 캐시에서 다시 찾는다
   const pluginRoot = cfg.amPluginRoot || (env?.pluginRoot && existsSync(env.pluginRoot) ? env.pluginRoot : '') || findSiblingAm() || findPluginInCache();
   const mode = cfg.skillMode === 'auto' ? (env ? (env.slash ? 'slash' : 'inline') : null) : cfg.skillMode;
-  return { repo, cfg, env, pluginRoot, mode, costs: {}, volatile: (cfg.volatilePaths || []).map(globToRegExp) };
+  // repo 는 세션과 git 이 일하는 작업 트리(별도 작업 공간에서는 그 폴더), root 는 실행 상태가 있는 원래 저장소
+  return { repo, root: repo, cfg, env, pluginRoot, mode, costs: {}, volatile: (cfg.volatilePaths || []).map(globToRegExp) };
 }
 
 const newTaskState = () => ({ status: 'pending', sessions: {}, attempts: {}, fixRounds: 0, notes: [], commits: [] });
@@ -423,7 +429,13 @@ function openRun(repo, opt = {}) {
   return ctx;
 }
 
-const rel = (ctx, abs) => slashes(path.relative(ctx.repo, abs));
+/** 사람에게 보여 줄 경로: 원래 저장소 기준. */
+const rel = (ctx, abs) => slashes(path.relative(ctx.root || ctx.repo, abs));
+/** 세션에게 줄 경로: 세션의 작업 트리 안이면 상대 경로, 밖이면(별도 작업 공간에서 본 실행 폴더) 절대 경로. */
+const sessionPath = (ctx, abs) => {
+  const r = path.relative(ctx.repo, abs);
+  return slashes(r.startsWith('..') || path.isAbsolute(r) ? abs : r);
+};
 const saveState = (ctx) => writeJson(ctx.stateFile, ctx.state);
 const savePlan = (ctx) => {
   writeJson(ctx.planFile, ctx.plan);
@@ -461,7 +473,7 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   const base = path.join(dir, `${seq}-${phase}`);
   let systemFile = null;
   if (system && !resume) {
-    systemFile = rel(ctx, `${base}.system.md`);
+    systemFile = sessionPath(ctx, `${base}.system.md`);
     writeFileSync(`${base}.system.md`, system);
   }
   const [bin, ...pre] = ctx.cfg.claudeCommand;
@@ -486,7 +498,7 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
     return `${(d && d.tool_name) || '?'}${what ? `: ${String(what).replace(/\s+/g, ' ').slice(0, 160)}` : ''}`;
   });
   const denials = denied.length;
-  say(`    ${phase}: ${mins}분${denials ? `, 권한 거부 ${denials}건` : ''}`);
+  log(ctx, `    ${phase}: ${mins}분${denials ? `, 권한 거부 ${denials}건` : ''}`);
   return { text: String(parsed.result ?? ''), sessionId: parsed.session_id || null, denials, denied };
 }
 
@@ -514,7 +526,7 @@ function skillPrompt(ctx, skill, args, dir) {
     .join(slashes(ctx.pluginRoot));
   const file = path.join(dir, `skill-${skill}.md`);
   writeText(file, body);
-  return `Follow the instructions in ${rel(ctx, file)} exactly. They are the am:${skill} skill, invoked by the user with the arguments already filled in.`;
+  return `Follow the instructions in ${sessionPath(ctx, file)} exactly. They are the am:${skill} skill, invoked by the user with the arguments already filled in.`;
 }
 
 /** am 의 결정론적 게이트를 CLI 로 직접 돌린다: node gate.mjs --run --json --cwd <repo> */
@@ -596,7 +608,7 @@ async function gateAndSettle(ctx, s, dir) {
   }
   const seen = (ctx.state.restored ||= {});
   for (const f of new Set([...reproduced, ...touched.filter((f) => !files.includes(f))])) seen[f] = (seen[f] || 0) + 1;
-  if (reproduced.length) say(`    빌드 도구가 다시 쓴 파일 ${reproduced.length}개를 되돌림: ${reproduced.slice(0, 3).join(', ')}${reproduced.length > 3 ? ' …' : ''}`);
+  if (reproduced.length) log(ctx, `    빌드 도구가 다시 쓴 파일 ${reproduced.length}개를 되돌림: ${reproduced.slice(0, 3).join(', ')}${reproduced.length > 3 ? ' …' : ''}`);
   return report;
 }
 
@@ -604,6 +616,12 @@ async function gateAndSettle(ctx, s, dir) {
 
 const UNATTENDED =
   'You are running inside am-orchestrator, an unattended batch run. No human is present in this session and nobody can answer a question, so never wait for input. Follow the am skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.';
+
+/** 다른 작업과 합치지 못해 구현부터 다시 하는 작업이면 세션에 알려 주는 한 줄. */
+const redoNote = (ctx, t) => {
+  const patch = ctx.state?.tasks[t.id]?.redoPatch;
+  return patch ? `\n- An earlier attempt at this task was committed in a separate checkout, but it could not be combined with work that other tasks committed in the meantime, so it was dropped and this run starts again from the current branch. Its changes are saved in ${sessionPath(ctx, path.join(ctx.root, patch))}: read it first and reuse what still applies.` : '';
+};
 
 /** volatilePaths 가 있으면 세션에 알려 주는 한 줄. */
 const volatileNote = (ctx, text) => (ctx.cfg.volatilePaths?.length ? `\n- Build tools rewrite these files on every build: ${ctx.cfg.volatilePaths.join(', ')}. ${text}` : '');
@@ -675,7 +693,7 @@ This is task ${t.id}, slug ${t.slug}. Implement ${AM_DIR}/${t.slug}/plan.md ${im
   - A question about what the user sees or what is in scope, including an open decision left in the plan and a plan that turns out wrong in that way: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says.
   - Done marks that do not match the files: redo a done step whose change is missing; run the Check of an unmarked step that already looks done and mark it if it passes. Log either under Change log.
 - If the plan turns out to be wrong in any other way, make the smallest fix and record what changed and why under Change log in plan.md.
-- Stop only when a step's Check fails and you cannot fix it, or when the next action would delete user data or files that existed before this run, change a saved-data format or migrate data, change anything outside this repository, or do something that the user's or the project's instructions say needs confirmation. Then leave the files as they are, record the reason and the open question in plan.md, and put the decision card in your final reply.${volatileNote(ctx, 'Changes that show up in them after a build are build output: restore them with git restore before you finish, unless the plan requires editing them.')}${again ? '\n- An earlier attempt at this task was interrupted or blocked. Uncommitted changes from it may be in the working tree: inspect them first and continue from there.' : ''}
+- Stop only when a step's Check fails and you cannot fix it, or when the next action would delete user data or files that existed before this run, change a saved-data format or migrate data, change anything outside this repository, or do something that the user's or the project's instructions say needs confirmation. Then leave the files as they are, record the reason and the open question in plan.md, and put the decision card in your final reply.${volatileNote(ctx, 'Changes that show up in them after a build are build output: restore them with git restore before you finish, unless the plan requires editing them.')}${again ? '\n- An earlier attempt at this task was interrupted or blocked. Uncommitted changes from it may be in the working tree: inspect them first and continue from there.' : ''}${redoNote(ctx, t)}
 - End your final reply with exactly one line: ORCH_STATUS: DONE or ORCH_STATUS: BLOCKED`,
 
   check: (ctx, t) => `${UNATTENDED}
@@ -721,7 +739,7 @@ function writeBrief(ctx, t) {
     '(Generated by am-orchestrator from tasks.json. Edit tasks.json, not this file.)',
     '',
     `- Slug: ${t.slug}`,
-    `- Design document: ${rel(ctx, path.join(ctx.runDir, 'design.md'))} (snapshot of ${ctx.plan.design})`,
+    `- Design document: ${sessionPath(ctx, path.join(ctx.runDir, 'design.md'))} (snapshot of ${ctx.plan.design})`,
     `- Sections to read: ${t.designRefs.join('; ')}`,
     `- Risk tags: ${(t.risk || []).join(', ') || 'none'}`,
     '',
@@ -840,7 +858,7 @@ export function applySplit(plan, parent, split) {
 const RUNNING_KO = { plan: '계획 중', implement: '구현 중', check: '점검 중', fix: '수정 중', commit: '커밋 중' };
 /** 표에 보여 줄 상태: 세션이 돌고 있으면 그 단계를 보여 준다. */
 const statusLabel = (s) => (s.running ? `진행 중(${RUNNING_KO[s.running] || s.running})` : STATUS_KO[s.status] || s.status);
-const STATUS_KO = { pending: '대기', 'needs-decision': '결정 필요', planned: '계획됨', implemented: '구현됨', checked: '점검 통과', done: '완료', blocked: '막힘', split: '재분할됨' };
+const STATUS_KO = { pending: '대기', 'needs-decision': '결정 필요', planned: '계획됨', implemented: '구현됨', checked: '점검 통과', committed: '커밋됨(합치기 전)', done: '완료', blocked: '막힘', split: '재분할됨' };
 const openDecisions = (plan, t) => (plan.decisions || []).filter((d) => !d.answer && (d.blocks || []).includes(t.id));
 
 function decisionCard(d) {
@@ -872,8 +890,13 @@ function renderTasks(plan) {
   return `${lines.join('\n')}\n`;
 }
 
-/** 막힌 단계별로 사람이 이어 가는 방법. */
-function resumeHint(t, stage) {
+/** 막힌 단계별로 사람이 이어 가는 방법. 별도 작업 공간에서 막혔으면 그 폴더를 먼저 알려 준다. */
+function resumeHint(t, stage, s = {}) {
+  const where = s.worktree ? `변경은 별도 작업 공간 \`${s.worktree}\` 에 있습니다(손으로 고치거나 커밋할 때는 그 폴더에서). ` : '';
+  return where + stageHint(t, stage);
+}
+
+function stageHint(t, stage) {
   const again = (from) => `\`retry ${t.id} --from ${from}\` 뒤 \`run\``;
   if (stage === 'plan') return `원인을 고친 뒤 ${again('plan')} (계획을 처음부터 다시 세움). 계획을 직접 \`${AM_DIR}/${t.slug}/plan.md\` 로 저장했다면 ${again('implement')}`;
   if (stage === 'implement') return `${again('implement')} (남은 변경을 먼저 살펴보고 이어서 구현함)`;
@@ -893,7 +916,9 @@ function autoDecided(ctx, t) {
 }
 
 function writeReport(ctx) {
+  ctx = ctx.main || ctx; // 함께 도는 작업의 문맥이어도 원래 저장소의 .am 을 읽는다
   const { plan, state } = ctx;
+  const par = parallelOf(ctx);
   const st = (t) => state.tasks[t.id];
   const done = plan.tasks.filter((t) => st(t).status === 'done');
   const lines = [
@@ -903,6 +928,7 @@ function writeReport(ctx) {
     `- 브랜치: ${state.branch || '-'} (push 하지 않음)`,
     `- 진행: ${done.length} / ${plan.tasks.length} 완료${plan.tasks.filter((t) => st(t).running).map((t) => `, 지금 ${t.id} ${RUNNING_KO[st(t).running] || st(t).running}`).join('')}`,
     `- 비용 추정: $${totalCost(ctx).toFixed(2)} (claude 가 알려 준 값의 합, 구독 사용 시 참고용)`,
+    `- 동시 진행: ${par.max > 1 ? `서로 무관한 작업을 최대 ${par.max}개까지` : `하나씩${par.reason ? ` (${par.reason})` : ''}`}`,
     '',
     '## 사람이 할 일',
     '',
@@ -916,7 +942,7 @@ function writeReport(ctx) {
   for (const t of blocked) {
     lines.push(`### ${t.id} ${t.title}: 막힘`, '', `- 사유: ${st(t).reason}`, `- 로그: ${rel(ctx, taskDir(ctx, t))}/`);
     if (st(t).stash) lines.push(`- 변경은 stash 에 보관: \`${st(t).stash}\``);
-    lines.push(`- 이어 가기: ${resumeHint(t, st(t).blockedAt)}`, '');
+    lines.push(`- 이어 가기: ${resumeHint(t, st(t).blockedAt, st(t))}`, '');
   }
   const decided = plan.tasks.flatMap((t) => autoDecided(ctx, t).map((l) => `- ${t.id}: ${l}`));
   lines.push('## 사용자 대신 정한 것 (자동 결정)', '', ...(decided.length ? decided : ['없음']), '');
@@ -942,16 +968,240 @@ function writeReport(ctx) {
 
 // ------------------------------------------------------------------ 작업 하나의 흐름
 
-/** 다음에 돌릴 작업: 목록 순서대로, 의존 작업이 모두 완료됐고 기다리는 결정이 없는 첫 작업. */
+/** 시작하거나 이어 갈 수 있는 작업: 끝나지도 막히지도 않았고, 의존 작업이 모두 완료됐고, 기다리는 결정이 없다. */
+function canStart(plan, state, t) {
+  const s = state.tasks[t.id].status;
+  if (s === 'done' || s === 'blocked' || s === 'needs-decision' || s === 'split') return false;
+  if (!t.dependsOn.every((d) => state.tasks[d]?.status === 'done')) return false;
+  return !(s === 'pending' && openDecisions(plan, t).length);
+}
+
+/** 다음에 돌릴 작업: 목록 순서대로 시작할 수 있는 첫 작업. */
 export function nextTask(plan, state) {
-  for (const t of plan.tasks) {
-    const s = state.tasks[t.id].status;
-    if (s === 'done' || s === 'blocked' || s === 'needs-decision' || s === 'split') continue;
-    if (!t.dependsOn.every((d) => state.tasks[d]?.status === 'done')) continue;
-    if (s === 'pending' && openDecisions(plan, t).length) continue;
-    return t;
+  return plan.tasks.find((t) => canStart(plan, state, t)) || null;
+}
+
+/** 작업의 예상 파일(files 힌트) 두 묶음이 같은 파일을 가리킬 수 있는지. 첫 와일드카드 앞의 글자 그대로인 부분을 접두어로 비교하고, 빈 힌트는 모두와 겹친다고 본다. */
+export function mayOverlap(a, b) {
+  if (!a?.length || !b?.length) return true;
+  const stem = (g) => {
+    const s = String(g).replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    const i = s.search(/[*?]/);
+    return i < 0 ? s.replace(/\/$/, '') : s.slice(0, i);
+  };
+  return a.some((x) => b.some((y) => stem(x).startsWith(stem(y)) || stem(y).startsWith(stem(x))));
+}
+
+const BUILDING = ['implement', 'check', 'fix', 'commit']; // 작업 트리를 바꾸는 단계
+
+/**
+ * 지금 시작할 작업들(목록 순서). active 는 돌고 있는 작업 ID, max 는 돌고 있는 것을 포함해 함께 돌 수 있는 수.
+ * - 이 저장소의 작업 트리에서 구현 중인 작업이 있으면 그것 혼자 돈다.
+ * - exclusive(이 저장소에 커밋하지 않은 변경이 있음)이거나 이 저장소에서 구현을 마친 작업이 남아 있으면, 아무것도 돌지 않을 때 하나만: 이 저장소에서 하다 만 작업이 먼저.
+ * - 그 밖에는 돌고 있는 작업(계획 중 포함)과 예상 파일이 겹치지 않는 것을 max 까지.
+ */
+export function startable(plan, state, active, max, { exclusive = false } = {}) {
+  const st = (id) => state.tasks[id];
+  if (active.some((id) => !st(id).worktree && BUILDING.includes(st(id).running))) return [];
+  const ready = plan.tasks.filter((t) => !active.includes(t.id) && canStart(plan, state, t));
+  // 구현을 마친 채 이 저장소에 남은 작업(중단된 점검·커밋 등)은 이 저장소의 작업 트리를 쓰므로 혼자 돌아야 한다
+  const inMain = ready.find((t) => !st(t.id).worktree && ['implemented', 'checked'].includes(st(t.id).status));
+  if (exclusive || inMain) {
+    if (active.length || !ready.length) return [];
+    return [inMain || ready.find((t) => !st(t.id).worktree && st(t.id).status === 'planned') || ready[0]];
   }
-  return null;
+  const busy = active.map((id) => plan.tasks.find((t) => t.id === id)).filter(Boolean);
+  const out = [];
+  for (const t of ready) {
+    if (active.length + out.length >= max) break;
+    if (![...busy, ...out].some((o) => mayOverlap(o.files, t.files))) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * 함께 돌릴 작업 수. 둘 이상은 doctor 가 별도 작업 공간에서 게이트를 확인했고 그 뒤 게이트 설정이 그대로일 때만.
+ * stale: 확인한 적이 없거나 am-gate.json·worktreeSetup 이 바뀌어 doctor 를 다시 돌려야 함.
+ */
+export function parallelism(cfg, env, key) {
+  const want = Math.max(1, Math.floor(Number(cfg.parallel)) || 1);
+  if (want === 1) return { max: 1, reason: '' };
+  const probe = env?.worktree;
+  if (!probe || probe.key !== key) return { max: 1, stale: true, reason: '별도 작업 공간에서 게이트가 되는지 아직 확인하지 않았습니다(처음이거나 am-gate.json·worktreeSetup 이 바뀜). `doctor` 를 다시 실행하면 확인합니다' };
+  return probe.ok ? { max: want, reason: '' } : { max: 1, reason: `별도 작업 공간에서 게이트가 통과하지 않습니다: ${probe.reason}` };
+}
+
+/** 작업 공간 확인 결과가 아직 맞는지 가리는 열쇠: am-gate.json 과 worktreeSetup 의 해시. */
+const worktreeKey = (repo, cfg) => {
+  const gate = path.join(repo, 'am-gate.json');
+  return sha(`${existsSync(gate) ? readText(gate) : ''}\n${JSON.stringify(cfg.worktreeSetup || [])}`);
+};
+const parallelOf = (ctx) => parallelism(ctx.cfg, ctx.env, worktreeKey(ctx.root, ctx.cfg));
+
+// ------------------------------------------------------------------ 별도 작업 공간 (함께 도는 작업)
+
+const WORKTREES = path.join(ORCH_DIR, 'wt');
+const gatePasses = (cfg, g) => g.status === 'pass' || (g.status === 'unconfigured' && !cfg.requireGate);
+
+/** 세션과 git 이 일할 작업 트리만 바꾼 문맥. 계획·상태·비용은 원래 것을 함께 쓴다. */
+const inWorktree = (ctx, dir) => Object.assign(Object.create(ctx), { repo: dir, isolated: true });
+
+/**
+ * 작업 공간을 지운다. 폴더가 이미 사라졌어도 git 의 등록만 지운다(사용자의 다른 worktree 를 건드리는 전역 prune 은 쓰지 않는다).
+ * 파일이 잡혀 있어 못 지우면(Windows 의 백신·빌드 서버 등) 그대로 두고 false.
+ */
+function removeWorktree(repo, dir) {
+  git(repo, ['worktree', 'remove', '--force', dir], { allowFail: true });
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 원래 저장소의 지금 커밋에서 떨어져 나온(detached) git worktree 를 만들고 worktreeSetup 을 돌린다. */
+async function addWorktree(ctx, dir) {
+  removeWorktree(ctx.root, dir); // 지난번에 끊기며 남은 것
+  mkdirSync(path.dirname(dir), { recursive: true });
+  const base = head(ctx.root);
+  const limit = ctx.cfg.timeoutMin.gate * 60000;
+  const r = await exec('git', ['worktree', 'add', '--detach', dir, base], { cwd: ctx.root, timeoutMs: limit });
+  if (r.code !== 0) return { base, problem: `git worktree add 실패: ${(r.spawnError || r.stderr || r.stdout).trim().slice(-300)}` };
+  ensureIgnored(dir, AM_DIR);
+  for (const command of ctx.cfg.worktreeSetup || []) {
+    const s = await exec(command, null, { cwd: dir, timeoutMs: limit, env: { ...process.env, ORCH_MAIN_REPO: ctx.root } });
+    if (s.code !== 0) return { base, problem: `worktreeSetup 명령 "${command}" 실패 (${s.timedOut ? '시간 초과' : `종료 코드 ${s.code}`}): ${(s.spawnError || s.stderr || s.stdout).trim().slice(-300)}` };
+  }
+  return { base, problem: '' };
+}
+
+/** .am/<slug>/ 의 파일을 다른 작업 트리로 베낀다(.am 은 git 에서 제외돼 worktree 에 따라오지 않는다). */
+function copyAm(from, to, slug) {
+  const src = path.join(from, AM_DIR, slug);
+  if (!existsSync(src)) return;
+  const dst = path.join(to, AM_DIR, slug);
+  mkdirSync(dst, { recursive: true });
+  for (const e of readdirSync(src, { withFileTypes: true })) if (e.isFile()) copyFileSync(path.join(src, e.name), path.join(dst, e.name));
+}
+
+/**
+ * 구현부터 쓸 작업 트리를 고른다. 이미 고른 작업 공간이 있으면 그것(이어 가는 세션은 처음 폴더에서만 열린다),
+ * 다른 작업이 돌고 있으면 새 작업 공간, 혼자면 이 저장소(빌드 캐시를 그대로 쓰고, 끝날 때까지 다른 작업을 시작하지 않는다).
+ */
+async function chooseWorkspace(ctx, t, active) {
+  const s = ctx.state.tasks[t.id];
+  if (s.worktree) {
+    const dir = path.join(ctx.root, s.worktree);
+    if (existsSync(dir)) return inWorktree(ctx, dir);
+    s.notes.push('별도 작업 공간이 사라져 구현부터 다시 했습니다.');
+    Object.assign(s, { status: 'planned', worktree: undefined, wtBase: undefined, baseSha: undefined, sessions: { plan: s.sessions.plan }, commitBase: undefined, commits: [], fixRounds: 0 });
+  }
+  if (s.status !== 'planned') return ctx;
+  if ([...active.keys()].every((id) => id === t.id)) {
+    s.baseSha ||= head(ctx.root); // 합치지 못해 다시 구현하는 작업은 기준 커밋이 비어 있다
+    return ctx;
+  }
+  const dir = path.join(ctx.root, WORKTREES, ctx.runId, t.id);
+  const { base, problem } = await addWorktree(ctx, dir);
+  if (problem) {
+    removeWorktree(ctx.root, dir);
+    throw new PhaseError(`[workspace] ${t.id} 의 별도 작업 공간을 만들지 못했습니다: ${problem}`);
+  }
+  copyAm(ctx.root, dir, t.slug);
+  for (const id of t.dependsOn) {
+    const dep = ctx.plan.tasks.find((x) => x.id === id) || (ctx.plan.splitHistory || []).find((x) => x.id === id);
+    if (dep) copyAm(ctx.root, dir, dep.slug);
+  }
+  Object.assign(s, { worktree: slashes(path.relative(ctx.root, dir)), wtBase: base, baseSha: base });
+  saveState(ctx);
+  const w = inWorktree(ctx, dir);
+  writeBrief(w, t); // 설계 문서 경로를 작업 공간에서 본 경로로
+  log(w, `    별도 작업 공간에서 진행: ${s.worktree}`);
+  return w;
+}
+
+let integrating = Promise.resolve(); // 실행 브랜치에 합치는 일은 한 번에 하나씩
+
+/** 별도 작업 공간에서 커밋까지 마친 작업을 실행 브랜치에 합친다. 반환값: done | planned(다시 구현) | blocked */
+function integrate(ctx, t) {
+  const job = () => integrateNow(ctx, t);
+  const p = integrating.then(job, job);
+  integrating = p.catch(() => {});
+  return p;
+}
+
+async function integrateNow(ctx, t) {
+  const s = ctx.state.tasks[t.id];
+  const { root } = ctx;
+  const dir = path.join(root, s.worktree);
+  const w = inWorktree(ctx, dir);
+  git(dir, ['rebase', '--abort'], { allowFail: true }); // 지난번에 끊긴 rebase 가 남아 있으면 치운다
+  const before = head(root);
+  if (git(root, ['merge-base', '--is-ancestor', before, head(dir)], { allowFail: true }).code !== 0) {
+    // 그사이 다른 작업이 실행 브랜치에 합쳐졌다: 이 작업의 커밋을 그 위로 옮기고 게이트를 다시 돌린다
+    const rb = git(dir, ['rebase', '--quiet', before], { allowFail: true });
+    if (rb.code !== 0) {
+      const conflicted = !rb.signal && git(dir, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true }).out.trim() !== '';
+      git(dir, ['rebase', '--abort'], { allowFail: true });
+      // 충돌이 아니면(중단 신호, 그 밖의 git 오류) 변경을 버리지 않고 멈춘다: 다시 run 하면 합치기부터 이어 간다
+      if (!conflicted) throw new PhaseError(`[integrate] ${t.id} 를 실행 브랜치 위로 옮기지 못했습니다${rb.signal ? ` (${rb.signal})` : ''}: ${(rb.err || rb.out).slice(-300)}`);
+      return redoTask(ctx, t, '실행 브랜치에 먼저 합쳐진 작업과 충돌했습니다');
+    }
+    Object.assign(s, { wtBase: before, needsGate: true });
+    saveState(ctx);
+  }
+  if (s.needsGate && ctx.cfg.orchestratorGate) {
+    log(w, '    실행 브랜치의 새 커밋 위로 옮김: 게이트를 다시 돌림');
+    const g = await gateAndSettle(w, s, taskDir(ctx, t));
+    if (!gatePasses(ctx.cfg, g)) return redoTask(ctx, t, `실행 브랜치의 새 커밋 위로 옮긴 뒤 게이트 ${g.status}${g.reason ? ` (${g.reason})` : ''}`);
+  }
+  // 이 작업의 커밋은 작업 공간의 기준 커밋(옮겼으면 옮긴 위치) 뒤의 것: 합치기를 다시 해도(중단 뒤) 같은 목록이 나온다
+  const commits = git(dir, ['log', '--reverse', '--format=%h %s', `${s.wtBase}..HEAD`]).out.split('\n').filter(Boolean);
+  await fastForward(root, head(dir));
+  copyAm(dir, root, t.slug);
+  Object.assign(s, { status: 'done', commits, worktree: undefined, wtBase: undefined, needsGate: undefined, redoPatch: undefined, commitBase: undefined, reason: undefined, blockedAt: undefined, updatedAt: now() });
+  saveState(ctx); // 완료를 먼저 남기고 작업 공간을 지운다: 지우다 끊겨도 다시 구현하지 않는다(남은 폴더는 실행이 끝날 때 정리)
+  removeWorktree(root, dir);
+  log(w, `    ✓ 실행 브랜치에 합침: ${commits.join(' / ')}`);
+  return 'done';
+}
+
+/**
+ * 실행 브랜치를 fast-forward 한다. 이 저장소에서 도는 계획 세션의 git status 가 잠깐 index.lock 을 잡고 있을 수 있으므로,
+ * 그 때문에 실패하면 조금 기다렸다 다시 한다.
+ */
+async function fastForward(root, tip) {
+  for (let i = 0; ; i += 1) {
+    const r = git(root, ['merge', '--ff-only', '--quiet', tip], { allowFail: true });
+    if (r.code === 0) return;
+    if (!/index\.lock/.test(r.err) || i >= 20) fail(`git merge --ff-only ${tip} 실패\n${r.err || r.out}`);
+    await new Promise((res) => setTimeout(res, 250));
+  }
+}
+
+/** 합치지 못한 작업: 변경을 patch 로 남기고 작업 공간을 지운 뒤, 처음 한 번은 실행 브랜치의 지금 커밋 위에서 구현부터 다시 한다. */
+function redoTask(ctx, t, why) {
+  const s = ctx.state.tasks[t.id];
+  const dir = path.join(ctx.root, s.worktree);
+  const logDir = taskDir(ctx, t);
+  const n = (s.attempts.integrate = (s.attempts.integrate || 0) + 1);
+  const patch = path.join(logDir, `integrate-${n}.patch`);
+  mkdirSync(logDir, { recursive: true });
+  writeFileSync(patch, `${git(dir, ['diff', '--binary', s.wtBase, 'HEAD']).out}\n`);
+  removeWorktree(ctx.root, dir);
+  const reset = { worktree: undefined, wtBase: undefined, needsGate: undefined, baseSha: undefined, commitBase: undefined, commits: [], fixRounds: 0, sessions: { plan: s.sessions.plan }, updatedAt: now() };
+  if (n > 1) {
+    Object.assign(s, reset, { status: 'blocked', blockedAt: 'implement', reason: `${why}. 다시 구현해도 합치지 못했습니다. 버린 변경: ${rel(ctx, patch)}` });
+    saveState(ctx);
+    log(ctx, `    ✗ 막힘: ${why}`);
+    return 'blocked';
+  }
+  Object.assign(s, reset, { status: 'planned', redoPatch: rel(ctx, patch) });
+  s.notes.push(`${why}: 변경을 ${rel(ctx, patch)} 에 남기고 실행 브랜치의 새 커밋 위에서 구현부터 다시 했습니다.`);
+  saveState(ctx);
+  log(ctx, `    ${why}: 구현부터 다시 함`);
+  return 'planned';
 }
 
 /** 재분할 결과를 반영한다. 반환값: 'split' 또는 'blocked'. */
@@ -961,7 +1211,7 @@ function splitTask(ctx, t, block) {
   if (depth >= ctx.cfg.maxSplitDepth) return block(`계획 단계가 "한 작업으로는 크다"고 했지만 재분할 깊이 한도(${ctx.cfg.maxSplitDepth})에 닿았습니다. tasks.json 에서 직접 나눠 주세요.`);
   if (!existsSync(file)) return block('계획 단계가 "한 작업으로는 크다"고 했지만 split.json 을 남기지 않았습니다.');
   try {
-    ctx.plan = applySplit(ctx.plan, t, readJson(file));
+    (ctx.main || ctx).plan = applySplit(ctx.plan, t, readJson(file)); // 함께 도는 작업들이 보는 원래 문맥의 계획을 바꾼다
   } catch (err) {
     return block(`split.json 을 적용하지 못했습니다: ${err.message}`);
   }
@@ -969,15 +1219,19 @@ function splitTask(ctx, t, block) {
   for (const sub of ctx.plan.tasks) ctx.state.tasks[sub.id] ||= newTaskState();
   savePlan(ctx);
   saveState(ctx);
-  say(`    → 더 작게 나눔: ${ctx.plan.splitHistory.at(-1).into.join(', ')}`);
+  log(ctx, `    → 더 작게 나눔: ${ctx.plan.splitHistory.at(-1).into.join(', ')}`);
   return 'split';
 }
 
-/** 작업 하나를 현재 상태에서 끝까지 진행한다. 반환값: done | blocked | needs-decision | split */
+/**
+ * 작업 하나를 현재 상태에서 끝까지 진행한다. 반환값: done | committed(별도 작업 공간에서 커밋함, 합치기 전) | blocked | needs-decision | split
+ * ctx.workspace 가 있으면(함께 도는 작업이 있을 수 있음) 계획 뒤 그것으로 구현부터 쓸 작업 트리를 고른다.
+ */
 async function runTask(ctx, t) {
   const s = ctx.state.tasks[t.id];
   const dir = taskDir(ctx, t);
-  const { repo, cfg } = ctx;
+  const { cfg } = ctx;
+  let { repo } = ctx;
   const begin = (name) => {
     stage = name === 'fix' ? 'check' : name;
     s.running = name;
@@ -991,7 +1245,7 @@ async function runTask(ctx, t) {
   let stage = 'plan'; // 지금 어느 단계인지: 막혔을 때 보고서가 이어 가는 방법을 단계에 맞게 안내한다
   const block = (reason, extra = {}) => {
     set('blocked', { reason, blockedAt: stage, ...extra });
-    say(`    ✗ 막힘: ${reason.split('\n')[0]}`);
+    log(ctx, `    ✗ 막힘: ${reason.split('\n')[0]}`);
     return 'blocked';
   };
   const bump = (name) => {
@@ -1020,7 +1274,7 @@ async function runTask(ctx, t) {
     const saved = (mark) => existsSync(amPath(ctx, t, mark === 'TOO_BIG' ? 'split.json' : 'plan.md'));
     if (!saved(r.mark) && r.sessionId) {
       // 계획은 세웠는데 파일로 남기지 못한 경우(대개 권한 규칙에 걸림): 같은 세션에 저장만 한 번 다시 시킨다
-      say('    계획이 파일로 저장되지 않음: 같은 세션에 저장을 다시 요청');
+      log(ctx, '    계획이 파일로 저장되지 않음: 같은 세션에 저장을 다시 요청');
       const again = noteDenied('plan(저장 재시도)', await step(ctx, 'plan', { dir, prompt: planSavePrompt(t), resume: r.sessionId }, 'ORCH_STATUS', marks));
       r = { ...again, mark: again.mark || r.mark, text: `${r.text}\n\n---\n\n${again.text}` };
     }
@@ -1035,13 +1289,19 @@ async function runTask(ctx, t) {
     if (r.mark === 'NEEDS_DECISION') {
       writeText(path.join(dir, 'decision.md'), r.text);
       set('needs-decision', { reason: '계획 중 사용자만 정할 수 있는 결정이 나옴' });
-      say(`    ? 결정 필요: ${rel(ctx, path.join(dir, 'decision.md'))}`);
+      log(ctx, `    ? 결정 필요: ${rel(ctx, path.join(dir, 'decision.md'))}`);
       return 'needs-decision';
     }
     if (r.mark !== 'READY') return block('계획 세션이 끝 표시(ORCH_STATUS)를 남기지 않았습니다.');
     const planLines = readText(amPath(ctx, t, 'plan.md')).split('\n').length;
     if (planLines > cfg.taskLimits.maxPlanLines) s.notes.push(`계획 문서가 ${planLines}줄입니다(권장 ${cfg.taskLimits.maxPlanLines}줄 이하).`);
     set('planned', { baseSha: head(repo) });
+  }
+
+  // 구현부터 쓸 작업 트리: 함께 도는 작업이 있으면 별도 작업 공간(git worktree). 이 아래의 ctx·repo 는 그 작업 트리를 가리킨다
+  if (ctx.workspace) {
+    ctx = await ctx.workspace(t);
+    ({ repo } = ctx);
   }
 
   // 2) 구현: 새 세션에서 am:plan <slug> 로 계획을 이어 구현한다
@@ -1076,7 +1336,7 @@ async function runTask(ctx, t) {
         const gateOk = !gate || gate.status === 'pass' || (gate.status === 'unconfigured' && !cfg.requireGate);
         Object.assign(s, { verdict: verdict || '?', gate: gate ? gate.status : '(생략)' });
         saveState(ctx);
-        say(`    판정 ${s.verdict}, 게이트 ${s.gate}`);
+        log(ctx, `    판정 ${s.verdict}, 게이트 ${s.gate}`);
         if (!verdict) return block('점검 세션의 판정(BLOCK/NOTE)을 읽지 못했습니다.');
         if (verdict === 'NOTE' && gateOk) break;
         const why = `판정 ${verdict}, 게이트 ${s.gate}${gate?.reason ? ` (${gate.reason})` : ''}`;
@@ -1084,7 +1344,7 @@ async function runTask(ctx, t) {
         if (!s.sessions.implement) return block(`점검을 통과하지 못했고 이어 갈 구현 세션이 없습니다: ${why}`);
         s.fixRounds += 1;
         begin('fix');
-        const fix = `am:check blocked this task. Read ${AM_DIR}/${t.slug}/check.md and ${rel(ctx, path.join(dir, 'gate.json'))}, fix only what they report, log it under Change log in the plan, and do not commit. End with exactly one line: ORCH_STATUS: DONE or ORCH_STATUS: BLOCKED`;
+        const fix = `am:check blocked this task. Read ${AM_DIR}/${t.slug}/check.md and ${sessionPath(ctx, path.join(dir, 'gate.json'))}, fix only what they report, log it under Change log in the plan, and do not commit. End with exactly one line: ORCH_STATUS: DONE or ORCH_STATUS: BLOCKED`;
         const f = noteDenied('fix', await step(ctx, 'fix', { dir, prompt: fix, resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
         if (f.mark !== 'DONE') {
           writeText(path.join(dir, 'blocked.md'), f.text);
@@ -1102,18 +1362,19 @@ async function runTask(ctx, t) {
         s.commitBase = head(repo); // 이 뒤에 생긴 커밋만 이 작업의 커밋으로 센다
         saveState(ctx);
       }
-      const gateFine = (g) => g.status === 'pass' || (g.status === 'unconfigured' && !cfg.requireGate);
+      const gateFine = (g) => gatePasses(cfg, g);
+      const finished = ctx.isolated ? 'committed' : 'done'; // 별도 작업 공간의 커밋은 실행 브랜치에 합친 뒤에 완료
       if (cfg.orchestratorGate && unsettledVolatile(ctx, s).length) {
         // 점검을 거치지 않고 커밋 단계로 들어온 경우(retry --from commit 등): 커밋 전에 volatile 파일을 게이트로 가려낸다
-        say('    volatilePaths 파일이 바뀌어 있음: 게이트로 빌드 산출 변화인지 확인');
+        log(ctx, '    volatilePaths 파일이 바뀌어 있음: 게이트로 빌드 산출 변화인지 확인');
         const g = await gateAndSettle(ctx, s, dir);
         if (!gateFine(g)) return block(`커밋 전 게이트 ${g.status}: ${g.reason}`);
       }
       if (!leftovers(ctx).length && s.commits?.length) {
         // 커밋은 이미 끝났고 남은 변경도 없다(막혔던 작업을 다시 돌린 경우)
-        set('done', { commitBase: undefined, reason: undefined, blockedAt: undefined });
-        say(`    ✓ 완료: 남은 변경 없음 (${s.commits.join(' / ')})`);
-        return 'done';
+        set(finished, { commitBase: undefined, reason: undefined, blockedAt: undefined });
+        log(ctx, `    ✓ ${ctx.isolated ? '커밋함' : '완료'}: 남은 변경 없음 (${s.commits.join(' / ')})`);
+        return finished;
       }
       const marks = ['COMMITTED', 'BLOCKED', 'NOTHING'];
       const newCommits = () => git(repo, ['log', '--reverse', '--format=%h %s', `${s.commitBase}..HEAD`]).out.split('\n').filter(Boolean);
@@ -1124,7 +1385,7 @@ async function runTask(ctx, t) {
       let deniedLast = r.denials;
       if (!made.length && r.denials && r.sessionId) {
         // 게이트가 아니라 권한 규칙에 걸려 커밋을 못 한 경우: 명령 모양을 알려 주고 같은 세션에서 한 번만 다시 시킨다
-        say('    커밋 명령이 권한 규칙에 걸림: 단순한 명령으로 다시 요청');
+        log(ctx, '    커밋 명령이 권한 규칙에 걸림: 단순한 명령으로 다시 요청');
         r = noteDenied('commit(재시도)', await step(ctx, 'commit', { dir, prompt: COMMIT_RETRY, resume: r.sessionId }, 'ORCH_STATUS', marks));
         made = newCommits();
         deniedLast = r.denials;
@@ -1138,10 +1399,10 @@ async function runTask(ctx, t) {
           const tried = s.sessions.implement ? `수정을 ${s.fixRounds}번 했지만 ` : '';
           return block(`${tried}커밋 훅이 커밋을 거부했습니다. 훅이 한 말: ${rel(ctx, reply)}`, { blockedAt: 'check' });
         }
-        say('    커밋 훅이 커밋을 거부함: 구현 세션에 넘겨 고친 뒤 다시 점검');
+        log(ctx, '    커밋 훅이 커밋을 거부함: 구현 세션에 넘겨 고친 뒤 다시 점검');
         s.fixRounds += 1;
         begin('fix');
-        const f = noteDenied('fix', await step(ctx, 'fix', { dir, prompt: commitRejectedPrompt(rel(ctx, reply)), resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
+        const f = noteDenied('fix', await step(ctx, 'fix', { dir, prompt: commitRejectedPrompt(sessionPath(ctx, reply)), resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
         if (f.mark !== 'DONE') {
           writeText(path.join(dir, 'blocked.md'), f.text);
           return block(`커밋 훅이 거부한 것을 고치지 못했습니다. 설명: ${rel(ctx, path.join(dir, 'blocked.md'))}`);
@@ -1183,8 +1444,8 @@ async function runTask(ctx, t) {
           .filter((f) => f && !f.endsWith('.meta') && !hints.some((re) => re.test(f))); // .meta 는 자산마다 따라붙는 파일이라 뺀다
         if (outside.length) s.notes.push(`예상 파일 밖 변경 ${outside.length}개: ${outside.slice(0, 5).join(', ')}${outside.length > 5 ? ' …' : ''}`);
       }
-      set('done', { commits, commitBase: undefined, reason: undefined });
-      say(`    ✓ 완료: ${made.join(' / ')}`);
+      set(finished, { commits, commitBase: undefined, reason: undefined });
+      log(ctx, `    ✓ ${ctx.isolated ? '커밋함' : '완료'}: ${made.join(' / ')}`);
     }
     break;
   }
@@ -1243,6 +1504,8 @@ function ensureConfig(repo) {
       pluginDir: '',
       skillMode: d.skillMode,
       branch: d.branch,
+      parallel: d.parallel,
+      worktreeSetup: [],
       requireGate: d.requireGate,
       orchestratorGate: d.orchestratorGate,
       maxFixRounds: d.maxFixRounds,
@@ -1354,9 +1617,12 @@ async function cmdDoctor(repo, opt) {
   else no(`am 플러그인 폴더(hooks/gate.mjs, skills/*/SKILL.md)를 찾지 못했습니다${root ? `: ${root}` : ''}. config.json 의 amPluginRoot 에 am 저장소의 plugin/ 경로를 적으세요.`);
 
   if (String(process.env.AM_GATE || '').trim().toLowerCase() === 'off') no('환경 변수 AM_GATE=off 가 설정돼 있습니다. 게이트가 꺼진 채로는 무인 실행을 하지 않습니다.');
+  const parallel = Math.max(1, Math.floor(Number(ctx.cfg.parallel)) || 1);
+  const key = worktreeKey(repo, ctx.cfg);
   if (!existsSync(path.join(repo, 'am-gate.json'))) {
     if (ctx.cfg.requireGate) no('am-gate.json 이 없습니다. 빌드·테스트 명령을 적어 저장소 루트에 두세요(또는 config.json 에서 requireGate: false).');
     else warn('am-gate.json 이 없습니다: 자동 빌드·테스트 확인 없이 진행됩니다');
+    if (parallel > 1) env.worktree = { ok: true, key }; // 별도 작업 공간에서 확인할 게이트가 없다
   } else if (missingRequired(ctx).length) {
     no(`config.json 의 requiredGateCommands 에 적은 이름이 am-gate.json 에 없습니다: ${missingRequired(ctx).join(', ')}`);
   } else if (root && !opt['skip-gate']) {
@@ -1378,6 +1644,16 @@ async function cmdDoctor(repo, opt) {
       if (created.length) warn(`게이트가 git 에서 제외되지 않은 파일을 만들었습니다: ${created.join(', ')}. .gitignore 에 넣으세요(그대로 두면 작업 시작이 막힙니다).`);
     }
     if (blockingMs > 600000) warn(`차단 명령 합계 ${(blockingMs / 1000).toFixed(0)}초: 커밋 한 번의 예산(840초)에 가깝습니다. 느린 명령은 "blocking": false 로`);
+    if (report.status === 'pass' && parallel > 1) {
+      const probe = await probeWorktree({ ...ctx, pluginRoot: root }, report);
+      env.worktree = { ...probe, key };
+      if (probe.ok) ok(`별도 작업 공간(git worktree)에서도 게이트 통과 (${(probe.ms / 1000).toFixed(1)}초): 서로 무관한 작업을 최대 ${parallel}개까지 동시에 진행합니다`);
+      else warn(`별도 작업 공간(git worktree)에서는 게이트가 통과하지 않아 작업을 하나씩 진행합니다: ${probe.reason}\n    git 에서 제외된 폴더(설치한 의존성 등)가 없어서라면 config.json 의 worktreeSetup 에 그것을 만드는 명령을 적고 doctor 를 다시 실행하세요. 동시 진행을 끄려면 parallel: 1`);
+    }
+  }
+  if (opt['skip-gate'] && parallel > 1 && !env.worktree) {
+    env.worktree = { ok: false, key, reason: 'doctor --skip-gate 로 확인을 건너뜀' };
+    warn('게이트 확인을 건너뛰어 별도 작업 공간에서 게이트가 되는지 모릅니다: 작업을 하나씩 진행합니다');
   }
   env.ok = bad === 0; // 문제가 남아 있으면 status 가 다음 할 일을 다시 doctor 로 알려 준다
   writeJson(path.join(repo, ORCH_DIR, 'env.json'), env);
@@ -1385,6 +1661,28 @@ async function cmdDoctor(repo, opt) {
   say(`\n스킬 호출 방식: ${mode}`);
   if (bad) fail(`해결할 문제 ${bad}개가 있습니다.`);
   say('준비됐습니다. 다음: `split <설계문서>`');
+}
+
+/**
+ * 별도 작업 공간에서도 게이트가 되는지 본다. git 에서 제외된 의존 폴더나 빌드 캐시(Unity 의 Library·.csproj 등)가 없어 실패하는 프로젝트가 있다.
+ * 이 저장소에서 종료 코드 0 이던 명령이 모두 0 이어야 통과(게이트는 비차단 명령의 실패를 통과로 보므로 따로 본다).
+ * 제한 시간은 max(2분, 이 저장소 게이트 시간의 3배): 캐시 없이 처음부터 빌드하느라 훨씬 오래 걸리면 동시 진행이 오히려 느리다.
+ */
+async function probeWorktree(ctx, mainReport) {
+  const dir = path.join(ctx.root, WORKTREES, '_doctor');
+  try {
+    const { problem } = await addWorktree(ctx, dir);
+    if (problem) return { ok: false, reason: problem };
+    const minutes = Math.min(ctx.cfg.timeoutMin.gate, Math.max(2, ((mainReport.durationMs || 0) * 3) / 60000));
+    const report = await runGate({ ...ctx, repo: dir, cfg: { ...ctx.cfg, timeoutMin: { ...ctx.cfg.timeoutMin, gate: minutes } } }, null);
+    if (report.status !== 'pass') return { ok: false, reason: String(report.reason).includes('제한 시간') ? `게이트가 ${minutes.toFixed(1)}분 안에 끝나지 않았습니다(빌드 캐시 없이 처음부터 빌드하는 듯)` : `게이트 ${report.status}: ${report.reason}` };
+    const passed = (name) => (report.commands || []).find((c) => c.name === name)?.exit === 0;
+    const failed = (mainReport.commands || []).filter((c) => c.exit === 0 && !passed(c.name)).map((c) => c.name);
+    if (failed.length) return { ok: false, reason: `이 저장소에서는 통과하는 명령이 실패함: ${failed.join(', ')}` };
+    return { ok: true, ms: report.durationMs || 0 };
+  } finally {
+    removeWorktree(ctx.root, dir);
+  }
 }
 
 /** requiredGateCommands 에 적은 이름이 am-gate.json 에 없으면 그 이름들을 돌려준다. */
@@ -1457,7 +1755,9 @@ async function cmdSplit(repo, designArg, opt) {
  */
 function statusData(repo, opt) {
   const base = baseContext(repo);
-  const data = { ready: Boolean(base.env) && base.env.ok !== false, amVersion: base.pluginRoot ? amVersion(base.pluginRoot) : null, running: null, run: null, next: 'doctor', errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
+  const par = parallelOf(base);
+  // 별도 작업 공간 확인이 없거나 낡았으면(stale) run 은 하나씩 돈다. next 는 바꾸지 않는다: 진행 중인 실행이 있을 때 doctor 로 돌려보내면 스킬이 새 실행을 만든다
+  const data = { ready: Boolean(base.env) && base.env.ok !== false, amVersion: base.pluginRoot ? amVersion(base.pluginRoot) : null, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
   const current = path.join(repo, ORCH_DIR, 'current');
   const runId = opt.run || (existsSync(current) ? readText(current).trim() : '');
   let ctx = null;
@@ -1490,13 +1790,13 @@ function statusData(repo, opt) {
     data.needsDecision = plan.tasks.filter((t) => st(t).status === 'needs-decision').map((t) => ({ id: t.id, title: t.title, file: rel(ctx, path.join(taskDir(ctx, t), 'decision.md')) }));
     data.blocked = plan.tasks
       .filter((t) => st(t).status === 'blocked')
-      .map((t) => ({ id: t.id, title: t.title, stage: st(t).blockedAt || null, reason: st(t).reason, hint: resumeHint(t, st(t).blockedAt), logs: rel(ctx, taskDir(ctx, t)) }));
+      .map((t) => ({ id: t.id, title: t.title, stage: st(t).blockedAt || null, reason: st(t).reason, hint: resumeHint(t, st(t).blockedAt, st(t)), logs: rel(ctx, taskDir(ctx, t)), workspace: st(t).worktree || null }));
     data.autoDecided = plan.tasks.flatMap((t) => autoDecided(ctx, t).map((l) => `${t.id}: ${l}`));
     data.costUsd = Number(totalCost(ctx).toFixed(2));
     runnable = Boolean(nextTask(plan, state));
     allDone = data.run.done === data.run.total;
-    const active = plan.tasks.find((t) => st(t).running);
-    if (active) data.active = { task: active.id, title: active.title, stage: st(active).running };
+    const active = plan.tasks.filter((t) => st(t).running);
+    if (active.length) data.active = { task: active[0].id, title: active[0].title, stage: st(active[0]).running, tasks: active.map((t) => ({ task: t.id, title: t.title, stage: st(t).running, workspace: st(t).worktree || null })) };
   }
   const lock = readLock(repo);
   if (lock) data.running = { pid: lock.pid, command: lock.command, startedAt: lock.startedAt, ...(data.active || {}) };
@@ -1580,19 +1880,56 @@ function cmdRetry(repo, id, opt) {
   const status = { plan: 'pending', implement: 'planned', check: 'implemented', commit: 'checked' }[from];
   if (!status) fail('--from 은 plan, implement, check, commit 중 하나입니다.');
   if (from !== 'plan' && !existsSync(amPath(ctx, t, 'plan.md'))) fail('계획 문서가 없어 계획부터 다시 해야 합니다: --from plan');
-  Object.assign(s, { status, fixRounds: 0, reason: undefined, blockedAt: undefined, baseSha: head(repo), commitBase: undefined, updatedAt: now() });
+  let base = head(repo);
+  let dropped = '';
+  const dir = s.worktree && path.join(repo, s.worktree);
+  if (dir && from !== 'plan') {
+    if (existsSync(dir)) base = head(dir); // 별도 작업 공간에서 이어 간다(사라졌으면 run 이 구현부터 다시 한다)
+  } else if (dir) {
+    // 계획부터 다시 하면 구현도 새로 한다: 작업 공간의 변경은 patch 로 남기고 지운다
+    if (existsSync(dir)) {
+      git(dir, ['add', '-A'], { allowFail: true });
+      const diff = git(dir, ['diff', '--cached', '--binary', s.wtBase || 'HEAD'], { allowFail: true }).out;
+      if (diff) {
+        dropped = path.join(taskDir(ctx, t), `worktree-${(s.attempts.plan || 0) + 1}.patch`);
+        mkdirSync(path.dirname(dropped), { recursive: true });
+        writeFileSync(dropped, `${diff}\n`);
+      }
+      removeWorktree(repo, dir);
+    }
+    Object.assign(s, { worktree: undefined, wtBase: undefined, needsGate: undefined, sessions: {} });
+  }
+  Object.assign(s, { status, fixRounds: 0, reason: undefined, blockedAt: undefined, baseSha: base, commitBase: undefined, updatedAt: now() });
+  delete s.attempts.integrate; // 사람이 다시 시키면 합치기 충돌 때 다시 구현하는 한 번도 새로
   saveState(ctx);
-  say(`${id}: ${from} 단계부터 다시 합니다. \`run\` 으로 진행하세요.${s.stash ? `\n보관해 둔 변경이 있습니다. 먼저 되살리세요: git stash list 에서 "${s.stash}"` : ''}`);
+  say(`${id}: ${from} 단계부터 다시 합니다. \`run\` 으로 진행하세요.${s.stash ? `\n보관해 둔 변경이 있습니다. 먼저 되살리세요: git stash list 에서 "${s.stash}"` : ''}${dropped ? `\n별도 작업 공간의 변경은 ${rel(ctx, dropped)} 에 남기고 지웠습니다.` : ''}`);
 }
 
 function cmdDone(repo, id, opt) {
   const ctx = openRun(repo, opt);
   const t = ctx.plan.tasks.find((x) => x.id === id);
   if (!t) fail('사용법: done <작업 ID>  (사람이 직접 고치고 커밋까지 끝낸 작업을 완료로 표시)');
+  const s = ctx.state.tasks[id];
+  if (s.worktree && existsSync(path.join(repo, s.worktree))) {
+    // 별도 작업 공간에서 막힌 작업: 거기서 커밋까지 끝냈으면 다음 run 이 실행 브랜치에 합친다
+    const w = inWorktree(ctx, path.join(repo, s.worktree));
+    discard(w, taskDir(ctx, t), volatileDirty(w), '빌드 도구가 다시 쓴 파일(volatilePaths)');
+    const dirtyW = dirtyFiles(w);
+    if (dirtyW.length) fail(`별도 작업 공간 ${s.worktree} 에 커밋하지 않은 변경이 남아 있습니다. 그 폴더에서 커밋하거나 치운 뒤 다시 실행하세요.\n${dirtyW.slice(0, 10).join('\n')}`);
+    if (head(w.repo) !== s.wtBase) {
+      Object.assign(s, { status: 'committed', reason: undefined, blockedAt: undefined, commitBase: undefined, updatedAt: now() });
+      s.notes.push('사람이 별도 작업 공간에서 직접 완료 처리함');
+      saveState(ctx);
+      writeReport(ctx);
+      say(`${id}: 별도 작업 공간의 커밋을 다음 \`run\` 이 실행 브랜치에 합칩니다.`);
+      return;
+    }
+    removeWorktree(repo, w.repo); // 커밋이 없다: 이 저장소에서 직접 끝낸 것으로 본다
+    Object.assign(s, { worktree: undefined, wtBase: undefined, baseSha: undefined, commitBase: undefined });
+  }
   discard(ctx, taskDir(ctx, t), volatileDirty(ctx), '빌드 도구가 다시 쓴 파일(volatilePaths)');
   const dirty = dirtyFiles(ctx);
   if (dirty.length) fail(`커밋하지 않은 변경이 남아 있습니다. 커밋하거나 치운 뒤 다시 실행하세요.\n${dirty.slice(0, 10).join('\n')}`);
-  const s = ctx.state.tasks[id];
   const base = s.commitBase || s.baseSha;
   const made = base ? git(repo, ['log', '--reverse', '--format=%h %s', `${base}..HEAD`]).out.split('\n').filter(Boolean) : [];
   Object.assign(s, { status: 'done', commits: [...new Set([...(s.commits || []), ...made])], commitBase: undefined, reason: undefined, blockedAt: undefined, updatedAt: now() });
@@ -1603,14 +1940,19 @@ function cmdDone(repo, id, opt) {
 }
 
 function dryRun(ctx) {
-  say(`실행 ${ctx.runId}: 스킬 호출 방식 ${ctx.mode}\n\n순서`);
+  const par = parallelOf(ctx);
+  say(`실행 ${ctx.runId}: 스킬 호출 방식 ${ctx.mode}, 동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}\n\n순서 (같은 회차의 작업은 함께 돎)`);
   const state = structuredClone(ctx.state);
   const order = [];
-  for (let t; (t = nextTask(ctx.plan, state)); ) {
-    order.push(t);
-    state.tasks[t.id].status = 'done';
+  for (let round = 1; ; round += 1) {
+    const batch = startable(ctx.plan, state, [], par.max);
+    if (!batch.length) break;
+    for (const t of batch) {
+      order.push(t);
+      state.tasks[t.id].status = 'done';
+      say(`  ${round}회차  ${t.id}  ${t.title}  (먼저: ${t.dependsOn.join(', ') || '-'})`);
+    }
   }
-  for (const t of order) say(`  ${t.id}  ${t.title}  (먼저: ${t.dependsOn.join(', ') || '-'})`);
   const rest = ctx.plan.tasks.filter((t) => !order.includes(t) && ctx.state.tasks[t.id].status !== 'done');
   for (const t of rest) say(`  ${t.id}  ${t.title}  → 지금은 못 함: ${openDecisions(ctx.plan, t).map((d) => `결정 ${d.id}`).join(', ') || STATUS_KO[ctx.state.tasks[t.id].status] || '의존 작업 대기'}`);
   const t = order[0];
@@ -1655,32 +1997,54 @@ async function cmdRun(repo, opt) {
     saveState(ctx);
     writeReport(ctx);
   };
-  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${ctx.mode}  구현 스킬 am:${implementSkill(ctx)}`);
+  const par = opt.only ? { max: 1, reason: '' } : parallelOf(ctx);
+  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${ctx.mode}  구현 스킬 am:${implementSkill(ctx)}  동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}`);
+  if (par.reason) say(`  하나씩 진행하는 이유: ${par.reason}`);
   const limit = Number(opt['max-tasks']) || Infinity;
+  const active = new Map(); // 돌고 있는 작업 ID → 끝나면 { t, result, error } 를 내는 약속(reject 하지 않음)
+  const errors = [];
   let finished = 0;
   let stopped = '';
+  const launch = (t) => {
+    // 작업마다 문맥을 따로 둔다: 로그 머리표와, 계획 뒤 작업 트리를 고르는 함수. 계획·상태는 원래 문맥의 것을 함께 쓴다
+    const c = Object.assign(Object.create(ctx), { main: ctx, ...(par.max > 1 ? { tag: t.id } : {}) });
+    c.workspace = (x) => chooseWorkspace(c, x, active);
+    say(`\n▶ ${t.id} ${t.title}  [${STATUS_KO[state.tasks[t.id].status]}부터]`);
+    const job = (async () => {
+      await null; // 같은 회차에 띄우는 작업이 모두 active 에 들어간 뒤 시작한다(작업 트리를 고를 때 서로를 보도록)
+      const result = await runTask(c, t);
+      return result === 'committed' ? integrate(c, t) : result;
+    })();
+    active.set(t.id, job.then((result) => ({ t, result }), (error) => ({ t, error })));
+  };
+  const pick = () => {
+    if (stopped || errors.length) return [];
+    if (opt.only) {
+      const t = ctx.plan.tasks.find((x) => x.id === opt.only);
+      if (!t) fail(`작업이 없습니다: ${opt.only}`);
+      const s = state.tasks[t.id].status;
+      if (active.size || ['done', 'blocked', 'needs-decision', 'split'].includes(s)) return [];
+      if (!t.dependsOn.every((d) => state.tasks[d]?.status === 'done') || (s === 'pending' && openDecisions(ctx.plan, t).length)) fail(`${t.id} 는 아직 시작할 수 없습니다(의존 작업 또는 결정 대기).`);
+      return [t];
+    }
+    return startable(ctx.plan, state, [...active.keys()], Math.min(par.max, limit - finished), { exclusive: dirtyFiles(ctx).length > 0 });
+  };
   try {
     for (;;) {
-      let t = nextTask(ctx.plan, state);
-      if (opt.only) {
-        t = ctx.plan.tasks.find((x) => x.id === opt.only);
-        const s = t && state.tasks[t.id].status;
-        if (!t) fail(`작업이 없습니다: ${opt.only}`);
-        if (['done', 'blocked', 'needs-decision', 'split'].includes(s)) break;
-        if (!t.dependsOn.every((d) => state.tasks[d]?.status === 'done') || (s === 'pending' && openDecisions(ctx.plan, t).length)) fail(`${t.id} 는 아직 시작할 수 없습니다(의존 작업 또는 결정 대기).`);
-      }
-      if (!t) break;
-      say(`\n▶ ${t.id} ${t.title}  [${STATUS_KO[state.tasks[t.id].status]}부터]`);
-      let result;
-      try {
-        result = await runTask(ctx, t);
-      } finally {
-        for (const x of Object.values(state.tasks)) delete x.running;
-        saveState(ctx);
-      }
+      for (const t of pick()) launch(t);
+      if (!active.size) break;
+      // 하나가 끝나는 대로 결과를 정리하고, 그 사이 시작할 수 있게 된 작업을 띄운다
+      const { t, result, error } = await Promise.race(active.values());
+      active.delete(t.id);
+      delete state.tasks[t.id].running;
+      saveState(ctx);
       writeReport(ctx);
+      if (error) {
+        errors.push(error); // 새 작업은 시작하지 않고, 돌고 있는 작업은 끝까지 기다린다
+        continue;
+      }
       if (result === 'blocked') {
-        const left = statusEntries(repo);
+        const left = state.tasks[t.id].worktree ? [] : statusEntries(repo); // 별도 작업 공간의 변경은 그 폴더에 그대로 둔다
         if (cfg.onBlock === 'stash') {
           if (left.length) {
             const label = `am-orchestrator ${ctx.runId} ${t.id}`;
@@ -1689,21 +2053,28 @@ async function cmdRun(repo, opt) {
             saveState(ctx);
             say(`    변경을 stash 에 보관하고 다음 작업으로 넘어갑니다: ${label}`);
           }
-        } else {
-          stopped = `${t.id} 에서 막혀 멈췄습니다.`;
-          break;
-        }
+        } else stopped ||= `${t.id} 에서 막혀 멈췄습니다.${active.size ? ' 돌고 있던 작업은 끝까지 진행했습니다.' : ''}`;
       }
-      if (result === 'done' && (finished += 1) >= limit) {
-        stopped = `--max-tasks ${limit} 에 닿아 멈췄습니다.`;
-        break;
-      }
+      if (result === 'done' && (finished += 1) >= limit) stopped ||= `--max-tasks ${limit} 에 닿아 멈췄습니다.`;
     }
   } catch (err) {
+    await Promise.all(active.values()); // 돌고 있는 세션이 혼자 파일을 고치지 않도록 끝날 때까지 기다린다
+    for (const x of Object.values(state.tasks)) delete x.running;
+    errors.push(err);
+  }
+  if (!Object.values(state.tasks).some((x) => x.worktree)) {
+    try {
+      rmSync(path.join(repo, WORKTREES, ctx.runId), { recursive: true, force: true, maxRetries: 3 }); // 지우다 남은 작업 공간 폴더
+    } catch {
+      /* 잡혀 있는 파일이 있으면 다음 실행에 맡긴다 */
+    }
+  }
+  if (errors.length) {
     saveState(ctx);
     writeReport(ctx);
-    if (err instanceof PhaseError) fail(`${err.message}\n\n상태는 저장했습니다. 원인을 해결한 뒤 \`run\` 을 다시 실행하면 이 단계부터 이어 갑니다.`);
-    throw err;
+    const other = errors.find((e) => !(e instanceof PhaseError));
+    if (other) throw other;
+    fail(`${errors.map((e) => e.message).join('\n\n')}\n\n상태는 저장했습니다. 원인을 해결한 뒤 \`run\` 을 다시 실행하면 이 단계부터 이어 갑니다.`);
   }
   writeReport(ctx);
   const count = (st) => ctx.plan.tasks.filter((t) => state.tasks[t.id].status === st).length;
@@ -1727,7 +2098,7 @@ const USAGE = `am-orchestrator: 설계 문서를 작업으로 나누고 작업�
   status [--json]           작업별 상태를 봅니다. --json 은 다음에 할 일(next)과 답할 결정·막힌 작업을 구조로 냅니다
   decide <결정ID> "<답>"     작업 목록에 딸린 결정에 답합니다
   run [--dry-run] [--only <작업ID>] [--max-tasks N]
-                            진행할 수 있는 작업을 순서대로 돌립니다(중단된 곳부터 이어 감)
+                            진행할 수 있는 작업을 돌립니다. 서로 무관한 작업은 동시에(중단된 곳부터 이어 감)
   answer <작업ID> "<답>"     계획 중에 나온 결정에 답하고 계획을 마무리합니다
   retry <작업ID> [--from plan|implement|check|commit]
                             막힌 작업을 지정한 단계부터 다시 하게 합니다
@@ -1795,7 +2166,7 @@ if (isMain()) {
   // 상태는 단계가 바뀔 때마다 저장돼 있어, 다시 run 하면 끊긴 단계부터 이어 간다.
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
-      if (activeChild) killTree(activeChild);
+      for (const child of activeChildren) killTree(child);
       if (onInterrupt) onInterrupt();
       process.stderr.write('\n중단했습니다. 돌고 있던 세션도 끝냈습니다. 다시 `run` 하면 끊긴 단계부터 이어 갑니다.\n');
       process.exit(130);

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { applySplit, claudeArgs, defaults, enforceRequired, globToRegExp, lastMarker, merge, nextTask, parseArgs, parseResult, snapshot, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, claudeArgs, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ORCH = path.join(here, '..', 'orchestrator', 'scripts', 'orchestrator.mjs');
@@ -21,9 +21,13 @@ const IMPL = existsSync(path.join(PLUGIN, 'skills', 'do', 'SKILL.md')) ? '/am:do
 const task = (id, slug, dependsOn = [], extra = {}) => ({ id, slug, group: 'g', title: `${id} 제목`, goal: '목표', designRefs: ['1장'], files: ['src/**'], dependsOn, acceptance: ['게이트 통과'], size: 'S', risk: [], ...extra });
 const planOf = (tasks, decisions = []) => ({ version: 1, summary: '요약', decisions, tasks, coverage: [{ section: '1장', tasks: tasks.map((t) => t.id) }], uncovered: [] });
 const CHAIN = () => planOf([task('T01', 't01-a'), task('T02', 't02-b', ['T01']), task('T03', 't03-c')]);
+// 예상 파일이 저마다 다른 작업(가짜 claude 는 src/<slug>.txt 를 만든다): 서로 무관하면 함께 돌 수 있다
+const own = (id, slug, dependsOn = []) => task(id, slug, dependsOn, { files: [`src/${slug}.txt`] });
+const PAR = () => planOf([own('T01', 't01-a'), own('T02', 't02-b', ['T01']), own('T03', 't03-c')]);
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 /** 임시 저장소 하나: 게이트(BROKEN 파일이 있으면 실패), 설계 문서, 오케스트레이터 설정. */
-function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn = false, slow = false } = {}) {
+function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn = false, slow = false, localOnly = false } = {}) {
   const repo = mkdtempSync(path.join(os.tmpdir(), 'orch-'));
   const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' });
   g('init', '-q', '-b', 'main');
@@ -31,7 +35,14 @@ function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn 
   g('config', 'user.name', 'test');
   // churn: 빌드할 때마다 추적 중인 설정 파일의 값을 다시 쓰는 게이트(Unity 가 URP 설정을 고쳐 쓰는 상황)
   const rewrite = churn ? "if (fs.existsSync('settings.asset')) fs.writeFileSync('settings.asset', fs.readFileSync('settings.asset', 'utf8').replace(/prefilter: \\d/, 'prefilter: 2'));\n" : '';
-  writeFileSync(path.join(repo, 'gate-check.js'), `const fs = require('fs');\n${rewrite}process.exit(fs.existsSync('BROKEN') ? 1 : 0);\n`);
+  // localOnly: git 에서 제외된 파일(LOCAL_ONLY)이 있어야 통과하는 게이트. 새 작업 공간(worktree)에는 그 파일이 없다
+  const local = localOnly ? "if (!fs.existsSync('LOCAL_ONLY')) process.exit(3);\n" : '';
+  writeFileSync(path.join(repo, 'gate-check.js'), `const fs = require('fs');\n${rewrite}${local}process.exit(fs.existsSync('BROKEN') ? 1 : 0);\n`);
+  if (localOnly) {
+    writeFileSync(path.join(repo, '.gitignore'), 'LOCAL_ONLY\n');
+    writeFileSync(path.join(repo, 'LOCAL_ONLY'), '');
+    writeFileSync(path.join(repo, 'setup.js'), "require('fs').copyFileSync(require('path').join(process.env.ORCH_MAIN_REPO, 'LOCAL_ONLY'), 'LOCAL_ONLY');\n");
+  }
   if (churn) writeFileSync(path.join(repo, 'settings.asset'), 'prefilter: 0\n');
   // slow: 커밋 훅에서는 돌지 않는 비차단 검사("blocking": false). SLOW_BROKEN 파일이 있으면 실패한다
   const commands = [{ name: 'test', run: 'node gate-check.js' }];
@@ -121,6 +132,39 @@ test('nextTask: 의존 작업과 결정 대기를 지킨다', () => {
   assert.equal(nextTask(plan, state).id, 'T01', '중단된 작업을 먼저 이어 간다');
 });
 
+test('동시 진행 판단: 예상 파일 겹침, 지금 시작할 작업, 동시에 돌릴 수', () => {
+  assert.equal(mayOverlap(['src/a.txt'], ['src/b.txt']), false);
+  assert.equal(mayOverlap(['src/**'], ['src/b.txt']), true);
+  assert.equal(mayOverlap(['Assets/Scripts/Save/**'], ['Assets/Scripts/UI/**']), false);
+  assert.equal(mayOverlap(['.\\Docs\\A.md'], ['docs/a.md']), true, '역슬래시, ./, 대소문자를 정리해 비교');
+  assert.equal(mayOverlap(['**/*.cs'], ['x/y.txt']), true);
+  assert.equal(mayOverlap([], ['x']), true, '빈 힌트는 모두와 겹친다');
+  const plan = planOf([own('T01', 't01-a'), own('T02', 't02-b', ['T01']), own('T03', 't03-c'), task('T04', 't04-d', [], { files: ['src/t03-c.txt'] })]);
+  const state = { tasks: { T01: { status: 'pending' }, T02: { status: 'pending' }, T03: { status: 'pending' }, T04: { status: 'pending' } } };
+  const ids = (list) => list.map((t) => t.id);
+  assert.deepEqual(ids(startable(plan, state, [], 3)), ['T01', 'T03'], 'T02 는 의존 대기, T04 는 T03 과 겹침');
+  assert.deepEqual(ids(startable(plan, state, [], 1)), ['T01']);
+  assert.deepEqual(ids(startable(plan, state, ['T03'], 3)), ['T01'], '계획 중인 작업과도 겹침을 본다');
+  state.tasks.T01 = { status: 'planned', running: 'implement' };
+  assert.deepEqual(ids(startable(plan, state, ['T01'], 3)), [], '이 저장소에서 구현 중인 작업은 혼자 돈다');
+  state.tasks.T01.worktree = '.orchestrator/wt/r/T01';
+  assert.deepEqual(ids(startable(plan, state, ['T01'], 3)), ['T03'], '별도 작업 공간에서 구현 중이면 다른 작업을 띄운다');
+  state.tasks.T01 = { status: 'planned' };
+  assert.deepEqual(ids(startable(plan, state, [], 3, { exclusive: true })), ['T01'], '이 저장소가 더러우면 하다 만 작업 하나만');
+  assert.deepEqual(ids(startable(plan, state, ['T03'], 3, { exclusive: true })), []);
+  state.tasks.T01 = { status: 'implemented' };
+  assert.deepEqual(ids(startable(plan, state, [], 3)), ['T01'], '이 저장소에서 구현을 마친 작업은 혼자 이어 간다');
+  assert.deepEqual(ids(startable(plan, state, ['T03'], 3)), [], '다른 작업이 끝날 때까지 기다린다');
+  assert.equal(defaults().parallel, 3);
+  assert.deepEqual(parallelism({ parallel: 1 }, null, 'k'), { max: 1, reason: '' });
+  assert.equal(parallelism({ parallel: 3 }, { worktree: { ok: true, key: 'k' } }, 'k').max, 3);
+  assert.deepEqual([parallelism({ parallel: 3 }, { worktree: { ok: true, key: 'old' } }, 'k').max, parallelism({ parallel: 3 }, { worktree: { ok: true, key: 'old' } }, 'k').stale], [1, true], 'am-gate.json 이나 worktreeSetup 이 바뀌면 다시 확인');
+  const no = parallelism({ parallel: 3 }, { worktree: { ok: false, key: 'k', reason: '게이트 fail' } }, 'k');
+  assert.deepEqual([no.max, no.stale], [1, undefined]);
+  assert.match(no.reason, /게이트 fail/);
+  assert.equal(parallelism({ parallel: 'x' }, null, 'k').max, 1);
+});
+
 test('작은 도구들', () => {
   assert.ok(globToRegExp('src/**').test('src/a/b.cs'));
   assert.ok(globToRegExp('Assets/**/*.cs').test('Assets/Scripts/Save/A.cs'));
@@ -188,6 +232,7 @@ test('정상 흐름: 세 작업을 순서대로 계획 → 구현 → 점검 →
   assert.equal(r.g('rev-parse', '--abbrev-ref', 'HEAD').trim(), `orch/${path.basename(r.runDir())}`);
   assert.deepEqual(r.g('log', '--format=%s', 'main..HEAD').trim().split('\n').reverse(), ['feat(t01-a): fake commit', 'feat(t02-b): fake commit', 'feat(t03-c): fake commit']);
   assert.equal(r.g('status', '--porcelain').trim(), '', '.am 과 .orchestrator 는 git 에 안 잡힌다');
+  assert.ok(r.calls().every((c) => c.cwd === realpathSync(r.repo)), '예상 파일이 모두 겹치면(src/**) 하나씩, 이 저장소에서 돈다');
   const prompts = r.calls().map((c) => c.prompt).filter((p) => p.startsWith('/am:'));
   assert.deepEqual(prompts.slice(0, 4), ['/am:plan Plan task T01 described in .am/t01-a/brief.md (slug t01-a)', `${IMPL} t01-a`, '/am:check t01-a', '/am:commit task T01 t01-a']);
   const brief = readFileSync(path.join(r.repo, '.am', 't02-b', 'brief.md'), 'utf8');
@@ -725,6 +770,130 @@ test('잠금: 실행 중에는 다른 명령이 끼어들지 못하고, status �
   assert.equal(statusJson(r).next, 'run');
   assert.equal(r.orch('run').code, 0);
   assert.equal(r.g('status', '--porcelain').trim(), '', '잠금 파일은 git 에 잡히지 않는다');
+});
+
+// ------------------------------------------------------------------ 동시 진행
+
+test('동시 진행: 서로 무관한 작업은 별도 작업 공간에서 함께 돌고, 끝나는 대로 실행 브랜치에 한 줄로 합친다', () => {
+  // T01 의 구현은 T03 의 계획이 끝나야, T03 의 구현은 T01 의 커밋이 끝나야 시작한다: 하나씩 돌면 기다리다 실패한다
+  const r = prepared({ plan: PAR(), scenario: { waitFor: { 'implement:t01-a': 'plan:t03-c', 'implement:t03-c': 'commit:t01-a' } } });
+  assert.match(r.orch('run', '--dry-run').out, /동시 진행 최대 3개[\s\S]*1회차  T01[\s\S]*1회차  T03[\s\S]*2회차  T02/);
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
+  const log = r.g('log', '--format=%s', 'main..HEAD').trim().split('\n').reverse();
+  assert.equal(log[0], 'feat(t01-a): fake commit');
+  assert.deepEqual([...log].sort(), ['feat(t01-a): fake commit', 'feat(t02-b): fake commit', 'feat(t03-c): fake commit']);
+  assert.equal(r.g('log', '--merges', '--format=%h', 'main..HEAD').trim(), '', '병합 커밋 없이 한 줄');
+  assert.match(run.out, /\[T03\] 실행 브랜치의 새 커밋 위로 옮김: 게이트를 다시 돌림/, '먼저 합쳐진 T01 위로 옮겨 게이트를 다시 돌린다');
+  const cwdOf = (prompt) => r.calls().find((c) => c.prompt === prompt).cwd;
+  assert.equal(cwdOf('/am:plan Plan task T03 described in .am/t03-c/brief.md (slug t03-c)'), realpathSync(r.repo), '계획은 이 저장소에서');
+  assert.match(cwdOf(`${IMPL} t01-a`), /\/\.orchestrator\/wt\/[^/]+\/T01$/);
+  assert.match(cwdOf(`${IMPL} t03-c`), /\/\.orchestrator\/wt\/[^/]+\/T03$/);
+  const hashes = r.g('log', '--format=%h', 'main..HEAD');
+  assert.ok(hashes.includes(r.state().tasks.T03.commits[0].split(' ')[0]), '옮긴 뒤의 커밋 해시를 기록한다');
+  assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1, '작업 공간이 남지 않는다');
+  assert.ok(!existsSync(path.join(r.repo, '.orchestrator', 'wt', path.basename(r.runDir()))));
+  assert.equal(r.g('status', '--porcelain').trim(), '');
+  const report = readFileSync(path.join(r.runDir(), 'report.md'), 'utf8');
+  assert.match(report, /동시 진행: 서로 무관한 작업을 최대 3개까지/);
+  assert.match(report, /사람 확인: t03-c 화면에서/, '작업 공간의 check.md 를 이 저장소로 되돌려 베낀다');
+});
+
+test('별도 작업 공간에서 게이트가 안 되면 doctor 가 알리고 하나씩 진행한다. worktreeSetup 으로 고치면 함께 돈다', () => {
+  const r = makeRepo({ plan: PAR(), localOnly: true });
+  const d = r.orch('doctor');
+  assert.equal(d.code, 0, d.out);
+  assert.match(d.out, /게이트 통과[\s\S]*별도 작업 공간\(git worktree\)에서는 게이트가 통과하지 않아 작업을 하나씩 진행합니다: 게이트 fail/);
+  assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1, '확인용 작업 공간은 지운다');
+  assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
+  let st = statusJson(r);
+  assert.equal(st.next, 'run', '확인했는데 안 되는 것은 doctor 로 돌려보내지 않는다');
+  assert.equal(st.parallel.max, 1);
+  assert.match(st.parallel.reason, /별도 작업 공간에서 게이트가 통과하지 않습니다/);
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /동시 진행 하나씩\n  하나씩 진행하는 이유: 별도 작업 공간에서 게이트가 통과하지 않습니다/);
+  assert.ok(r.calls().every((c) => c.cwd === realpathSync(r.repo)));
+  r.setConfig({ worktreeSetup: ['node setup.js'] });
+  st = statusJson(r);
+  assert.deepEqual([st.next, st.parallel.max, st.parallel.stale], ['done', 1, true], '설정이 바뀌면 다시 확인할 때까지 하나씩(next 는 그대로)');
+  const d2 = r.orch('doctor');
+  assert.equal(d2.code, 0, d2.out);
+  assert.match(d2.out, /별도 작업 공간\(git worktree\)에서도 게이트 통과 \([\d.]+초\): 서로 무관한 작업을 최대 3개까지 동시에 진행합니다/);
+  assert.deepEqual(statusJson(r).parallel, { max: 3, reason: '' });
+});
+
+test('합칠 때 충돌하면 변경을 patch 로 남기고, 실행 브랜치의 새 커밋 위에서 한 번 다시 구현한다', () => {
+  const r = prepared({ plan: planOf([own('T01', 't01-a'), own('T03', 't03-c')]), scenario: { conflictFile: ['t01-a', 't03-c'], waitFor: { 'implement:t01-a': 'plan:t03-c', 'implement:t03-c': 'commit:t01-a' } } });
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.deepEqual(r.statusOf(), { T01: 'done', T03: 'done' });
+  const s = r.state().tasks.T03;
+  assert.equal(s.attempts.integrate, 1);
+  assert.match(s.notes.join('\n'), /먼저 합쳐진 작업과 충돌했습니다: 변경을 \.orchestrator\/runs\/[^ ]+\/T03\/integrate-1\.patch 에 남기고/);
+  assert.match(readFileSync(path.join(r.runDir(), 'T03', 'integrate-1.patch'), 'utf8'), /\+from t03-c/);
+  const impls = r.calls().filter((c) => c.prompt === `${IMPL} t03-c`);
+  assert.equal(impls.length, 2, '구현을 한 번 더 한다');
+  const sys = impls[1].argv[impls[1].argv.indexOf('--append-system-prompt-file') + 1];
+  assert.match(readFileSync(path.resolve(impls[1].cwd, sys), 'utf8'), /could not be combined with work that other tasks committed[\s\S]*integrate-1\.patch/);
+  assert.equal(r.g('show', 'HEAD:shared.txt').trim(), 'from t03-c');
+  assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1);
+});
+
+test('별도 작업 공간에서 막히면 새 작업은 시작하지 않고 그 폴더를 알려 준다. retry 뒤 같은 폴더에서 이어 간다', () => {
+  const r = prepared({ plan: PAR(), scenario: { implement: { 't03-c': ['BLOCKED', 'DONE'] }, waitFor: { 'implement:t01-a': 'plan:t03-c', 'commit:t01-a': 'implement:t03-c' } } });
+  const run = r.orch('run');
+  assert.equal(run.code, 1, run.out);
+  assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'pending', T03: 'blocked' });
+  assert.match(run.out, /T03 에서 막혀 멈췄습니다\. 돌고 있던 작업은 끝까지 진행했습니다/);
+  const st = statusJson(r);
+  assert.equal(st.next, 'blocked');
+  const ws = st.blocked[0].workspace;
+  assert.match(ws, /^\.orchestrator\/wt\/[^/]+\/T03$/);
+  assert.ok(st.blocked[0].hint.startsWith(`변경은 별도 작업 공간 \`${ws}\` 에 있습니다`), st.blocked[0].hint);
+  assert.match(readFileSync(path.join(r.repo, ws, 'src', 't03-c.txt'), 'utf8'), /partial/);
+  assert.match(readFileSync(path.join(r.runDir(), 'report.md'), 'utf8'), new RegExp(`변경은 별도 작업 공간 \`${ws.replace(/\./g, '\\.')}\``));
+  assert.equal(r.g('status', '--porcelain').trim(), '', '이 저장소는 깨끗하다');
+  assert.equal(r.orch('retry', 'T03', '--from', 'implement').code, 0);
+  const again = r.orch('run');
+  assert.equal(again.code, 0, again.out);
+  assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
+  const impls = r.calls().filter((c) => c.prompt === `${IMPL} t03-c`);
+  assert.equal(impls[1].cwd, impls[0].cwd, '같은 작업 공간에서 이어 간다');
+  assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1);
+});
+
+test('함께 도는 동안 status 는 작업마다 단계와 작업 공간을 보여 주고, Ctrl+C 는 세션을 모두 끝낸다', async () => {
+  const r = prepared({ plan: planOf([own('T01', 't01-a'), own('T03', 't03-c')]), scenario: { implement: { 't01-a': ['SLOW', 'DONE'], 't03-c': ['SLOW', 'DONE'] } } });
+  const proc = r.start('run');
+  const pidFile = (slug) => path.join(r.repo, '.orchestrator', `fake-slow-${slug}.pid`);
+  for (let i = 0; i < 300 && !(existsSync(pidFile('t01-a')) && existsSync(pidFile('t03-c'))); i += 1) await sleep(50);
+  assert.ok(existsSync(pidFile('t01-a')) && existsSync(pidFile('t03-c')), '두 세션이 함께 돈다');
+  const st = statusJson(r);
+  assert.equal(st.next, 'wait');
+  assert.deepEqual(st.running.tasks.map((x) => [x.task, x.stage]), [['T01', 'implement'], ['T03', 'implement']]);
+  assert.ok(st.running.tasks.every((x) => /^\.orchestrator\/wt\//.test(x.workspace)));
+  assert.deepEqual([st.running.task, st.running.stage], ['T01', 'implement'], '첫 작업은 예전 필드로도 보인다');
+  const pids = ['t01-a', 't03-c'].map((slug) => Number(readFileSync(pidFile(slug), 'utf8')));
+  const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
+  proc.kill('SIGINT');
+  assert.equal(await exited, 130);
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 100 && pids.some(alive); i += 1) await sleep(50);
+  assert.deepEqual(pids.map(alive), [false, false], '세션 프로세스가 남아 있지 않다');
+  assert.deepEqual(r.statusOf(), { T01: 'planned', T03: 'planned' });
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.deepEqual(r.statusOf(), { T01: 'done', T03: 'done' });
+  assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1);
 });
 
 test('doctor 는 설정 파일이 없으면 만들고, am 플러그인을 곁에서 찾는다(같은 저장소, 같은 마켓플레이스 설치)', () => {

@@ -3,6 +3,9 @@
 // 시나리오(FAKE_SCENARIO 가 가리키는 JSON)로 단계별 결과를 순서대로 지정할 수 있다:
 //   { "plan": { "<slug>": ["NEEDS_DECISION", "READY"] }, "check": { "<slug>": ["BLOCK", "NOTE"] },
 //     "implement": { "<slug>": ["CRASH", "DONE"] }, "breakGate": ["<slug>"], "split": ["<fixture>", ...] }
+// 동시 진행: 단계가 끝날 때마다 "<단계>:<slug>" 표시를 남기고, "waitFor": { "implement:t01-a": "plan:t03-c" } 처럼
+// 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
+// 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,7 +19,8 @@ if (argv.includes('--version')) {
 const flag = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
 const cwd = process.cwd();
 const scenario = process.env.FAKE_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_SCENARIO, 'utf8')) : {};
-const stateDir = path.join(cwd, '.orchestrator');
+const mainRepo = path.dirname(path.resolve(cwd, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd, encoding: 'utf8' }).trim()));
+const stateDir = path.join(mainRepo, '.orchestrator');
 mkdirSync(stateDir, { recursive: true });
 const counterFile = path.join(stateDir, 'fake-counters.json');
 const counters = existsSync(counterFile) ? JSON.parse(readFileSync(counterFile, 'utf8')) : {};
@@ -47,7 +51,18 @@ const runBuild = () => {
 
 let prompt = flag('-p') || '';
 const session = flag('--resume') || randomUUID();
-appendFileSync(path.join(stateDir, 'fake-calls.jsonl'), `${JSON.stringify({ prompt, argv })}\n`);
+appendFileSync(path.join(stateDir, 'fake-calls.jsonl'), `${JSON.stringify({ prompt, argv, cwd })}\n`);
+const markFile = (key) => path.join(stateDir, `fake-mark-${key.replace(':', '-')}`);
+let marked = null; // 이 호출이 끝나며 남길 "<단계>:<slug>" 표시
+const waitFor = async (phase, slug) => {
+  const key = scenario.waitFor?.[`${phase}:${slug}`];
+  if (!key) return;
+  for (let i = 0; i < 300 && !existsSync(markFile(key)); i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  if (!existsSync(markFile(key))) {
+    process.stderr.write(`fake claude: ${phase}:${slug} waited too long for ${key}\n`);
+    process.exit(1);
+  }
+};
 
 if (flag('--output-format') === 'stream-json') {
   // doctor 의 시험 호출: 세션 시작 정보(init)와 답(result)을 한 줄씩 낸다
@@ -63,7 +78,7 @@ if (flag('--output-format') === 'stream-json') {
 // inline 방식: 채워진 SKILL.md 를 읽어 같은 뜻의 슬래시 호출로 바꾼다
 let m = /^Follow the instructions in (\S+) exactly/.exec(prompt);
 if (m) {
-  const body = readFileSync(path.join(cwd, m[1]), 'utf8');
+  const body = readFileSync(path.resolve(cwd, m[1]), 'utf8');
   const skill = /skill-(\w+)\.md$/.exec(m[1])[1];
   const args = /^(?:Request|Target|Notes|Plan): (.*)$/m.exec(body)[1];
   if (body.includes('$ARGUMENTS') || body.includes('${CLAUDE_PLUGIN_ROOT}') || body.startsWith('---')) throw new Error('skill file was not expanded');
@@ -81,6 +96,8 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
 } else if ((m = /^\/am:plan Plan task (\S+) described in (\S+) \(slug ([a-z0-9-]+)\)$/.exec(prompt))) {
   const slug = m[3];
   if (!existsSync(path.join(cwd, m[2]))) throw new Error('brief missing');
+  await waitFor('plan', slug);
+  marked = `plan:${slug}`;
   const outcome = pick('plan', slug, 'READY');
   if (outcome === 'TOO_BIG') {
     write(`.am/${slug}/split.json`, JSON.stringify({ reason: 'too many files', tasks: [
@@ -111,6 +128,8 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
   text = 'Recorded.\nORCH_STATUS: READY';
 } else if ((m = /^\/am:(?:do|plan) ([a-z0-9-]+)$/.exec(prompt))) {
   const slug = m[1];
+  await waitFor('implement', slug);
+  marked = `implement:${slug}`;
   const outcome = pick('implement', slug, 'DONE');
   if (scenario.snapshotReport) {
     // 세션이 도는 동안의 보고서를 남겨, 진행 중 표시를 확인할 수 있게 한다
@@ -119,6 +138,7 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
   }
   if (outcome === 'SLOW') {
     writeFileSync(path.join(stateDir, 'fake-slow.pid'), String(process.pid));
+    writeFileSync(path.join(stateDir, `fake-slow-${slug}.pid`), String(process.pid));
     await new Promise((resolve) => setTimeout(resolve, 60000)); // 오래 걸리는 세션
   }
   if (outcome === 'CRASH') {
@@ -134,10 +154,12 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
     if ((scenario.breakSlow || []).includes(slug) && nth(`slow:${slug}`) === 1) write('SLOW_BROKEN', slug); // 느린(비차단) 검사만 깨뜨림
     for (const f of scenario.extraFiles || []) write(f, 'extra\n'); // 예상 파일 밖의 변경
     if ((scenario.editVolatile || []).includes(slug)) write('settings.asset', 'prefilter: 0\nshadows: on\n'); // 작업이 설정 파일을 실제로 고침
+    if ((scenario.conflictFile || []).includes(slug)) write('shared.txt', `from ${slug}\n`); // 함께 도는 작업끼리 같은 파일을 만듦
   }
   text = `ORCH_STATUS: ${outcome}`;
 } else if ((m = /^\/am:check ([a-z0-9-]+)$/.exec(prompt))) {
   const slug = m[1];
+  marked = `check:${slug}`;
   if (scenario.checkRunsGate) runBuild(); // am:check 가 세션 안에서 게이트를 돌림
   if (scenario.checkAddsIntent) gitc('add', '-N', '.'); // 새 파일이 diff 에 보이도록 점검 세션이 흔히 하는 일
   let verdict = pick('check', slug, 'NOTE');
@@ -148,12 +170,14 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
   if (verdict === 'FILEONLY') writeFileSync(path.join(stateDir, 'fake-mute'), '1');
 } else if ((m = /^am:check blocked this task\. Read \.am\/([a-z0-9-]+)\/check\.md and (\S+),/.exec(prompt))) {
   if (!flag('--resume')) throw new Error('fix must resume the implement session');
-  if (!existsSync(path.join(cwd, m[2]))) throw new Error('gate.json missing');
+  if (!existsSync(path.resolve(cwd, m[2]))) throw new Error('gate.json missing');
   if (!(scenario.breakGateAlways || []).includes(m[1])) rmSync(path.join(cwd, 'BROKEN'), { force: true });
   rmSync(path.join(cwd, 'SLOW_BROKEN'), { force: true });
   appendFileSync(path.join(cwd, `src/${m[1]}.txt`), 'fixed\n');
   text = 'ORCH_STATUS: DONE';
 } else if ((m = /^\/am:commit task (\S+) ([a-z0-9-]+)$/.exec(prompt))) {
+  await waitFor('commit', m[2]);
+  marked = `commit:${m[2]}`;
   const outcome = pick('commit', m[2], 'COMMITTED');
   if (outcome === 'COMMITTED') {
     gitc('add', '-A');
@@ -180,7 +204,7 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
   else text = `ORCH_STATUS: ${outcome === 'DENIED' ? 'BLOCKED' : outcome === 'LEAVE' ? 'COMMITTED' : outcome}`;
 } else if ((m = /^The commit for this task did not go through\. Read (\S+) for what the commit session reported/.exec(prompt))) {
   if (!flag('--resume')) throw new Error('the fix must resume the implement session');
-  if (!readFileSync(path.join(cwd, m[1]), 'utf8').includes('R1 MODULE.md')) throw new Error('hook output was not handed over');
+  if (!readFileSync(path.resolve(cwd, m[1]), 'utf8').includes('R1 MODULE.md')) throw new Error('hook output was not handed over');
   if (scenario.rejectFix === 'BLOCKED') text = 'cannot fix\nORCH_STATUS: BLOCKED';
   else {
     appendFileSync(path.join(cwd, 'MODULE.md'), '- history: fixed after the hook rejected the commit\n');
@@ -196,4 +220,5 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
   text = existsSync(path.join(stateDir, 'fake-mute')) ? 'sorry' : `${m[1]}: ${m[2] === 'BLOCK' ? 'NOTE' : m[2]}`;
 } else throw new Error(`fake claude: unknown prompt: ${prompt}`);
 
+if (marked) writeFileSync(markFile(marked), '1');
 process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: session, total_cost_usd: 0.01, num_turns: 3, permission_denials: denials })}\n`);

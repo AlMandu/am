@@ -33,7 +33,7 @@ Request: $ARGUMENTS
 <!-- am:common:end -->
 
 ## What you are driving
-The orchestrator is a Node script. It splits a design document into small tasks and, for each task in turn, runs the am:plan, am:do, am:check and am:commit skills in separate `claude -p` sessions, with the project's gate between them, on a branch of its own, without pushing. Running this skill is the user's request for the whole run, including the commits. You drive it from start to finish and stop only to ask what only the user can answer.
+The orchestrator is a Node script. It splits a design document into small tasks and, for each task, runs the am:plan, am:do, am:check and am:commit skills in separate `claude -p` sessions, with the project's gate between them, on a branch of its own, without pushing. Tasks that do not depend on each other and expect to touch different files run at the same time, up to `parallel` in the config (default 3): each one is implemented in its own git worktree under `.orchestrator/wt/` and combined into the run branch when it is committed. A task that runs alone uses the repository itself. Running this skill is the user's request for the whole run, including the commits. You drive it from start to finish and stop only to ask what only the user can answer.
 
 Run it from the repository root: `node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrator.mjs" <command>`. If the placeholder was not replaced, the plugin root is the folder two levels above this SKILL.md.
 
@@ -44,13 +44,13 @@ Run it from the repository root: `node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrat
 | `status --json` | the state, and what to do next |
 | `decide <id> "<answer>"` | records the answer to a decision from the task list |
 | `answer <task> "<answer>"` | answers a question that a task's plan raised and finishes that plan |
-| `run` | runs every task that can run, in order; resumes where it stopped |
+| `run` | runs every task that can run, unrelated ones at the same time; resumes where it stopped |
 | `retry <task> --from plan\|implement\|check\|commit` | puts a blocked task back at that stage |
 | `done <task>` | marks a task the user finished by hand as done |
 
 Rules while driving:
 - `doctor`, `split`, `answer` and `run` start builds or model sessions and take minutes to hours. Start each one in the background, tell the user in one line that it is running, and go on when its completion notice arrives. Do not poll in a loop. Never start a command while another is running; the script refuses a second one.
-- While `split` or `run` is running, other sessions are changing this repository. Do not edit, stage, commit, stash or switch branches, and do not open the project in an editor that the gate builds with.
+- While `split` or `run` is running, other sessions are changing this repository and its worktrees under `.orchestrator/wt/`. Do not edit, stage, commit, stash or switch branches, and do not open the project in an editor that the gate builds with.
 - After every command read `status --json` and act on its `next` field. It is the only source of truth: under `.orchestrator/` edit nothing but `config.json` and, in step 3, `tasks.json`.
 - Never push or merge. Do not use the am skills yourself on these tasks; the script runs them.
 - Choices the run made for the user (marked "(auto-decided)" in the plans) are reported at the end, not asked.
@@ -59,20 +59,21 @@ Rules while driving:
 1. Request. Empty: continue the run in progress from step 4; if `status --json` says `next` is `doctor` or `split`, there is none, so ask for the design document and stop. A path to an existing file: a new run with that document. Anything else: ask which document to use and stop.
 2. Prepare. Run `doctor` and read its output. Remove what you can without deciding anything for the user, then run it again:
    - tracked files that it says the gate rewrites: add them to `volatilePaths` in `.orchestrator/config.json`;
-   - a name in `requiredGateCommands` that is not in `am-gate.json`: correct the name.
+   - a name in `requiredGateCommands` that is not in `am-gate.json`: correct the name;
+   - the gate does not pass in a separate worktree because a folder the repository ignores is missing there (installed dependencies, for example): add the command that recreates it to `worktreeSetup` (`ORCH_MAIN_REPO` holds this repository's path). For any other cause leave it; the run then goes one task at a time.
    Ask the user, with a decision card, only about these:
    - there is no `am-gate.json`: which build and test commands must pass before each commit (then write the file and commit it);
    - uncommitted changes you did not make: commit them first, set them aside, or stop;
    - the gate already fails before the run has changed anything.
    If the claude command or the am plugin is missing, say how to install it and stop.
-3. Split. Run `split <file>`. Before spending a run on the result, read the task list (`run.tasks` in the status): every file a task names exists or is created by an earlier task, and nothing the design asks for is left out without a reason. Correct plain mistakes in `tasks.json` yourself (a wrong path, a wrong order); do not add, drop or reshape scope. Tell the user in two or three lines what will be built and in how many tasks, then go on without waiting.
+3. Split. Run `split <file>`. Before spending a run on the result, read the task list (`run.tasks` in the status): every file a task names exists or is created by an earlier task, and nothing the design asks for is left out without a reason. Correct plain mistakes in `tasks.json` yourself (a wrong path, a wrong order); do not add, drop or reshape scope. Tell the user in two or three lines what will be built, in how many tasks and how many at a time (`parallel` in the status, with its reason when it is 1), then go on without waiting.
 4. Loop: read `status --json` and follow `next` until it is `done` or you have to stop.
    - `decide`: `decisions` holds the questions the design leaves to the user, already written as decision cards. Ask them (rules above, at most 3 at a time) and record each answer with `decide`.
    - `answer`: a plan found a question only the user can answer. Read the file in `needsDecision[].file`, ask it as a decision card, and pass the answer with `answer`.
-   - `blocked`: read `blocked[].reason` and the files it names under `blocked[].logs`. If the cause lies outside the task and you can remove it without deciding anything for the user (the gate could not run, a usage limit that has reset, an editor left open, a file a build rewrote), remove it and follow `blocked[].hint`, once per task. Otherwise ask the user with a card: retry from a named stage, let them fix it by hand and mark it done, or stop the run here.
+   - `blocked`: read `blocked[].reason` and the files it names under `blocked[].logs`. A task blocked in its own worktree keeps its changes in `blocked[].workspace`; anything done by hand for it happens in that folder. If the cause lies outside the task and you can remove it without deciding anything for the user (the gate could not run, a usage limit that has reset, an editor left open, a file a build rewrote), remove it and follow `blocked[].hint`, once per task. Otherwise ask the user with a card: retry from a named stage, let them fix it by hand and mark it done, or stop the run here.
    - `fix-tasks`: `errors` lists what is wrong in `tasks.json`; correct it.
    - `run`: start `run` and wait. Exit code 0: every task is done. 1: questions or blocked tasks remain; go round the loop. 2: it stopped on an error; read the message. For a usage limit, say when the user can continue (this skill with no argument) and stop. Otherwise remove the cause and run again once; if it fails again, stop and report.
-   - `wait`: a command is still running (`running` names the task and stage). Wait for its completion notice.
+   - `wait`: a command is still running (`running.tasks` names each running task and its stage). Wait for its completion notice.
    - `doctor` or `split`: go back to step 2 or 3.
    - `stuck`: no task can run and none is waiting for an answer. Report what `status` (without `--json`) shows and stop.
 5. Final reply, when `next` is `done` or when you stop:
