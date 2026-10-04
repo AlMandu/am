@@ -1,0 +1,9 @@
+{
+  "name": "am-orchestrator",
+  "version": "0.1.0",
+  "description": "큰 설계 문서를 작은 작업으로 나누고, 작업마다 am 의 plan → do → check → commit 을 별도 세션으로 돌리는 오케스트레이터. am 플러그인이 함께 설치돼 있어야 한다. Claude Code 전용.",
+  "author": { "name": "Seonghun" },
+  "homepage": "https://github.com/AlMandu/am",
+  "repository": "https://github.com/AlMandu/am",
+  "keywords": ["workflow", "orchestrator", "design-document", "am", "unity", "unreal"]
+}

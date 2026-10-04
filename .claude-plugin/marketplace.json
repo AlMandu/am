@@ -7,6 +7,11 @@
       "name": "am",
       "source": "./plugin",
       "description": "가벼운 plan → do → check → commit 워크플로와 커밋 게이트(Claude Code·Codex 공용)"
+    },
+    {
+      "name": "am-orchestrator",
+      "source": "./orchestrator",
+      "description": "큰 설계 문서를 작은 작업으로 나눠 작업마다 am 의 plan → do → check → commit 을 별도 세션으로 돌리는 오케스트레이터(Claude Code 전용, am 필요)"
     }
   ]
 }

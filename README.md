@@ -22,7 +22,7 @@ Claude Code 와 Codex CLI 에서 쓰는 가벼운 개발 워크플로 플러그�
 - 실행 확인은 에이전트가 할 수 있는 만큼 먼저 하고, 사람에게는 "어디서·무엇을·무엇이 보이면 통과" 체크리스트만 넘깁니다.
 - 가장 값진 장치였던 결정론적 게이트(실제로 빌드·테스트를 돌림)는 훅으로 남겼습니다.
 
-세션마다 늘 드는 비용은 약 881토큰, 스킬 호출 한 번은 약 1.7~2.5k 토큰입니다(`claude plugin details am` 기준). `am:auto` 는 다른 네 스킬 파일을 함께 읽어 한 번에 약 9.9k 토큰입니다.
+세션마다 늘 드는 비용은 약 872토큰, 스킬 호출 한 번은 약 1.7~2.3k 토큰입니다(`claude plugin details am` 기준). `am:auto` 는 다른 네 스킬 파일을 함께 읽어 한 번에 약 9.7k 토큰입니다.
 
 ## 요구 사항
 
@@ -74,6 +74,21 @@ Codex 는 플러그인 훅을 사용자가 신뢰해야 실행합니다. 설치 
 - `am:auto` 는 `am:plan` → `am:do` → `am:check` → `am:commit` 을 한 세션에서 이어 갑니다. 각 명령의 규칙은 그대로 따르고, 사용자에게 묻고 멈추던 곳만 바꿉니다. 화면·범위 질문은 추천안으로 정해 계획 문서에 "(자동 결정)" 으로 남기고, 마지막 답의 결론 바로 다음에 "대신 정한 것" 으로 보여 줍니다. 작은 변경에도 짧은 계획 문서를 씁니다.
 - `am:auto` 가 멈추고 묻는 경우: 이번 실행 전부터 있던 데이터·파일 삭제, 저장 형식 변경·데이터 이전, 저장소 밖 변경, 사용자·프로젝트 지침이 확인을 요구하는 일. 점검이 BLOCK 이면 이번 작업 안의 원인을 고쳐 한 번 더 점검하고, 그래도 BLOCK 이면 커밋하지 않고 멈춥니다. 원인을 고친 뒤 `am:auto <slug>` 로 다시 실행하면 계획을 새로 쓰지 않고 남은 단계부터 이어 갑니다.
 - `am:auto` 는 맨 앞에 `push` 를 붙였을 때만 push 합니다(`/am:auto push 오타 수정`). 붙이지 않으면 로컬 커밋까지만 하므로, 대신 정한 것이 마음에 들지 않으면 push 전에 되돌릴 수 있습니다. 커밋 전 검사를 돌리지 못했으면(설정 파일 오류, 검사 프로그램 없음) `push` 를 붙였어도 로컬 커밋까지만 하고 알립니다.
+
+## 오케스트레이터 (`am-orchestrator`, 별도 플러그인)
+
+큰 설계 문서 하나를 끝까지 구현하게 하려면 같은 마켓플레이스의 `am-orchestrator` 를 함께 설치합니다. 설계 문서를 작은 작업으로 나누고, 작업마다 `am:plan` → `am:do` → `am:check` → `am:commit` 을 별도 세션으로 순서대로 돌립니다. Claude Code 전용입니다.
+
+```
+/plugin install am-orchestrator@am-workflow
+/am-orchestrator:run docs/design.md
+```
+
+- 스킬을 실행한 세션이 준비·분할·실행·재개를 알아서 하고, 사용자만 답할 수 있는 것이 생겼을 때만 멈추고 결정 카드로 묻습니다. 묻고 멈추는 기준은 `am:auto` 와 같습니다.
+- 작업마다 세션을 따로 띄워 단계별로 권한을 달리 주고, 단계 사이에 게이트(`am-gate.json`)와 작업 트리를 직접 확인합니다. 실행용 브랜치에 커밋만 쌓고 push 는 하지 않습니다.
+- `am` 플러그인은 그대로 작게 둡니다. 오케스트레이터는 am 의 스킬과 게이트를 복사하지 않고 설치된 것을 부릅니다.
+
+자세한 내용은 [orchestrator/README.md](orchestrator/README.md) 에 있습니다.
 
 ## 2차 의견 (`am:second-opinion`)
 
@@ -144,6 +159,15 @@ node --test tests/gate.test.mjs tests/skills.test.mjs
 claude plugin validate .
 claude plugin validate plugin
 claude --plugin-dir plugin plugin details am
+```
+
+오케스트레이터 플러그인을 고쳤을 때:
+
+```
+node --test tests/orchestrator-skill.test.mjs
+node --test tests/orchestrator.test.mjs
+claude plugin validate orchestrator
+claude --plugin-dir orchestrator plugin details am-orchestrator
 ```
 
 유지보수 규칙은 [CLAUDE.md](CLAUDE.md) 에 있습니다.

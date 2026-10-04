@@ -1,6 +1,6 @@
 # am plugin repository
 
-Lightweight plan/do/check/commit workflow plugin for Claude Code and Codex CLI. The repository root is the marketplace (`.claude-plugin/marketplace.json`); only `plugin/` is installed into users' caches.
+Lightweight plan/do/check/commit workflow plugin for Claude Code and Codex CLI. The repository root is the marketplace (`.claude-plugin/marketplace.json`) and lists two plugins, each installed into users' caches on its own: `plugin/` is `am`, and `orchestrator/` is `am-orchestrator` (Claude Code only), which runs the am skills task by task over a whole design document.
 
 ## Rules
 - One source for both tools. Codex reads `.claude-plugin/` manifests and plugin hooks natively; do not add Codex-only copies.
@@ -10,10 +10,18 @@ Lightweight plan/do/check/commit workflow plugin for Claude Code and Codex CLI. 
 - Changing `hooks.json` makes every Codex user re-trust the hook. Avoid it.
 - Skills: English bodies; frontmatter `description` and `argument-hint` in Korean (users see them in the command palette); README/CHANGELOG in Korean. The common rules block must stay identical in every SKILL.md; size limits plan/check 120 lines, commit/do/auto 80 (tests enforce both). Refer to other skills as "the am:check skill", not `/am:check`.
 - Second opinion: `plugin/agents/second-opinion.md` is the one subagent, and Claude Code only (Codex has no such subagent, so the common rules fall back to the session's own pick). Its frontmatter pins `model: claude-opus-5-5` and `effort: xhigh` and keeps the tools read-only. Use the full model ID: the `opus` alias follows the main session's Opus version. Claude Code ignores a misspelled frontmatter key without an error, so the tests check the exact keys and values. English body, Korean `description`.
-- Keep it small: no telemetry, panels, release gates or batch runners.
+- Keep `plugin/` small: no telemetry, panels, release gates or batch runners. The batch runner is the separate `orchestrator/` plugin; nothing in `plugin/` may depend on it.
+
+## Orchestrator plugin (`orchestrator/`)
+- One skill (`skills/run`, user-invoked only) and one script (`scripts/orchestrator.mjs`: no dependencies, Node 18+). The skill drives the script through `status --json`; every `next` value the script can return must be handled in the skill, and every command the skill names must exist in the script (tests enforce both).
+- It calls the installed am skills and `hooks/gate.mjs`; it never copies them. What it relies on is pinned in `tests/orchestrator-skill.test.mjs`: the skill names, `$ARGUMENTS`, `.am/<slug>/plan.md` and `check.md`, the hand-over to am:check at the end of am:do, the `(auto-decided)` mark of am:auto, and the gate's command line and report fields. Changing any of these in `plugin/` means changing the script in the same commit.
+- Its rules for running without a user (what is decided on the user's behalf, when to stop) follow the am:auto skill. Change them together.
+- The run skill carries the same common rules block as the am skills and stays within 120 lines. Text sent to a model is English; what a person reads (script output, report, README) is Korean.
+- Each plugin has its own `version`; a user-visible change to `orchestrator/` bumps `orchestrator/.claude-plugin/plugin.json` and gets its own CHANGELOG entry headed `am-orchestrator <version>`.
 
 ## Before committing
 - `node --test tests/gate.test.mjs tests/skills.test.mjs`
 - `claude plugin validate .` and `claude plugin validate plugin`
+- After touching `orchestrator/`, or anything in `plugin/` that it relies on: `node --test tests/orchestrator-skill.test.mjs tests/orchestrator.test.mjs` (the second takes about a minute and needs no `claude`) and `claude plugin validate orchestrator`
 - User-visible change: bump `version` in `plugin/.claude-plugin/plugin.json` and add one CHANGELOG entry.
 - Refresh a local Codex install with `codex plugin remove am@am-workflow` then `codex plugin add am@am-workflow`.
