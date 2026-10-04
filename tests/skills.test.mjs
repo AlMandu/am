@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80 };
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
 const common = (text) => {
   const m = /<!-- am:common:start -->([\s\S]*?)<!-- am:common:end -->/.exec(text);
@@ -30,8 +30,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan and am:do are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do']) {
+test('am:plan, am:do and am:auto are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
