@@ -5,7 +5,7 @@
 //   node gate.mjs --run [--json] [--cwd <dir>]
 // Node only, no dependencies.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -504,7 +504,17 @@ async function cli(argv) {
   return report.status === STATUS.FAIL ? 1 : report.status === STATUS.ERROR ? 3 : 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// Compare real paths: import.meta.url has symlinks resolved, argv[1] does not
+// (a linked ~/.claude or plugin cache, macOS /var -> /private/var).
+const isMain = () => {
+  try {
+    return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+};
+
+if (isMain()) {
   cli(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
