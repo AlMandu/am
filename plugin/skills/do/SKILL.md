@@ -3,6 +3,8 @@ name: do
 description: "am:plan 이 쓴 계획 문서(.am/<slug>/plan.md)대로 구현합니다. 끝난 단계는 건너뛰고 남은 단계를 순서대로 진행하며, 단계마다 확인하고 계획과 달라진 점을 기록합니다. 커밋은 하지 않고, 끝나면 am:check 로 넘어갑니다."
 argument-hint: "<slug>"
 disable-model-invocation: true
+model: opus
+effort: high
 ---
 
 # am:do

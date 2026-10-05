@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { applySplit, claudeArgs, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, claudeArgs, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ORCH = path.join(here, '..', 'orchestrator', 'scripts', 'orchestrator.mjs');
@@ -205,11 +205,12 @@ test('claudeArgs: 단계별 권한과 이어 가기', () => {
   assert.match(fix[fix.indexOf('--disallowedTools') + 1], /Bash\(git commit \*\).*Bash\(git push \*\)/);
   assert.equal(fix[fix.indexOf('--model') + 1], 'opus', 'fix 는 implement 의 모델을 물려받는다');
   const reask = claudeArgs(cfg, 'plan', { prompt: 'x', resume: 'sid' });
-  assert.ok(!reask.includes('--model'), '이어 가는 세션은 단계에 따로 적은 모델이 없으면 원래 모델을 그대로 쓴다');
+  assert.equal(reask[reask.indexOf('--model') + 1], 'sonnet', '이어 가는 세션에도 처음과 같은 모델을 넘긴다');
   const eff = merge(defaults(), { extraArgs: { plan: ['--effort', 'medium'], implement: ['--effort', 'high'], fix: ['--effort', 'low'] } });
   assert.deepEqual(claudeArgs(eff, 'answer', { prompt: 'x', resume: 's' }).slice(-2), ['--effort', 'medium'], 'answer 는 plan 의 플래그를 물려받는다');
   assert.deepEqual(claudeArgs(eff, 'fix', { prompt: 'x', resume: 's' }).slice(-2), ['--effort', 'low'], '따로 적으면 그 값이 우선');
-  assert.ok(!claudeArgs(eff, 'check', { prompt: 'x' }).includes('--effort'));
+  const check = claudeArgs(eff, 'check', { prompt: 'x' });
+  assert.equal(check[check.indexOf('--effort') + 1], 'high', '플래그를 적지 않은 단계는 기본 effort 로');
   const denied = fix[fix.indexOf('--disallowedTools') + 1].split(',');
   assert.ok(denied.includes('Bash(git stash)') && denied.includes('Bash(git stash push *)') && denied.includes('Bash(git stash pop)'));
   assert.ok(!denied.includes('Bash(git stash *)'), 'git stash list 처럼 읽기만 하는 명령은 막지 않는다');
@@ -217,6 +218,51 @@ test('claudeArgs: 단계별 권한과 이어 가기', () => {
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git restore \*\)/, '커밋 세션은 빌드 산출물을 되돌릴 수 있다');
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git commit \*\)/);
   assert.match(commit[commit.indexOf('--disallowedTools') + 1], /Bash\(git push \*\)/);
+});
+
+test('claudeArgs: 설정에 적지 않은 단계는 기본 모델과 effort 로 돈다', () => {
+  /** 그 단계에 넘기는 [--model, --effort] 값. 같은 플래그를 두 번 넘기면 실패. */
+  const of = (cfg, phase, opts = {}) => {
+    const a = claudeArgs(cfg, phase, { prompt: 'x', ...opts });
+    return ['--model', '--effort'].map((flag) => {
+      assert.equal(a.indexOf(flag), a.lastIndexOf(flag), `${phase}: ${flag} 는 한 번만 넘긴다`);
+      return a.includes(flag) ? a[a.indexOf(flag) + 1] : null;
+    });
+  };
+  const d = defaults();
+  assert.deepEqual(of(d, 'split'), ['opus', 'xhigh']);
+  assert.deepEqual(of(d, 'plan'), ['opus', 'high']);
+  assert.deepEqual(of(d, 'implement'), ['opus', 'high']);
+  assert.deepEqual(of(d, 'check'), ['opus', 'high']);
+  assert.deepEqual(of(d, 'commit'), ['opus', 'medium']);
+  assert.deepEqual(of(d, 'probe', { format: 'stream-json' }), ['opus', 'high'], 'doctor 의 시험 호출은 plan 의 값으로: 그 모델을 못 쓰는 계정은 doctor 에서 드러난다');
+  assert.deepEqual(of(d, 'fix', { resume: 's' }), ['opus', 'high'], '이어 가는 세션에도 처음과 같은 값을 넘긴다');
+  assert.deepEqual(of(d, 'answer', { resume: 's' }), ['opus', 'high']);
+  assert.deepEqual(of(d, 'split', { resume: 's' }), ['opus', 'xhigh'], '표시 줄을 되묻는 호출도 같다');
+  // 설정: 단계에 적은 값 → 물려받는 단계의 값 → default → 기본값
+  const cfg = merge(defaults(), { model: { default: 'sonnet', implement: 'opus' }, effort: { default: 'low', implement: 'max', fix: 'medium' } });
+  assert.deepEqual(of(cfg, 'check'), ['sonnet', 'low'], 'default 는 적지 않은 모든 단계에 쓰인다');
+  assert.deepEqual(of(cfg, 'implement'), ['opus', 'max']);
+  assert.deepEqual(of(cfg, 'fix', { resume: 's' }), ['opus', 'medium']);
+  assert.deepEqual(of(cfg, 'answer', { resume: 's' }), ['sonnet', 'low']);
+  // extraArgs 에 같은 플래그가 있으면 그쪽 것만 넘긴다
+  const extra = merge(defaults(), { extraArgs: { all: ['--effort', 'low'], commit: ['--model', 'haiku'] } });
+  assert.deepEqual(of(extra, 'commit'), ['haiku', 'low']);
+  assert.deepEqual(of(extra, 'plan'), ['opus', 'low']);
+  // `--이름=값` 한 덩어리로 적어도 같다
+  const joined = merge(defaults(), { extraArgs: { commit: ['--model=haiku'], check: ['--effort=low'] } });
+  assert.deepEqual(of(joined, 'commit'), [null, 'medium'], '모델은 extraArgs 의 --model=haiku 만 넘긴다');
+  assert.ok(claudeArgs(joined, 'commit', { prompt: 'x' }).includes('--model=haiku'));
+  assert.deepEqual(of(joined, 'check'), ['opus', null]);
+  assert.ok(stageOverridden(joined, 'commit') && stageOverridden(joined, 'check') && !stageOverridden(joined, 'plan'));
+  // 설정이 단계의 값을 기본값과 다르게 정했는지: 어디에 적었든(단계 키, default, extraArgs) 넘기는 값으로 본다
+  const stages = ['plan', 'implement', 'check', 'commit'];
+  assert.deepEqual(stages.filter((p) => stageOverridden(d, p)), []);
+  assert.deepEqual(stages.filter((p) => stageOverridden(cfg, p)), stages);
+  assert.deepEqual(stages.filter((p) => stageOverridden(extra, p)), stages);
+  const same = merge(defaults(), { model: { default: 'opus' }, effort: { commit: 'medium' }, extraArgs: { plan: ['--effort', 'high'] } });
+  assert.deepEqual(stages.filter((p) => stageOverridden(same, p)), [], '기본값과 같은 값을 적은 것은 바꾼 것이 아니다');
+  assert.deepEqual(stages.filter((p) => stageOverridden(merge(defaults(), { effort: { implement: 'max' } }), p)), ['implement']);
 });
 
 // ------------------------------------------------------------------ 흐름
@@ -372,6 +418,36 @@ test('슬래시 스킬이 없으면 SKILL.md 를 채워 넘기는 방식으로 �
   const skill = readFileSync(path.join(r.runDir(), 'T01', 'skill-check.md'), 'utf8');
   assert.ok(!skill.startsWith('---') && !skill.includes('$ARGUMENTS') && !skill.includes('${CLAUDE_PLUGIN_ROOT}'));
   assert.match(skill, /Target: t01-a/);
+});
+
+test('설정이 단계의 모델이나 effort 를 바꾸면 그 단계의 스킬만 inline 으로 불러 넘긴 값이 쓰이게 한다', () => {
+  const one = () => planOf([task('T01', 't01-a')]);
+  const flags = (c) => ['--model', '--effort'].map((f) => c.argv[c.argv.indexOf(f) + 1]);
+  const r = prepared({ plan: one(), config: { model: { commit: 'sonnet' }, effort: { check: 'medium' } } });
+  assert.match(r.orch('run', '--dry-run').out, /스킬 호출 방식 slash\(check·commit 는 설정이 모델·effort 를 바꿔 inline\)/);
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /스킬 호출 방식 slash\(check·commit 는 설정이 모델·effort 를 바꿔 inline\)/);
+  const calls = r.calls();
+  // 바꾸지 않은 단계는 슬래시 호출 그대로, 기본값으로(스킬 머리말과 같은 값이라 어느 쪽이 쓰여도 같다)
+  assert.deepEqual(flags(calls.find((c) => c.prompt.startsWith('/am:plan Plan task T01'))), ['opus', 'high']);
+  assert.deepEqual(flags(calls.find((c) => c.prompt === `${IMPL} t01-a`)), ['opus', 'high']);
+  // 바꾼 단계는 머리말을 뗀 SKILL.md 를 넘기므로 플래그만 남는다
+  assert.deepEqual(flags(calls.find((c) => /T01\/skill-check\.md exactly/.test(c.prompt))), ['opus', 'medium']);
+  assert.deepEqual(flags(calls.find((c) => /T01\/skill-commit\.md exactly/.test(c.prompt))), ['sonnet', 'medium']);
+  assert.ok(!calls.some((c) => c.prompt.startsWith('/am:check') || c.prompt.startsWith('/am:commit')));
+  assert.ok(!readFileSync(path.join(r.runDir(), 'T01', 'skill-commit.md'), 'utf8').startsWith('---'));
+  // skillMode 를 slash 로 고정했으면 바꾼 단계도 슬래시 호출 그대로 둔다
+  const s = prepared({ plan: one(), config: { skillMode: 'slash', model: { commit: 'sonnet' } } });
+  const fixed = s.orch('run');
+  assert.equal(fixed.code, 0, fixed.out);
+  assert.match(fixed.out, /스킬 호출 방식 slash {2}구현 스킬/);
+  assert.deepEqual(flags(s.calls().find((c) => c.prompt === '/am:commit task T01 t01-a')), ['sonnet', 'medium']);
+  // 객체가 아닌 값(문자열 하나)은 조용히 기본값으로 돌리지 않고, 세션을 띄우기 전에 알린다
+  s.setConfig({ effort: 'low' });
+  const bad = s.orch('run');
+  assert.equal(bad.code, 2, bad.out);
+  assert.match(bad.out, /config\.json 의 "effort" 값은 단계별 값을 담은 객체여야 합니다/);
 });
 
 test('안전장치: 계획 단계가 다른 파일을 건드리면 멈추고, 판정을 못 읽으면 커밋하지 않는다', () => {
@@ -919,6 +995,8 @@ test('doctor 는 설정 파일이 없으면 만들고, am 플러그인을 곁에
   let out = doctor(ORCH, a.repo);
   assert.match(out, /설정 파일을 만들었습니다: \.orchestrator\/config\.json/);
   assert.ok(existsSync(path.join(a.repo, '.orchestrator', 'config.json')));
+  const made = JSON.parse(readFileSync(path.join(a.repo, '.orchestrator', 'config.json'), 'utf8'));
+  assert.deepEqual([made.model, made.effort], [{}, {}], '모델과 effort 는 비워 둔다: 적지 않은 단계는 스크립트의 단계별 기본값으로 돈다');
   assert.equal(a.g('status', '--porcelain').trim(), '', '.orchestrator 는 git 에 잡히지 않는다');
   if (!process.env.AM_PLUGIN_ROOT) assert.ok(out.includes(`am ${amVersion} 플러그인 폴더: ${path.resolve(here, '..', 'plugin')}`), out);
   // 2) 같은 마켓플레이스에서 설치된 배치: <캐시>/<마켓>/am-orchestrator/<버전>/scripts 와 <캐시>/<마켓>/am/<버전>

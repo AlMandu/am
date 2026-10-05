@@ -50,7 +50,8 @@ export function defaults() {
     taskLimits: { maxFiles: 8, maxPlanLines: 150 },
     requiredGateCommands: [], // am-gate.json 의 명령 이름. "blocking": false 라 커밋 훅에서는 돌지 않지만 오케스트레이터의 게이트에서는 통과해야 하는 것(느린 테스트 등)
     volatilePaths: [], // 빌드 도구가 빌드할 때마다 다시 쓰는 추적 파일(경로나 glob). 게이트가 같은 내용을 다시 만들어 내면 커밋하지 않고 되돌린다
-    model: {}, // { default, split, plan, implement, check, commit } → --model. fix 는 implement, answer 는 plan 의 값을 물려받는다
+    model: {}, // { default, split, plan, implement, check, commit } → --model. fix 는 implement, answer 는 plan 의 값을 물려받는다. 적지 않은 단계는 STAGE_DEFAULTS
+    effort: {}, // model 과 같은 키 → --effort
     timeoutMin: { probe: 5, split: 40, plan: 25, answer: 25, implement: 90, fix: 60, check: 45, commit: 25, gate: 30 },
     extraArgs: {}, // { all: [...], implement: [...] } 단계별로 claude 에 덧붙일 플래그
     permissions: {
@@ -67,6 +68,17 @@ export function defaults() {
 
 // 권한 묶음을 같이 쓰는 단계
 const PROFILE = { probe: 'plan', answer: 'plan', fix: 'implement' };
+
+// 설정에 적은 값이 없을 때 단계마다 넘기는 모델과 effort. 설정의 default 보다 뒤라서 defaults() 에 넣지 않는다.
+// plan·implement·check·commit 은 그 단계가 부르는 am 스킬 머리말의 값과 같아야 한다(tests/orchestrator-skill.test.mjs).
+// 모델은 별칭으로 적는다: 사용자의 Claude Code 버전과 공급자에 맞는 모델로 풀린다.
+export const STAGE_DEFAULTS = {
+  split: { model: 'opus', effort: 'xhigh' },
+  plan: { model: 'opus', effort: 'high' },
+  implement: { model: 'opus', effort: 'high' },
+  check: { model: 'opus', effort: 'high' },
+  commit: { model: 'opus', effort: 'medium' },
+};
 
 // ------------------------------------------------------------------ 작은 도구
 
@@ -331,7 +343,10 @@ function ensureIgnored(repo, dir) {
 
 function loadConfig(repo) {
   const file = path.join(repo, ORCH_DIR, 'config.json');
-  return existsSync(file) ? merge(defaults(), readJson(file)) : defaults();
+  const cfg = existsSync(file) ? merge(defaults(), readJson(file)) : defaults();
+  // 문자열 하나로 적으면 단계 키를 찾지 못해 모든 단계가 조용히 기본값으로 돈다. 세션을 띄우기 전에 알린다.
+  for (const key of ['model', 'effort']) if (!isObj(cfg[key])) fail(`config.json 의 "${key}" 값은 단계별 값을 담은 객체여야 합니다. 예: "${key}": { "default": "${key === 'model' ? 'sonnet' : 'medium'}" }`);
+  return cfg;
 }
 
 /** 설치된 am 플러그인을 Claude Code 플러그인 캐시에서 찾는다(위치는 추정이므로 doctor 나 설정값이 우선). */
@@ -447,6 +462,35 @@ const totalCost = (ctx) => Object.values(ctx.costs).reduce((s, v) => s + v, 0);
 
 // ------------------------------------------------------------------ claude 호출
 
+/**
+ * 단계에 넘길 모델·effort 와 덧붙일 플래그. 단계에 적은 값 → 물려받는 단계의 값 → 설정의 default → STAGE_DEFAULTS 순.
+ * 이어 가는 단계(fix, answer)는 원래 단계(implement, plan)의 값과 플래그를 물려받는다.
+ * 이어 가는 세션이 처음 쓰던 모델과 effort 를 그대로 쓰는지는 재 보지 못했으므로, 이어 갈 때도 처음과 같은 값을 넘긴다.
+ */
+function stageFlags(cfg, phase) {
+  const base = PROFILE[phase];
+  const builtin = STAGE_DEFAULTS[base || phase];
+  const model = cfg.model[phase] ?? cfg.model[base] ?? cfg.model.default ?? builtin.model;
+  const effort = cfg.effort[phase] ?? cfg.effort[base] ?? cfg.effort.default ?? builtin.effort;
+  return { model, effort, extra: [...(cfg.extraArgs.all || []), ...(cfg.extraArgs[phase] ?? cfg.extraArgs[base] ?? [])] };
+}
+
+/** 플래그 목록에 적힌 `--이름 값` 또는 `--이름=값` 의 값(여러 번이면 마지막). 없으면 undefined. */
+function flagValue(args, name) {
+  let value;
+  args.forEach((a, i) => {
+    if (a === name) value = args[i + 1];
+    else if (a.startsWith(`${name}=`)) value = a.slice(name.length + 1);
+  });
+  return value;
+}
+
+/** 설정이 이 단계의 모델이나 effort 를 기본값과 다르게 정했는가(단계 키, default, extraArgs 의 --model·--effort). */
+export function stageOverridden(cfg, phase) {
+  const { model, effort, extra } = stageFlags(cfg, phase);
+  return (flagValue(extra, '--model') ?? model) !== STAGE_DEFAULTS[phase].model || (flagValue(extra, '--effort') ?? effort) !== STAGE_DEFAULTS[phase].effort;
+}
+
 export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json' }) {
   const perm = cfg.permissions[PROFILE[phase] || phase];
   const args = ['-p', prompt, '--output-format', format];
@@ -454,15 +498,14 @@ export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'j
   args.push('--permission-mode', perm.mode);
   if (perm.allow?.length) args.push('--allowedTools', perm.allow.join(','));
   if (perm.deny?.length) args.push('--disallowedTools', perm.deny.join(','));
-  // 이어 가는 단계(fix, answer)는 원래 단계(implement, plan)의 모델과 플래그를 물려받는다.
-  // 이어 가는 세션은 처음 쓰던 모델을 그대로 쓰므로, 따로 적은 값이 없으면 --model 을 넘기지 않는다.
-  const base = PROFILE[phase];
-  const model = cfg.model[phase] ?? cfg.model[base] ?? (resume ? undefined : cfg.model.default);
-  if (model) args.push('--model', model);
+  // extraArgs 에 같은 플래그가 있으면 그쪽이 정한다(두 번 넘기지 않는다).
+  const { model, effort, extra } = stageFlags(cfg, phase);
+  if (model && flagValue(extra, '--model') === undefined) args.push('--model', model);
+  if (effort && flagValue(extra, '--effort') === undefined) args.push('--effort', effort);
   if (cfg.pluginDir) args.push('--plugin-dir', cfg.pluginDir);
   if (resume) args.push('--resume', resume);
   else if (systemFile) args.push('--append-system-prompt-file', systemFile); // 이어 가는 세션은 처음의 시스템 프롬프트를 그대로 쓴다
-  args.push(...(cfg.extraArgs.all || []), ...(cfg.extraArgs[phase] ?? cfg.extraArgs[base] ?? []));
+  args.push(...extra);
   return args;
 }
 
@@ -514,9 +557,22 @@ async function step(ctx, name, opts, marker, values) {
   return { ...r, mark };
 }
 
+/**
+ * 이 단계의 스킬을 부르는 방식. 슬래시 호출에는 스킬 머리말의 model·effort 가 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지는 알 수 없다.
+ * 그래서 설정이 단계의 값을 바꿨으면 머리말을 떼고 넘기는 inline 으로 부른다. skillMode 를 slash 로 고정했으면 그대로 둔다.
+ */
+function callMode(ctx, phase, skill) {
+  return ctx.mode === 'slash' && ctx.cfg.skillMode === 'auto' && stageOverridden(ctx.cfg, phase) && hasSkill(ctx.pluginRoot, skill) ? 'inline' : ctx.mode;
+}
+/** 사람에게 보여 줄 스킬 호출 방식. 설정 때문에 inline 으로 부르는 단계가 있으면 함께 적는다. */
+function modeLabel(ctx) {
+  const inline = ['plan', 'implement', 'check', 'commit'].filter((p) => callMode(ctx, p, p === 'implement' ? implementSkill(ctx) : p) !== ctx.mode);
+  return inline.length ? `${ctx.mode}(${inline.join('·')} 는 설정이 모델·effort 를 바꿔 inline)` : ctx.mode;
+}
+
 /** am 스킬을 부르는 프롬프트. slash 모드는 `/am:plan ...`, inline 모드는 SKILL.md 를 채워 파일로 넘긴다. */
-function skillPrompt(ctx, skill, args, dir) {
-  if (ctx.mode === 'slash') return `/am:${skill}${args ? ` ${args}` : ''}`;
+function skillPrompt(ctx, skill, args, dir, phase = skill) {
+  if (callMode(ctx, phase, skill) === 'slash') return `/am:${skill}${args ? ` ${args}` : ''}`;
   const src = path.join(ctx.pluginRoot, 'skills', skill, 'SKILL.md');
   const body = readText(src)
     .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '')
@@ -1308,7 +1364,7 @@ async function runTask(ctx, t) {
   if (s.status === 'planned') {
     begin('implement');
     const again = bump('implement');
-    const r = noteDenied('implement', await step(ctx, 'implement', { dir, system: SYSTEM.implement(ctx, t, again), prompt: skillPrompt(ctx, implementSkill(ctx), t.slug, dir) }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
+    const r = noteDenied('implement', await step(ctx, 'implement', { dir, system: SYSTEM.implement(ctx, t, again), prompt: skillPrompt(ctx, implementSkill(ctx), t.slug, dir, 'implement') }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
     s.sessions.implement = r.sessionId;
     if (r.mark !== 'DONE') {
       writeText(path.join(dir, 'blocked.md'), r.text);
@@ -1515,6 +1571,7 @@ function ensureConfig(repo) {
       requiredGateCommands: [],
       volatilePaths: [],
       model: {},
+      effort: {},
       extraArgs: {},
     });
   }
@@ -1941,7 +1998,7 @@ function cmdDone(repo, id, opt) {
 
 function dryRun(ctx) {
   const par = parallelOf(ctx);
-  say(`실행 ${ctx.runId}: 스킬 호출 방식 ${ctx.mode}, 동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}\n\n순서 (같은 회차의 작업은 함께 돎)`);
+  say(`실행 ${ctx.runId}: 스킬 호출 방식 ${modeLabel(ctx)}, 동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}\n\n순서 (같은 회차의 작업은 함께 돎)`);
   const state = structuredClone(ctx.state);
   const order = [];
   for (let round = 1; ; round += 1) {
@@ -1998,7 +2055,7 @@ async function cmdRun(repo, opt) {
     writeReport(ctx);
   };
   const par = opt.only ? { max: 1, reason: '' } : parallelOf(ctx);
-  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${ctx.mode}  구현 스킬 am:${implementSkill(ctx)}  동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}`);
+  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${modeLabel(ctx)}  구현 스킬 am:${implementSkill(ctx)}  동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}`);
   if (par.reason) say(`  하나씩 진행하는 이유: ${par.reason}`);
   const limit = Number(opt['max-tasks']) || Infinity;
   const active = new Map(); // 돌고 있는 작업 ID → 끝나면 { t, result, error } 를 내는 약속(reject 하지 않음)

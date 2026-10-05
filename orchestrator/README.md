@@ -37,6 +37,7 @@
 - 화면·범위 질문은 `am:auto` 와 같은 규칙으로 추천안을 적용하고 "(자동 결정)"으로 남깁니다. 끝나면 세션이 "대신 정한 것"으로 모아 알려 줍니다.
 - push 와 merge 는 하지 않습니다. 실행은 `orch/<실행 ID>` 브랜치에 커밋만 쌓습니다.
 - 세션을 닫았거나 사용량 한도로 멈췄으면 인자 없이 다시 실행합니다. 끊긴 단계부터 이어 갑니다.
+- 스킬을 실행한 세션은 그 차례 동안 `opus`, effort `high` 로 돕니다. 오케스트레이터가 띄우는 세션의 값은 아래 "모델과 effort" 참고.
 - 늘 드는 토큰은 약 54, 스킬 호출 한 번은 약 2.3k 입니다(`claude --plugin-dir orchestrator plugin details am-orchestrator` 기준).
 
 ## 흐름
@@ -161,12 +162,34 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 | `taskLimits` | 파일 8, 계획 150줄 | 분할·계획 세션에 주는 크기 기준 |
 | `requiredGateCommands` | 없음 | `am-gate.json` 의 명령 이름. `"blocking": false` 라 커밋 훅에서는 돌지 않지만 오케스트레이터의 게이트에서는 통과해야 하는 것. 아래 "느린 검사" 참고 |
 | `volatilePaths` | 없음 | 빌드 도구가 빌드할 때마다 다시 쓰는 추적 파일(경로나 glob). 아래 "빌드가 다시 쓰는 파일" 참고 |
-| `model` | 없음 | 단계별 모델(`split`, `plan`, `implement`, `check`, `commit`, `default`). 예: `{ "default": "sonnet", "implement": "opus" }`. 수정(`fix`)은 `implement`, 결정 답변(`answer`)은 `plan` 의 값을 물려받음 |
+| `model` | 단계별(아래 "모델과 effort") | 단계별 모델(`split`, `plan`, `implement`, `check`, `commit`, `default`). 예: `{ "default": "sonnet", "implement": "opus" }`. 수정(`fix`)은 `implement`, 결정 답변(`answer`)은 `plan` 의 값을 물려받음 |
+| `effort` | 단계별(아래 "모델과 effort") | 단계별 effort. 키와 물려받는 방식은 `model` 과 같음. 예: `{ "default": "medium", "implement": "high" }` |
 | `timeoutMin` | 단계별 | 단계별 제한 시간(분) |
 | `permissions` | 단계별 | 단계별 `--permission-mode`, 허용·거부 규칙 |
-| `extraArgs` | 없음 | 단계별로 덧붙일 플래그. 예: `{ "commit": ["--effort", "low"] }`. `all` 은 모든 단계에 붙고, `fix`·`answer` 는 `model` 과 같은 방식으로 물려받음 |
+| `extraArgs` | 없음 | 단계별로 덧붙일 플래그. 예: `{ "implement": ["--max-budget-usd", "20"] }`. `all` 은 모든 단계에 붙고, `fix`·`answer` 는 `model` 과 같은 방식으로 물려받음 |
 
 단계별 기본 권한: 분할과 계획은 읽기와 `.orchestrator/`·`.am/` 쓰기만(규칙은 저장소 루트 기준이라 세션이 하위 폴더로 `cd` 해도 유효), 구현과 점검은 파일 수정과 셸 명령 허용(커밋·push·reset·checkout·브랜치 전환과 변경을 숨기는 stash 는 거부. `git stash list` 와 `git restore` 는 됨), 커밋은 `git add`·`git commit`·`git restore` 만 허용합니다. 질문 도구는 모든 단계에서 뺍니다.
+
+## 모델과 effort
+
+오케스트레이터가 띄우는 세션에는 단계마다 `--model` 과 `--effort` 를 넘깁니다. 설정에 아무것도 적지 않으면 아래 값으로 돕니다.
+
+| 단계 | 모델 | effort |
+|---|---|---|
+| 분할(`split`) | `opus` | `xhigh` |
+| 계획(`plan`), 결정 답변(`answer`), `doctor` 의 시험 호출 | `opus` | `high` |
+| 구현(`implement`), 수정(`fix`) | `opus` | `high` |
+| 점검(`check`) | `opus` | `high` |
+| 커밋(`commit`) | `opus` | `medium` |
+
+- 계획·구현·점검·커밋의 값은 그 단계가 부르는 am 스킬에 정해 둔 값과 같습니다(테스트가 지킴). 분할은 한 세션이 모든 작업을 정하고 뒤에 형식 검사만 있어 가장 높게 두었습니다.
+- 바꾸려면 `.orchestrator/config.json` 의 `model`, `effort` 에 적습니다. 정하는 순서는 단계에 적은 값 → 물려받는 단계의 값(`fix` 는 `implement`, `answer` 는 `plan`) → `default` → 위 표입니다. 예: `{ "model": { "default": "sonnet", "implement": "opus" }, "effort": { "commit": "low" } }`. 둘 다 객체로 적어야 하고, `"model": "sonnet"` 처럼 문자열 하나로 적으면 세션을 띄우기 전에 멈추고 알려 줍니다.
+- 이어 가는 세션(`fix`, `answer`, 표시 줄을 되묻는 호출)에도 처음과 같은 `--model`·`--effort` 를 넘깁니다. 실행 도중 설정을 고치면 그다음 호출부터(이어 가는 호출 포함) 고친 값이 쓰입니다.
+- 그 단계의 `extraArgs` 에 `--model` 이나 `--effort` 가 있으면 그 값만 넘깁니다. effort 를 `extraArgs` 로 적어 둔 예전 설정은 그대로 동작합니다.
+- 설정이 어떤 단계의 값을 위 표와 다르게 정하면 그 단계의 스킬만 inline 으로 부릅니다(SKILL.md 본문을 머리말 없이 넘김). 슬래시로 부르면 am 스킬 머리말의 값이 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지 Claude Code 문서에 없기 때문입니다. 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계가 나옵니다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않으므로, 그때는 설정한 값 대신 스킬 머리말의 값이 쓰일 수 있습니다.
+- 스킬을 실행한 세션(`am-orchestrator:run`)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다.
+- 모든 단계가 Opus 라 동시에 3개를 돌리면 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나 `parallel` 을 낮춥니다. 분할의 `xhigh` 는 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
+- am 과 한쪽만 업데이트하면 위 표와 설치된 am 스킬의 값이 다를 수 있습니다. 함께 업데이트하세요. 스킬에 값이 없는 예전 am(0.1.9 이하)에서는 위 표대로 넘깁니다.
 
 ## 동시 진행
 
@@ -260,6 +283,7 @@ am 스킬 본문은 그대로 쓰고, 세션마다 덧붙이는 지시문으로 
 
 - `am-orchestrator:run` 스킬을 실제 세션에서 돌려 보지 못했습니다. 세션이 지시대로 백그라운드 실행을 기다리고 `status --json` 을 따라가는지는 작은 설계 문서로 먼저 확인해야 합니다.
 - 마지막 두 번의 실제 실행 뒤에 넣은 변경(구현을 `am:do` 로 호출, 커밋 훅 거부 시 자동 수정, 빌드 산출물 되돌리기, `(자동 결정)` 규칙, 잠금)은 실제 모델 호출로 돌려 보지 못했습니다.
+- am 스킬 머리말의 `model`·`effort` 가 `claude -p` 의 슬래시 호출에서도 적용되는지, `--model`·`--effort` 플래그와 겹칠 때 어느 쪽이 쓰이는지는 Claude Code 문서에 없고 실제 모델 호출로 재 보지 못했습니다. 그래서 기본값은 양쪽을 같게 두었고, 설정으로 바꾼 단계는 inline 으로 불러 플래그만 남게 했습니다. 이어 가는 세션(`--resume`)이 처음 쓰던 모델을 그대로 쓰는지도 재 보지 못해, 이어 갈 때마다 같은 `--model` 을 다시 넘깁니다.
 - Windows 에서 실행해 보지 못했습니다. `claude` 가 `.exe` 면 직접, `.cmd` 면 cmd.exe 를 거쳐 실행하도록 했고 따옴표 처리만 단위 테스트했습니다.
 - 권한 규칙에 걸린 명령은 실행 로그에 "권한 거부 N건"으로 찍히고, 어떤 명령이었는지는 보고서의 "참고"와 `NN-<단계>.out.json` 의 `permission_denials` 에 남습니다. 규칙이 부족하면 여기서 드러납니다.
 

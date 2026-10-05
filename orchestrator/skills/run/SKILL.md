@@ -3,6 +3,8 @@ name: run
 description: "큰 설계 문서를 작은 작업으로 나누고, 작업마다 am 의 계획 → 구현 → 점검 → 커밋을 별도 세션으로 끝까지 돌립니다. 준비·분할·실행·재개는 이 세션이 알아서 하고, 사용자만 답할 수 있는 것이 생겼을 때만 멈추고 묻습니다. 인자를 비우면 진행 중인 실행을 이어 갑니다. Claude Code 전용이고 am 플러그인이 함께 설치돼 있어야 합니다."
 argument-hint: "<설계 문서 경로 | 비우면 진행 중인 실행을 이어 감>"
 disable-model-invocation: true
+model: opus
+effort: high
 ---
 
 # am-orchestrator:run

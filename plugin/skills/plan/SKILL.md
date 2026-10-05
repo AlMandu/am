@@ -3,6 +3,8 @@ name: plan
 description: "큰 변경을 시작하기 전에 의도를 확인하고, 사용자만 정할 수 있는 것만 묻고, 짧은 계획 문서(.am/<slug>/plan.md)를 씁니다. 기존 slug 를 주면 그 계획을 다시 열어 질문·수정을 이어 갑니다(구현은 am:do). 작고 결과가 뻔한 수정에는 필요 없습니다."
 argument-hint: "<만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
+model: opus
+effort: high
 ---
 
 # am:plan

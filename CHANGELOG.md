@@ -1,5 +1,20 @@
 # Changelog
 
+## am-orchestrator 0.3.0 (2026-10-05)
+
+- 띄우는 세션마다 모델과 effort 를 정해서 넘긴다. 설정하지 않아도 분할은 `opus`·`xhigh`, 계획·구현·점검은 `opus`·`high`, 커밋은 `opus`·`medium` 으로 돈다. 지금까지는 아무것도 넘기지 않아 사용자의 기본 모델과 effort 로 돌았다. Sonnet 으로 돌리던 경우 비용이 오르므로, 예전처럼 두려면 `.orchestrator/config.json` 에 `"model": { "default": "sonnet" }` 을 적는다.
+- 설정에 `effort` 키가 생겼다(`model` 과 같은 모양: `default`, `split`, `plan`, `implement`, `check`, `commit`). 정하는 순서는 단계에 적은 값 → 물려받는 단계의 값 → `default` → 위 기본값이다. `extraArgs` 에 `--effort` 를 적어 둔 기존 설정은 그대로 동작한다(그 값만 넘김). `model` 이나 `effort` 를 객체가 아닌 값으로 적으면(예: `"model": "sonnet"`) 세션을 띄우기 전에 멈추고 알린다.
+- 이어 가는 세션(수정, 결정 답변, 표시 줄 되묻기)에도 처음과 같은 `--model`·`--effort` 를 넘긴다. 지금까지는 그 단계에 모델을 따로 적었을 때만 넘겼다.
+- 설정이 어떤 단계의 모델이나 effort 를 기본값과 다르게 정하면 그 단계의 스킬만 inline 으로 부른다. am 0.1.10 부터 스킬에 모델과 effort 가 적혀 있어, 슬래시 호출에서는 넘긴 값 대신 스킬의 값이 쓰일 수 있기 때문이다. 실행 첫 줄의 "스킬 호출 방식"에 바뀐 단계가 나온다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않는다.
+- `am-orchestrator:run` 을 실행한 세션은 그 차례 동안 `opus`·`high` 로 돈다.
+
+## 0.1.10 (2026-10-05)
+
+- 스킬마다 모델과 effort 기본값을 정했다(Claude Code 전용). 설치만 하면 적용되고 따로 설정할 것은 없다. `am:plan`·`am:do`·`am:check`·`am:auto` 는 `opus`·`high`, `am:commit` 은 `opus`·`medium`.
+- 스킬을 부른 그 차례에만 적용되고, 그 차례에는 세션에서 고른 모델보다 우선한다. 다음 입력부터는 세션의 모델과 effort 로 돌아간다. Sonnet 세션에서 쓰던 경우 스킬을 부른 차례의 비용이 오른다.
+- 모델은 별칭(`opus`)이라 쓰는 Claude Code 버전과 공급자의 Opus 로 풀린다. 환경 변수 `ANTHROPIC_DEFAULT_OPUS_MODEL` 로 다른 모델에 연결할 수 있고, effort 는 `CLAUDE_CODE_EFFORT_LEVEL` 이 우선한다.
+- 스킬의 동작과 2차 의견은 그대로다. Codex 는 이 값을 쓰지 않는다. 훅은 바뀌지 않아 Codex 훅 재신뢰는 필요 없다.
+
 ## am-orchestrator 0.2.0 (2026-10-05)
 
 - 작업을 무조건 하나씩 돌리지 않는다. 먼저 끝나야 하는 작업이 모두 끝났고 예상 파일이 겹치지 않는 작업은 최대 3개까지 동시에 돌린다(`.orchestrator/config.json` 의 `parallel`, `1` 이면 예전처럼 하나씩). 메인 세션은 지금처럼 `run` 하나를 띄우고, 진행 줄 앞의 `[T03]` 같은 작업 ID 와 `status --json` 의 `running.tasks` 로 돌고 있는 작업과 단계를 모두 본다.

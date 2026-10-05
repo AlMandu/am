@@ -3,6 +3,8 @@ name: auto
 description: "요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. 화면·범위 질문은 추천안으로 정해 마지막 답에서 결론 바로 다음에 알리고, 되돌리기 어려운 일에서만 멈춥니다. 큰 작업은 am-orchestrator 가 설치돼 있으면 그쪽에 넘깁니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
+model: opus
+effort: high
 ---
 
 # am:auto

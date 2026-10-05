@@ -2,6 +2,8 @@
 name: commit
 description: "이번 작업의 변경만 논리 단위로 커밋합니다(커밋 게이트 통과 후). 사용자가 커밋·저장·마무리를 요청하거나 am:commit 을 실행할 때 씁니다. 인자 맨 앞에 push 를 붙이면 커밋 뒤 push 까지 하고, 그 밖에는 push 하지 않습니다."
 argument-hint: "[push] [메모]"
+model: opus
+effort: medium
 ---
 
 # am:commit

@@ -37,6 +37,8 @@ test('the run skill follows the am skill rules: same common block, size limit, u
   assert.match(SKILL, /^---\nname: run\n/);
   assert.match(SKILL, /\ndescription: "[^"]{40,}"\n/);
   assert.match(SKILL, /\ndisable-model-invocation: true\n/);
+  // The model and effort of the session that drives the run. A misspelled key is ignored without an error.
+  assert.match(SKILL, /\nmodel: opus\neffort: high\n---\n/);
   assert.match(read('orchestrator', 'skills', 'run', 'agents', 'openai.yaml'), /allow_implicit_invocation: false/);
   assert.ok(!/(^|[^\w.])\/am[:-]/m.test(SKILL.replace(/<!-- am:common:start -->[\s\S]*?<!-- am:common:end -->/, '')), 'refer to skills by name, not with a slash prefix');
 });
@@ -80,6 +82,14 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(gate, /node gate\.mjs --run \[--json\] \[--cwd <dir>\]/);
   for (const field of ['status', 'reason', 'commands', 'durationMs', 'blocking', 'exit', 'timedOut']) assert.match(gate, new RegExp(`\\b${field}\\b`), field);
   assert.match(SCRIPT, /'--run', '--json', '--cwd'/);
+  // The model and effort of each stage: the script passes them as flags and the skill that stage runs names the same values,
+  // so a slash call and an inline call (frontmatter stripped) run alike whichever of the two Claude Code prefers.
+  for (const [stage, skill] of Object.entries({ plan: 'plan', implement: 'do', check: 'check', commit: 'commit' })) {
+    const row = new RegExp(`\\n  ${stage}: \\{ model: '([^']+)', effort: '([^']+)' \\},`).exec(SCRIPT);
+    assert.ok(row, `STAGE_DEFAULTS.${stage}`);
+    assert.match(amSkill(skill), new RegExp(`\\nmodel: ${row[1]}\\neffort: ${row[2]}\\n---\\n`), `${stage} and am:${skill}`);
+  }
+  assert.match(SCRIPT, /\n  split: \{ model: 'opus', effort: 'xhigh' \},/);
 });
 
 test('am:auto hands a large task to the run skill only through what is pinned here', () => {
