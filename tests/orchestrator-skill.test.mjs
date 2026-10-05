@@ -90,6 +90,17 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
     assert.match(amSkill(skill), new RegExp(`\\nmodel: ${row[1]}\\neffort: ${row[2]}\\n---\\n`), `${stage} and am:${skill}`);
   }
   assert.match(SCRIPT, /\n  split: \{ model: 'opus', effort: 'xhigh' \},/);
+  // The second opinion through Codex: plan sessions may run exactly this am script, which the common rules call by this path.
+  assert.ok(existsSync(path.join(REPO, 'plugin', 'scripts', 'codex-opinion.mjs')));
+  assert.ok(amSkill('plan').includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>`'));
+  assert.match(SCRIPT, /path\.join\(amRoot, 'scripts', 'codex-opinion\.mjs'\)/);
+  assert.match(amSkill('plan'), /for at most 2 more rounds/);
+  // Stage sessions have a time limit, so they take one round less; a choice still split goes to the user.
+  assert.equal(SCRIPT.match(/with at most 1 more round after the reviewers' first answers in this session/g)?.length, 2, 'plan and implement');
+  assert.match(SCRIPT, /or a technical choice its two reviewers still split on\. For an open decision write the decision card in plan\.md under Decisions, marked OPEN/);
+  assert.match(SCRIPT, /still split on it after that round \(write its decision card under Decisions in plan\.md, marked OPEN\)/);
+  assert.match(SKILL, /holds an OPEN card for a technical choice its two reviewers split on, ask that card, replace the card in place with the answer marked as the user's decision, and run `retry <task> --from implement`/);
+  assert.match(SKILL, /edit nothing but `config\.json`, in step 3 `tasks\.json`, and in step 4 the plan\.md of a task blocked on a split choice/);
 });
 
 test('am:auto hands a large task to the run skill only through what is pinned here', () => {

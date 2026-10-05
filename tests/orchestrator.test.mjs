@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { applySplit, claudeArgs, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, claudeArgs, codexOpinionRules, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ORCH = path.join(here, '..', 'orchestrator', 'scripts', 'orchestrator.mjs');
@@ -218,6 +218,28 @@ test('claudeArgs: 단계별 권한과 이어 가기', () => {
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git restore \*\)/, '커밋 세션은 빌드 산출물을 되돌릴 수 있다');
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git commit \*\)/);
   assert.match(commit[commit.indexOf('--disallowedTools') + 1], /Bash\(git push \*\)/);
+});
+
+test('claudeArgs: 계획 묶음 세션은 am 의 codex-opinion.mjs 하나만 더 실행할 수 있다', () => {
+  const cfg = defaults();
+  const am = path.join(os.tmpdir(), 'am plugin');
+  const script = `${am.split(path.sep).join('/')}/scripts/codex-opinion.mjs`;
+  for (const phase of ['plan', 'answer', 'probe']) {
+    const a = claudeArgs(cfg, phase, { prompt: 'x', amRoot: am });
+    const allow = a[a.indexOf('--allowedTools') + 1].split(',');
+    assert.ok(allow.includes(`Bash(node "${script}" *)`) && allow.includes(`Bash(node ${script} *)`), phase);
+    assert.ok(allow.includes(`Bash(node "${am}/scripts/codex-opinion.mjs" *)`), '세션이 적는 모양: 플러그인 경로 그대로 + /scripts/...');
+    assert.ok(!allow.some((r) => /codex exec|^Bash$|Bash\(node \*/.test(r)), 'codex 나 node 를 통째로 열지 않는다');
+  }
+  assert.deepEqual(codexOpinionRules(''), [], 'am 경로를 모르면 열지 않는다');
+  const without = claudeArgs(cfg, 'plan', { prompt: 'x' });
+  assert.ok(!without[without.indexOf('--allowedTools') + 1].includes('codex-opinion'));
+  for (const phase of ['split', 'commit']) {
+    const a = claudeArgs(cfg, phase, { prompt: 'x', amRoot: am });
+    assert.ok(!a.join(' ').includes('codex-opinion'), phase);
+  }
+  assert.equal(cfg.timeoutMin.plan, 75, '2차 의견 토론까지 들어가는 계획 세션의 시간');
+  assert.equal(cfg.timeoutMin.answer, 75);
 });
 
 test('claudeArgs: 설정에 적지 않은 단계는 기본 모델과 effort 로 돈다', () => {
@@ -686,7 +708,8 @@ test('am 0.1.4 이상: 구현은 am:do 로 부르고, 묻는 자리는 am:auto �
   const impl = sys('/am:do t01-a');
   assert.match(impl, /with the steps of the am:do skill[\s\S]*do not use the am:check skill/);
   assert.match(impl, /record it under Decisions in plan\.md with a one-line reason and the mark \(auto-decided\)[\s\S]*Done marks that do not match the files/);
-  assert.match(impl, /Stop only when a step's Check fails and you cannot fix it, or when the next action would delete user data/);
+  assert.match(impl, /Stop only when a step's Check fails and you cannot fix it, when the two reviewers of a technical choice still split on it after that round \(write its decision card under Decisions in plan\.md, marked OPEN\), or when the next action would delete user data/);
+  assert.match(impl, /A technical choice its two reviewers still split on is never auto-decided/);
   const plan = sys('/am:plan Plan task');
   assert.match(plan, /take your recommendation, record it under Decisions in plan\.md[\s\S]*\(자동 결정\) in a Korean plan[\s\S]*Leave a decision open only when the plan cannot avoid one of the following/);
   assert.match(sys('Split the design document'), /Do not ask about technical choices: the plan step of each task settles them/);

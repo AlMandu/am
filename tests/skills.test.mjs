@@ -1,7 +1,7 @@
 // Run: node --test tests/skills.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -69,4 +69,22 @@ test('the second-opinion agent stays pinned and read-only, and the common rules 
   assert.equal(fm.tools, 'Read, Grep, Glob');
   assert.match(fm.description, /^"[^"]{40,}"$/);
   assert.match(common(read('plan')), /am:second-opinion subagent/);
+});
+
+test('with Codex installed, the common rules have Codex answer the same brief and send a lasting split to the user', () => {
+  const block = common(read('plan'));
+  const script = path.resolve(ROOT, '..', 'scripts', 'codex-opinion.mjs');
+  assert.ok(existsSync(script), 'plugin/scripts/codex-opinion.mjs');
+  // The orchestrator allows exactly this command in its plan sessions (tests/orchestrator.test.mjs).
+  assert.ok(block.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>`'));
+  assert.match(block, /save the brief as a new file `opinion-<round>\.md` under `\.am\/`/, 'the script only sends a .md brief under .am/; brief.md is the orchestrator task brief');
+  assert.match(block, /with a 10-minute timeout/, 'the Bash tool stops a command after 2 minutes by default');
+  assert.match(block, /exit code 2 means Codex is not installed/);
+  assert.match(block, /for at most 2 more rounds: a new brief with the original brief's content for those choices plus both picks and reasons from the last round, labelled Claude and Codex/, 'fresh reviewers see the whole case each round');
+  assert.match(block, /still split after that goes to the user as a decision card/);
+  assert.match(block, /If one reviewer fails, in any round, the other's answer stands/);
+  assert.match(readFileSync(AGENT, 'utf8'), /another reviewer's pick and reasons/);
+  const auto = read('auto');
+  assert.match(auto, /\n- The two reviewers of a technical choice still split on it after their rounds \(rules above\)\.\n/);
+  assert.match(auto, /In the first five cases, ask with a decision card/);
 });

@@ -7,7 +7,7 @@ Claude Code 와 Codex CLI 에서 쓰는 가벼운 개발 워크플로 플러그�
 - `am:check`: 커밋 전에 빌드·테스트(게이트), 실행 확인, 계획 대비 검토를 한 번에 합니다.
 - `am:commit`: 이번 작업 파일만 논리 단위로 커밋합니다. 맨 앞에 `push` 를 붙였을 때만 push 까지 합니다.
 - `am:auto`: 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. 대신 정한 것은 마지막 답에서 알려 줍니다.
-- 2차 의견(`am:second-opinion`): 기술적 선택을 작업 세션이 자기 추천안으로 정하지 않습니다. 대화를 보지 못한 별도 서브에이전트(Opus 5.5, effort xhigh 고정)가 코드를 직접 읽고 고른 안을 적용합니다. Claude Code 에서만 동작합니다.
+- 2차 의견(`am:second-opinion`): 기술적 선택을 작업 세션이 자기 추천안으로 정하지 않습니다. 대화를 보지 못한 별도 서브에이전트(Opus 5.5, effort xhigh 고정)가 코드를 직접 읽고 고른 안을 적용합니다. PC 에 codex CLI 가 있으면 Codex 도 같은 선택을 따로 고르고, 둘이 갈리면 서로의 답을 보며 다시 고르게 해 끝까지 갈린 것만 사용자에게 묻습니다. Claude Code 에서만 동작합니다.
 - 커밋 게이트: 에이전트가 `git commit` 을 실행하기 직전에 프로젝트의 `am-gate.json` 명령을 돌리고, 실패하면 커밋을 막습니다.
 
 작은 수정(파일 몇 개, 결과가 분명한 일)은 스킬 없이 그냥 요청하면 됩니다. 커밋 게이트는 그때도 동작합니다.
@@ -29,6 +29,7 @@ Claude Code 와 Codex CLI 에서 쓰는 가벼운 개발 워크플로 플러그�
 - Node.js 18 이상(`node` 가 PATH 에 있어야 게이트 훅이 돎)
 - Claude Code 또는 Codex CLI(0.160 에서 확인)
 - 2차 의견은 Claude Code 2.1.280 이상(Opus 5.5 를 쓸 수 있는 버전)에서만 동작합니다. Codex 에는 이 서브에이전트가 없습니다.
+- 선택: codex CLI(0.160 에서 확인, 로그인된 상태)가 있으면 Claude Code 의 2차 의견에 Codex 가 함께 들어갑니다(아래 "Codex 와 함께 정하기").
 
 ## 설치
 
@@ -123,6 +124,18 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 - 고정이 풀리는 경우: 환경 변수 `CLAUDE_CODE_EFFORT_LEVEL` 은 frontmatter 의 effort 보다 우선하고, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 은 서브에이전트의 model 을 무시합니다. 조직이 모델이나 effort 상한을 제한해 두었으면 그 제한을 따릅니다.
 - 쓸 수 없을 때(Codex, 서브에이전트 실행 실패): 예전처럼 작업 세션이 정하고, 그 줄에 2차 의견 없이 정했다는 표시를 남깁니다.
 
+### Codex 와 함께 정하기
+
+Claude Code 에서 쓰고 PC 에 codex CLI 가 깔려 있으면(`codex` 명령이 PATH 에 있으면) 2차 의견이 둘이 됩니다. 따로 설정할 것은 없습니다.
+
+- 방식: 작업 세션이 결정 요약을 `.am/` 아래 파일로 쓰고, `plugin/scripts/codex-opinion.mjs` 로 Codex 를 한 번 돌린 뒤 같은 요약을 Claude 2차 의견에도 보냅니다. 두 쪽은 서로의 답을 모른 채 고릅니다. 두 호출은 차례로 돕니다.
+- 토론: 두 쪽이 다르게 고른 선택만, 원래 요약에 지난 라운드 두 쪽의 안과 이유를 붙여 두 쪽에 다시 묻습니다(매번 새로 띄우므로 전체 사정을 다시 넘김). 상대 이유는 주장으로 보고 코드로 확인하며, 놓친 사실이 있을 때만 바꾸게 합니다. 최대 2라운드 더 묻고(오케스트레이터 세션은 시간 제한 때문에 1라운드), 합의한 선택은 계획 문서의 "기본값 적용" 줄에 Codex 와 합의했다는 표시가 붙습니다.
+- 끝까지 갈리면: 그 선택만 두 쪽 안과 이유를 담은 결정 카드로 사용자에게 묻습니다. `am:auto` 와 오케스트레이터도 이때는 멈추고 묻습니다.
+- Codex 실행: 읽기 전용 샌드박스, 승인 요청 없음, effort `high` 고정, 모델은 사용자의 codex 설정 그대로입니다. 사용자의 MCP 서버와 실행 규칙(`.rules`)은 싣지 않고, 실행 기록도 남기지 않습니다(`--ephemeral`). 9분 안에 답이 없으면 끝냅니다. 스크립트는 `.am/` 안의 `.md` 요약 하나만 받고 다른 인자는 거부합니다.
+- codex 가 없으면 지금과 같습니다. 깔려 있지만 실패하면(로그인 안 됨, 오류, 시간 초과) 어느 라운드든 Claude 2차 의견만으로 정하고 그 줄에 표시합니다. 반대로 Claude 쪽이 실패하면 Codex 답으로 정합니다.
+- 비용과 시간: 기술 선택을 보낼 때마다 Codex 실행이 하나 더 들고(사용자의 Codex 사용량), 갈리면 양쪽이 다시 돕니다.
+- Codex 의 읽기 전용 샌드박스는 디스크의 파일을 읽을 수 있으므로, Codex 가 읽은 내용은 OpenAI 로 갑니다. Codex 안에서 am 을 쓸 때는 바뀌지 않습니다(Claude 2차 의견이 없음).
+
 ## 커밋 게이트 설정 (`am-gate.json`)
 
 저장소 루트에 둡니다. 없으면 게이트는 아무것도 하지 않고, `am:check` 와 `am:commit` 이 "게이트 미설정"을 알려 줍니다.
@@ -175,7 +188,7 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 ## 개발
 
 ```
-node --test tests/gate.test.mjs tests/skills.test.mjs
+node --test tests/gate.test.mjs tests/skills.test.mjs tests/codex-opinion.test.mjs
 claude plugin validate .
 claude plugin validate plugin
 claude --plugin-dir plugin plugin details am

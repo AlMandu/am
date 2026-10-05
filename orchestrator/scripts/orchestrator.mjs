@@ -52,7 +52,7 @@ export function defaults() {
     volatilePaths: [], // 빌드 도구가 빌드할 때마다 다시 쓰는 추적 파일(경로나 glob). 게이트가 같은 내용을 다시 만들어 내면 커밋하지 않고 되돌린다
     model: {}, // { default, split, plan, implement, check, commit } → --model. fix 는 implement, answer 는 plan 의 값을 물려받는다. 적지 않은 단계는 STAGE_DEFAULTS
     effort: {}, // model 과 같은 키 → --effort
-    timeoutMin: { probe: 5, split: 40, plan: 25, answer: 25, implement: 90, fix: 60, check: 45, commit: 25, gate: 30 },
+    timeoutMin: { probe: 5, split: 40, plan: 75, answer: 75, implement: 90, fix: 60, check: 45, commit: 25, gate: 30 },
     extraArgs: {}, // { all: [...], implement: [...] } 단계별로 claude 에 덧붙일 플래그
     permissions: {
       // `/경로` 는 세션을 시작한 폴더(저장소 루트) 기준, `경로` 는 그때그때의 현재 폴더 기준이다.
@@ -491,12 +491,26 @@ export function stageOverridden(cfg, phase) {
   return (flagValue(extra, '--model') ?? model) !== STAGE_DEFAULTS[phase].model || (flagValue(extra, '--effort') ?? effort) !== STAGE_DEFAULTS[phase].effort;
 }
 
-export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json' }) {
-  const perm = cfg.permissions[PROFILE[phase] || phase];
+/**
+ * 계획 묶음 세션이 2차 의견을 Codex 에도 물을 수 있게 여는 규칙. am 의 codex-opinion.mjs 하나만, 세션이 적을 수 있는 경로 모양마다 연다.
+ * 스크립트가 플래그를 고정하고 `.am/` 안의 요약만 보내므로 `codex exec` 를 직접 열지 않는다.
+ */
+export function codexOpinionRules(amRoot) {
+  if (!amRoot) return [];
+  // Windows: Claude Code fills in its own (backslash) plugin path before the skill's `/scripts/...`, inline mode writes slashes only.
+  const files = [...new Set([path.join(amRoot, 'scripts', 'codex-opinion.mjs'), `${amRoot}/scripts/codex-opinion.mjs`, `${slashes(amRoot)}/scripts/codex-opinion.mjs`])];
+  const rules = files.flatMap((f) => [`Bash(node "${f}" *)`, `Bash(node ${f} *)`]);
+  return WIN ? rules.flatMap((r) => [r, r.replace(/^Bash/, 'PowerShell')]) : rules;
+}
+
+export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json', amRoot = '' }) {
+  const profile = PROFILE[phase] || phase;
+  const perm = cfg.permissions[profile];
   const args = ['-p', prompt, '--output-format', format];
   if (format === 'stream-json') args.push('--verbose');
   args.push('--permission-mode', perm.mode);
-  if (perm.allow?.length) args.push('--allowedTools', perm.allow.join(','));
+  const allow = [...(perm.allow || []), ...(profile === 'plan' ? codexOpinionRules(amRoot) : [])];
+  if (allow.length) args.push('--allowedTools', allow.join(','));
   if (perm.deny?.length) args.push('--disallowedTools', perm.deny.join(','));
   // extraArgs 에 같은 플래그가 있으면 그쪽이 정한다(두 번 넘기지 않는다).
   const { model, effort, extra } = stageFlags(cfg, phase);
@@ -521,7 +535,7 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   }
   const [bin, ...pre] = ctx.cfg.claudeCommand;
   const started = Date.now();
-  const r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
+  const r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
   writeFileSync(`${base}.out.json`, r.stdout);
   if (r.stderr) writeFileSync(`${base}.err.log`, r.stderr);
   const parsed = parseResult(r.stdout);
@@ -730,10 +744,10 @@ This is task ${t.id} of a larger design. Its slug is ${t.slug}; use exactly this
 - Plan this task only. The rest of the design is other tasks' work; mention it under Risks only if this task cannot be verified without it.
 - Always write ${AM_DIR}/${t.slug}/plan.md, even when the change looks small. Skip the stop that offers to do a small change directly.
 - Do not implement in this session. Do not create or change any file outside ${AM_DIR}/${t.slug}/.
-- What this session can do: read anything in the repository; create or change files only under ${AM_DIR}/${t.slug}/ and only with the Write or Edit tool (the folder already exists, do not create it); run only read-only git commands (status, diff, log, ls-files). The permission rules refuse everything else, including writing files through Bash. A refusal is never a reason to leave the plan unsaved: save it with the Write tool at ${AM_DIR}/${t.slug}/plan.md.
-- Work from the repository root and do not cd into subdirectories: a command that combines cd with git is refused. To look around, use the Read, Grep and Glob tools rather than shell pipelines: read hook scripts (for example .githooks/pre-commit) and tool sources with the Read tool. Running project tools (node, make and the like) is refused in this session.
+- What this session can do: read anything in the repository; create or change files only under ${AM_DIR}/${t.slug}/ and only with the Write or Edit tool (the folder already exists, do not create it); run only read-only git commands (status, diff, log, ls-files) and the Codex second-opinion command of the skill's rules, with its brief saved as ${AM_DIR}/${t.slug}/opinion-<round>.md (never over brief.md). The permission rules refuse everything else, including writing files through Bash. A refusal is never a reason to leave the plan unsaved: save it with the Write tool at ${AM_DIR}/${t.slug}/plan.md.
+- Work from the repository root and do not cd into subdirectories: a command that combines cd with git is refused. To look around, use the Read, Grep and Glob tools rather than shell pipelines: read hook scripts (for example .githooks/pre-commit) and tool sources with the Read tool. Running project tools (node, make and the like) is refused in this session; that Codex second-opinion command is the only exception.
 - Commit rules: this task is committed on its own, the commit runs the repository's commit hooks, and the session that commits cannot edit files. Find out what the hooks and the project's rules (CLAUDE.md, AGENTS.md, contract documents such as a MODULE.md next to the code) require together with a code change, for example a contract or history line, a changelog entry, or line references that move, and make each of those a step of the plan with its own check, even when the brief's file list does not mention the file.
-- Decisions: the answers under "Decisions already made" in the brief are final. For any other question about what the user sees or what is in scope, take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says (through its second opinion where it has one); never wait for the user on them. Leave a decision open only when the plan cannot avoid one of the following and neither the brief nor the design document settles it: deleting user data or files that existed before this run, changing a saved-data format or migrating data, changing anything outside this repository, or an action that the user's or the project's instructions say needs confirmation. For an open decision write the decision card in plan.md under Decisions, marked OPEN, and repeat the card in your final reply.
+- Decisions: the answers under "Decisions already made" in the brief are final. For any other question about what the user sees or what is in scope, take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says (through its second opinion where it has one), with at most 1 more round after the reviewers' first answers in this session because the session has a time limit; never wait for the user on them, except a choice its two reviewers still split on after that round. Leave a decision open only when the plan cannot avoid one of the following and neither the brief nor the design document settles it: deleting user data or files that existed before this run, changing a saved-data format or migrating data, changing anything outside this repository, an action that the user's or the project's instructions say needs confirmation, or a technical choice its two reviewers still split on. For an open decision write the decision card in plan.md under Decisions, marked OPEN, and repeat the card in your final reply.
 - Too big: if a faithful plan needs more than ${ctx.cfg.taskLimits.maxPlanLines} lines, or clearly more than ${ctx.cfg.taskLimits.maxFiles} files, do not write plan.md. Write ${AM_DIR}/${t.slug}/split.json instead, with 2-5 items that can each be verified on their own while the repository keeps building after each one, text in the language of the brief:
   { "reason": "", "tasks": [ { "key": "kebab-case", "title": "", "goal": "", "files": [""], "acceptance": [""], "dependsOn": ["key of an earlier item"], "size": "S | M", "risk": [] } ] }
 - End your final reply with exactly one line: ORCH_STATUS: READY, ORCH_STATUS: NEEDS_DECISION or ORCH_STATUS: TOO_BIG`,
@@ -746,16 +760,17 @@ This is task ${t.id}, slug ${t.slug}. Implement ${AM_DIR}/${t.slug}/plan.md ${im
 - Stay inside this task. Do not start other parts of the design document.
 - Build side effects: when a build, a test run or an editor tool that you ran rewrites tracked files that are not part of this task (for example regenerated scenes or settings whose real content did not change), restore them before you finish with: git restore -- <paths>. git checkout and commands that stash changes are refused in this session; git restore is allowed.
 - Where the skill would ask the user, do this instead:
-  - A question about what the user sees or what is in scope, including an open decision left in the plan and a plan that turns out wrong in that way: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says.
+  - A question about what the user sees or what is in scope, including an open decision left in the plan and a plan that turns out wrong in that way: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, with at most 1 more round after the reviewers' first answers in this session because the session has a time limit. A technical choice its two reviewers still split on is never auto-decided: stop as below.
   - Done marks that do not match the files: redo a done step whose change is missing; run the Check of an unmarked step that already looks done and mark it if it passes. Log either under Change log.
 - If the plan turns out to be wrong in any other way, make the smallest fix and record what changed and why under Change log in plan.md.
-- Stop only when a step's Check fails and you cannot fix it, or when the next action would delete user data or files that existed before this run, change a saved-data format or migrate data, change anything outside this repository, or do something that the user's or the project's instructions say needs confirmation. Then leave the files as they are, record the reason and the open question in plan.md, and put the decision card in your final reply.${volatileNote(ctx, 'Changes that show up in them after a build are build output: restore them with git restore before you finish, unless the plan requires editing them.')}${again ? '\n- An earlier attempt at this task was interrupted or blocked. Uncommitted changes from it may be in the working tree: inspect them first and continue from there.' : ''}${redoNote(ctx, t)}
+- Stop only when a step's Check fails and you cannot fix it, when the two reviewers of a technical choice still split on it after that round (write its decision card under Decisions in plan.md, marked OPEN), or when the next action would delete user data or files that existed before this run, change a saved-data format or migrate data, change anything outside this repository, or do something that the user's or the project's instructions say needs confirmation. Then leave the files as they are, record the reason and the open question in plan.md, and put the decision card in your final reply.${volatileNote(ctx, 'Changes that show up in them after a build are build output: restore them with git restore before you finish, unless the plan requires editing them.')}${again ? '\n- An earlier attempt at this task was interrupted or blocked. Uncommitted changes from it may be in the working tree: inspect them first and continue from there.' : ''}${redoNote(ctx, t)}
 - End your final reply with exactly one line: ORCH_STATUS: DONE or ORCH_STATUS: BLOCKED`,
 
   check: (ctx, t) => `${UNATTENDED}
 
 This is task ${t.id}, slug ${t.slug}. Check this task's uncommitted changes against ${AM_DIR}/${t.slug}/plan.md.
 - Do not ask anything. Whatever only a person can verify goes into the human checklist in check.md and in your reply.
+- Do not settle or reopen technical choices in this session. Report a choice that needs settling or proves unworkable as a BLOCK finding; the implementing session settles it.
 - Verify by running, not by reading. Run the gate and the project's runtime checks and tests yourself in this session. What the implementing session recorded (logs, the Change log, an earlier check.md) is not evidence that something passes. If a check cannot be run here, say so in check.md and put it on the human checklist.
 - Build side effects: tracked files that only a build or tool rewrote (for example regenerated scenes or settings whose real content did not change), whether your own runs caused it or the plan's Change log says the implementing session left them, must stay out of the commit. Restore them before you finish with: git restore -- <paths>. git checkout and commands that stash changes are refused in this session; git restore is allowed.
 - Always write ${AM_DIR}/${t.slug}/check.md.
@@ -2014,7 +2029,7 @@ function dryRun(ctx) {
   for (const t of rest) say(`  ${t.id}  ${t.title}  → 지금은 못 함: ${openDecisions(ctx.plan, t).map((d) => `결정 ${d.id}`).join(', ') || STATUS_KO[ctx.state.tasks[t.id].status] || '의존 작업 대기'}`);
   const t = order[0];
   if (!t) return;
-  const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>` })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
+  const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>`, amRoot: ctx.pluginRoot })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
   say(`\n첫 작업 ${t.id} 에서 실행할 명령 (inline 방식이면 프롬프트가 SKILL.md 를 채운 파일을 가리킵니다)`);
   show('plan', `/am:plan Plan task ${t.id} described in ${AM_DIR}/${t.slug}/brief.md (slug ${t.slug})`);
   show('implement', `/am:${implementSkill(ctx)} ${t.slug}`);
