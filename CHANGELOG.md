@@ -1,5 +1,13 @@
 # Changelog
 
+## am-orchestrator 0.5.0 (2026-10-06)
+
+- 오케스트레이터가 띄우는 `claude` 세션을 이 PC 의 모든 실행·저장소를 합쳐 최대 3개까지만 함께 돌린다. 두 저장소에서 실행을 함께 돌려도 합계가 넘지 않고, 다른 실행이 자리를 다 쓰고 있으면 진행 줄에 기다린다고 알린 뒤 자리가 나면 이어 간다. 업데이트만 하면 적용되고 저장소 설정은 고치지 않아도 된다.
+- 바꾸려면 `/am-orchestrator:run sessions 2`(스크립트로는 `sessions 2`), 지금 값과 돌고 있는 세션은 `sessions`, 기본값으로는 `sessions default`. 값은 `<Claude 설정 폴더>/am-orchestrator/settings.json`(`CLAUDE_CONFIG_DIR`, 없으면 `~/.claude`)에 남아 업데이트해도 유지되고, 돌고 있는 실행에도 다음 세션부터 적용된다.
+- 저장소별 `parallel` 은 그대로이고, 한 실행 안에서는 `parallel` 과 이 제한 중 작은 수만큼 함께 돈다. 실행 첫 줄·`doctor`·보고서·`status --json` 의 `parallel` 에 반영되고, `status --json` 에 `sessions`(`max`, `inUse`, `shared`)가 생겼다.
+- 돌고 있는 세션마다 같은 폴더의 `sessions/` 에 기록을 남긴다. 오케스트레이터가 강제로 끝나 남은 기록은 5분 뒤 빈 자리로 본다. 그 폴더에 쓸 수 없으면(샌드박스 등) 한 번 알리고 다른 실행과 함께 세지 않은 채 진행한다. `doctor` 의 시험 호출과 게이트는 세지 않는다.
+- 터미널을 닫아도(SIGHUP) Ctrl+C 처럼 돌고 있던 세션을 끝내고 상태를 저장한다.
+
 ## am-orchestrator 0.4.1 (2026-10-06)
 
 - 토큰을 줄이려고 기본 effort 를 낮췄다. 구현(`implement`)·수정(`fix`)은 `high` → `medium`, 분할(`split`)은 `xhigh` → `high`, `am-orchestrator:run` 을 실행한 차례는 `high` → `medium`. 모델은 모두 `opus` 그대로이고, 계획·점검·커밋 단계는 바뀌지 않았다.

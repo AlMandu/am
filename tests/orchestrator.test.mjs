@@ -4,12 +4,12 @@
 // 다른 버전의 am 으로 돌려 보려면: AM_PLUGIN_ROOT=<그 am 의 plugin 폴더>
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { applySplit, claudeArgs, codexOpinionRules, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, STAGE_DEFAULTS, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, recordHeld, snapshot, STAGE_DEFAULTS, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ORCH = path.join(here, '..', 'orchestrator', 'scripts', 'orchestrator.mjs');
@@ -73,7 +73,9 @@ function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn 
   mkdirSync(path.join(repo, '.orchestrator'));
   writeFileSync(path.join(repo, '.orchestrator', '.gitignore'), '*\n');
   writeFileSync(path.join(repo, '.orchestrator', 'config.json'), JSON.stringify({ claudeCommand: [process.execPath, FAKE], amPluginRoot: PLUGIN, ...config }));
-  const env = { ...process.env, FAKE_SCENARIO: scenarioFile, FAKE_TASKS: files[0], FAKE_PLUGIN_ROOT: PLUGIN, AM_GATE: '' };
+  // 이 PC 의 동시 세션 제한과 돌고 있는 세션 기록은 Claude 설정 폴더 아래에 생긴다: 저장소마다 임시 폴더를 써 실제 홈 폴더와 다른 테스트를 건드리지 않는다
+  const home = path.join(aux, 'claude-config');
+  const env = { ...process.env, FAKE_SCENARIO: scenarioFile, FAKE_TASKS: files[0], FAKE_PLUGIN_ROOT: PLUGIN, AM_GATE: '', CLAUDE_CONFIG_DIR: home };
   const orch = (...args) => {
     const r = spawnSync(process.execPath, [ORCH, ...args, '--repo', repo], { encoding: 'utf8', env: { ...env, ...orch.env } });
     return { code: r.status, out: `${r.stdout}${r.stderr}` };
@@ -87,8 +89,18 @@ function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn 
     const file = path.join(repo, '.orchestrator', 'config.json');
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ...extra }));
   };
-  const start = (...args) => spawn(process.execPath, [ORCH, ...args, '--repo', repo], { env: { ...env, ...orch.env }, stdio: 'ignore' });
-  return { repo, g, orch, runDir, state, statusOf, calls, setConfig, start };
+  // 끝나기를 기다리지 않고 띄운다. 출력은 proc.out 에 모인다
+  const start = (...args) => {
+    const proc = spawn(process.execPath, [ORCH, ...args, '--repo', repo], { env: { ...env, ...orch.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    proc.out = '';
+    for (const s of [proc.stdout, proc.stderr]) s.setEncoding('utf8').on('data', (d) => (proc.out += d));
+    return proc;
+  };
+  const records = () => {
+    const dir = path.join(home, 'am-orchestrator', 'sessions');
+    return existsSync(dir) ? readdirSync(dir) : [];
+  };
+  return { repo, g, orch, runDir, state, statusOf, calls, setConfig, start, home, records };
 }
 
 function prepared(opts) {
@@ -170,6 +182,28 @@ test('동시 진행 판단: 예상 파일 겹침, 지금 시작할 작업, 동�
   assert.deepEqual([no.max, no.stale], [1, undefined]);
   assert.match(no.reason, /게이트 fail/);
   assert.equal(parallelism({ parallel: 'x' }, null, 'k').max, 1);
+  // 이 PC 의 동시 세션 제한: 그보다 많이 함께 돌리지 않는다
+  assert.deepEqual([parallelism({ parallel: 3 }, { worktree: { ok: true, key: 'k' } }, 'k', 2).max, parallelism({ parallel: 3 }, { worktree: { ok: true, key: 'k' } }, 'k', 2).sessions], [2, true]);
+  const one = parallelism({ parallel: 3 }, { worktree: { ok: true, key: 'k' } }, 'k', 1);
+  assert.equal(one.max, 1);
+  assert.match(one.reason, /동시에 돌릴 세션을 1개로 제한/);
+  assert.deepEqual(parallelism({ parallel: 2 }, { worktree: { ok: true, key: 'k' } }, 'k', 3), { max: 2, reason: '' }, '제한보다 적으면 그대로');
+  assert.equal(DEFAULT_MAX_SESSIONS, 3);
+});
+
+test('recordHeld: 같은 호스트의 죽은 pid 와 5분 넘게 새로 고치지 않은 기록은 빈 자리, 막 깨어났으면 기다려 준다', () => {
+  const now = 10 * 60000;
+  const alive = (pid) => pid === 1;
+  const o = { now, myHost: 'me', alive };
+  assert.equal(recordHeld({ host: 'me', pid: 1, mtimeMs: now - 1000 }, o), true);
+  assert.equal(recordHeld({ host: 'me', pid: 2, mtimeMs: now - 1000 }, o), false, '같은 호스트의 죽은 pid');
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 1000 }, o), true, '다른 호스트 이름의 pid 는 확인할 수 없어 새로 고친 시각만 본다');
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 6 * 60000 }, o), false, '5분 넘게 새로 고치지 않음');
+  assert.equal(recordHeld({ host: 'me', pid: 1, mtimeMs: now - 6 * 60000 }, o), false, 'pid 가 재사용됐어도 새로 고치지 않으면 빈 자리');
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 6 * 60000 }, { ...o, woke: true }), true, '잠자기에서 막 깨어났으면 주인이 새로 고칠 때까지 기다린다');
+  assert.equal(recordHeld({ host: 'me', pid: 2, mtimeMs: now }, { ...o, woke: true }), false, '죽은 pid 는 깨어난 직후에도 빈 자리');
+  assert.equal(recordHeld({ host: 'me', pid: 1, mtimeMs: now - 6 * 60000 }, { ...o, young: true }), true, '막 시작한 프로세스는 같은 호스트의 살아 있는 주인이 새로 고칠 때까지 기다린다');
+  assert.equal(recordHeld({ host: 'other', pid: 1, mtimeMs: now - 6 * 60000 }, { ...o, young: true }), false, '다른 호스트 이름은 확인할 수 없어 새로 고친 시각만 본다');
 });
 
 test('작은 도구들', () => {
@@ -978,10 +1012,12 @@ test('함께 도는 동안 status 는 작업마다 단계와 작업 공간을 �
   assert.deepEqual(st.running.tasks.map((x) => [x.task, x.stage]), [['T01', 'implement'], ['T03', 'implement']]);
   assert.ok(st.running.tasks.every((x) => /^\.orchestrator\/wt\//.test(x.workspace)));
   assert.deepEqual([st.running.task, st.running.stage], ['T01', 'implement'], '첫 작업은 예전 필드로도 보인다');
+  assert.deepEqual([st.sessions.inUse, r.records().length], [2, 2], '돌고 있는 세션마다 이 PC 의 자리 기록이 하나');
   const pids = ['t01-a', 't03-c'].map((slug) => Number(readFileSync(pidFile(slug), 'utf8')));
   const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
   proc.kill('SIGINT');
   assert.equal(await exited, 130);
+  assert.deepEqual(r.records(), [], 'Ctrl+C 로 끝나도 자리 기록을 지운다');
   const alive = (pid) => {
     try {
       process.kill(pid, 0);
@@ -1202,4 +1238,92 @@ test('시작 조건: 게이트 설정이 없거나 작업 트리가 더러우면
   const d = n.orch('doctor');
   assert.equal(d.code, 2);
   assert.match(d.out, /am-gate\.json 이 없습니다/);
+});
+
+// ------------------------------------------------------------------ 이 PC 전체의 동시 세션 수
+
+test('sessions: 이 PC 의 동시 세션 제한을 보고 바꾸며, 값은 Claude 설정 폴더 아래에 남는다', () => {
+  const r = makeRepo();
+  const file = path.join(r.home, 'am-orchestrator', 'settings.json');
+  let out = r.orch('sessions');
+  assert.equal(out.code, 0, out.out);
+  assert.match(out.out, /최대 3개 \(기본값\)/);
+  assert.ok(out.out.includes(`설정 파일: ${file}`), out.out);
+  assert.match(out.out, /지금 도는 세션 0개/);
+  out = r.orch('sessions', '2');
+  assert.equal(out.code, 0, out.out);
+  assert.match(out.out, /바꿨습니다: 최대 2개\.[\s\S]*최대 2개 \(직접 정함\)/);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { maxSessions: 2 });
+  assert.equal(statusJson(r).sessions.max, 2);
+  for (const bad of ['0', 'x', '1.5']) {
+    const b = r.orch('sessions', bad);
+    assert.equal(b.code, 2, bad);
+    assert.match(b.out, /사용법: sessions/);
+  }
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { maxSessions: 2 }, '잘못된 값은 저장하지 않는다');
+  writeFileSync(file, JSON.stringify({ maxSessions: 0 }));
+  assert.match(r.orch('sessions').out, /최대 3개 \(settings\.json 의 maxSessions 값이 잘못돼 기본값을 씀: 0\)/);
+  writeFileSync(file, '{ broken');
+  assert.match(r.orch('sessions').out, /최대 3개 \(settings\.json 을 읽지 못해 기본값을 씀\)/);
+  out = r.orch('sessions', 'default');
+  assert.equal(out.code, 0, out.out);
+  assert.match(out.out, /기본값\(3개\)으로 되돌렸습니다\.[\s\S]*최대 3개 \(기본값\)/);
+  // 설정 폴더에 쓸 수 없으면 이유와 함께 멈춘다
+  writeFileSync(path.join(r.home, 'not-a-folder'), '');
+  r.orch.env = { CLAUDE_CONFIG_DIR: path.join(r.home, 'not-a-folder') };
+  const blocked = r.orch('sessions', '2');
+  r.orch.env = {};
+  assert.equal(blocked.code, 2, blocked.out);
+  assert.match(blocked.out, /설정을 저장하지 못했습니다: .*CLAUDE_CONFIG_DIR/);
+});
+
+test('이 PC 의 세션 제한이 1이면 parallel 이 3이어도 하나씩 돌고, 세션 기록은 끝나면 지워진다', () => {
+  const r = makeRepo({ plan: PAR() });
+  assert.equal(r.orch('sessions', '1').code, 0);
+  const d = r.orch('doctor');
+  assert.equal(d.code, 0, d.out);
+  assert.match(d.out, /이 PC 의 동시 세션 제한 1개\(직접 정함, 모든 실행을 합쳐 셈\)/);
+  assert.match(d.out, /서로 무관한 작업을 최대 1개까지 동시에 진행합니다\(parallel 3, 이 PC 의 동시 세션 제한 1\)/);
+  assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
+  const st = statusJson(r);
+  assert.deepEqual([st.parallel.max, st.sessions.max, st.sessions.inUse, st.sessions.shared], [1, 1, 0, true]);
+  assert.match(st.parallel.reason, /동시에 돌릴 세션을 1개로 제한/);
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /동시 진행 하나씩\n  하나씩 진행하는 이유: 이 PC 에서 동시에 돌릴 세션을 1개로 제한했습니다/);
+  assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
+  assert.ok(r.calls().every((c) => c.cwd === realpathSync(r.repo)), '별도 작업 공간을 쓰지 않는다');
+  assert.ok(existsSync(path.join(r.home, 'am-orchestrator', 'sessions')), '기록은 테스트용 Claude 설정 폴더 아래에 생긴다');
+  assert.deepEqual(r.records(), [], '끝나면 기록이 남지 않는다');
+});
+
+test('다른 실행이 이 PC 의 세션 자리를 모두 쓰고 있으면 기다렸다가 이어 가고, 주인 없는 기록은 세지 않는다', async () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1 } }); // 하나씩 돌면 로그 머리표가 없어 기다림 줄이 작업 ID 를 직접 적는다
+  assert.equal(r.orch('sessions', '1').code, 0);
+  const dir = path.join(r.home, 'am-orchestrator', 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const host = os.hostname().replace(/[^\w.-]/g, '_') || 'host';
+  writeFileSync(path.join(dir, `${host}~${spawnSync(process.execPath, ['-e', '0']).pid}~1.json`), '{}'); // 끝난 프로세스의 기록
+  const old = path.join(dir, 'old-host~1~1.json');
+  writeFileSync(old, '{}');
+  const past = new Date(Date.now() - 10 * 60000);
+  utimesSync(old, past, past); // 10분 동안 새로 고치지 않은 기록(강제 종료된 다른 PC 이름의 실행)
+  assert.match(r.orch('sessions').out, /지금 도는 세션 0개/);
+  const other = path.join(dir, 'other-host~4242~1.json');
+  writeFileSync(other, JSON.stringify({ repo: '/elsewhere', phase: 'implement' })); // 다른 실행이 쥔 자리
+  assert.match(r.orch('sessions').out, /지금 도는 세션 1개\n  - \/elsewhere  implement/);
+  const proc = r.start('run');
+  const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
+  try {
+    for (let i = 0; i < 200 && !/자리가 날 때까지 기다립니다/.test(proc.out); i += 1) await sleep(50);
+    assert.match(proc.out, /\n {4}T01 plan: 이 PC 에서 오케스트레이터 세션 1개가 돌고 있어 자리가 날 때까지 기다립니다 \(최대 1개, 바꾸려면 `sessions <N>`\)/);
+    await sleep(1500);
+    assert.equal(r.calls().filter((c) => c.prompt.startsWith('/am:plan Plan task')).length, 0, '자리가 날 때까지 세션을 띄우지 않는다');
+    assert.equal(statusJson(r).next, 'wait');
+  } finally {
+    rmSync(other, { force: true }); // 실패해도 실행이 5분 기다리며 남지 않게
+  }
+  assert.equal(await exited, 0, proc.out);
+  assert.equal(r.statusOf().T01, 'done');
+  assert.deepEqual(r.records(), [], '주인 없는 기록도 정리된다');
 });

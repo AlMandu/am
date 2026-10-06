@@ -1,7 +1,7 @@
 ---
 name: run
-description: "큰 설계 문서를 작은 작업으로 나누고, 작업마다 am 의 계획 → 구현 → 점검 → 커밋을 별도 세션으로 끝까지 돌립니다. 준비·분할·실행·재개는 이 세션이 알아서 하고, 사용자만 답할 수 있는 것이 생겼을 때만 멈추고 묻습니다. 인자를 비우면 진행 중인 실행을 이어 갑니다. Claude Code 전용이고 am 플러그인이 함께 설치돼 있어야 합니다."
-argument-hint: "<설계 문서 경로 | 비우면 진행 중인 실행을 이어 감>"
+description: "큰 설계 문서를 작은 작업으로 나누고, 작업마다 am 의 계획 → 구현 → 점검 → 커밋을 별도 세션으로 끝까지 돌립니다. 준비·분할·실행·재개는 이 세션이 알아서 하고, 사용자만 답할 수 있는 것이 생겼을 때만 멈추고 묻습니다. 인자를 비우면 진행 중인 실행을 이어 가고, `sessions 2` 처럼 주면 이 PC 에서 동시에 돌릴 세션 수를 바꿉니다. Claude Code 전용이고 am 플러그인이 함께 설치돼 있어야 합니다."
+argument-hint: "<설계 문서 경로 | sessions [개수|default] | 비우면 진행 중인 실행을 이어 감>"
 disable-model-invocation: true
 model: opus
 effort: medium
@@ -37,7 +37,7 @@ Request: $ARGUMENTS
 <!-- am:common:end -->
 
 ## What you are driving
-The orchestrator is a Node script. It splits a design document into small tasks and, for each task, runs the am:plan, am:do, am:check and am:commit skills in separate `claude -p` sessions, with the project's gate between them, on a branch of its own, without pushing. Tasks that do not depend on each other and expect to touch different files run at the same time, up to `parallel` in the config (default 3): each one is implemented in its own git worktree under `.orchestrator/wt/` and combined into the run branch when it is committed. A task that runs alone uses the repository itself. Running this skill is the user's request for the whole run, including the commits. You drive it from start to finish and stop only to ask what only the user can answer.
+The orchestrator is a Node script. It splits a design document into small tasks and, for each task, runs the am:plan, am:do, am:check and am:commit skills in separate `claude -p` sessions, with the project's gate between them, on a branch of its own, without pushing. Tasks that do not depend on each other and expect to touch different files run at the same time, up to `parallel` in the config (default 3) and never more `claude` sessions than the limit for this whole PC, shared by every run in every repository (`sessions`, default 3; a run waits for a free place when other runs hold them all): each one is implemented in its own git worktree under `.orchestrator/wt/` and combined into the run branch when it is committed. A task that runs alone uses the repository itself. Running this skill is the user's request for the whole run, including the commits. You drive it from start to finish and stop only to ask what only the user can answer.
 
 Run it from the repository root: `node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrator.mjs" <command>`. If the placeholder was not replaced, the plugin root is the folder two levels above this SKILL.md.
 
@@ -51,16 +51,17 @@ Run it from the repository root: `node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrat
 | `run` | runs every task that can run, unrelated ones at the same time; resumes where it stopped |
 | `retry <task> --from plan\|implement\|check\|commit` | puts a blocked task back at that stage |
 | `done <task>` | marks a task the user finished by hand as done |
+| `sessions [<N>\|default]` | shows or sets how many `claude` sessions the orchestrator may run at once on this PC, across all runs; `default` goes back to the built-in value |
 
 Rules while driving:
-- `doctor`, `split`, `answer` and `run` start builds or model sessions and take minutes to hours. Start each one in the background, tell the user in one line that it is running, and go on when its completion notice arrives. Do not poll in a loop. Never start a command while another is running; the script refuses a second one.
+- `doctor`, `split`, `answer` and `run` start builds or model sessions and take minutes to hours. Start each one in the background, tell the user in one line that it is running, and go on when its completion notice arrives. Do not poll in a loop. Never start a command while another is running; the script refuses a second one. `sessions` is the exception: it may run at any time, and a new limit applies from the next session any run starts.
 - While `split` or `run` is running, other sessions are changing this repository and its worktrees under `.orchestrator/wt/`. Do not edit, stage, commit, stash or switch branches, and do not open the project in an editor that the gate builds with.
 - After every command read `status --json` and act on its `next` field. It is the only source of truth: under `.orchestrator/` edit nothing but `config.json`, in step 3 `tasks.json`, and in step 4 the plan.md of a task blocked on a split choice.
 - Never push or merge. Do not use the am skills yourself on these tasks; the script runs them.
 - Choices the run made for the user (marked "(auto-decided)" in the plans) are reported at the end, not asked.
 
 ## Steps
-1. Request. Empty: continue the run in progress from step 4; if `status --json` says `next` is `doctor` or `split`, there is none, so ask for the design document and stop. A path to an existing file: a new run with that document. Anything else: ask which document to use and stop.
+1. Request. Empty: continue the run in progress from step 4; if `status --json` says `next` is `doctor` or `split`, there is none, so ask for the design document and stop. A path to an existing file: a new run with that document. Exactly `sessions`, `sessions <N>` or `sessions default`: run that command, tell the user the limit it shows, and stop (if you are driving a run in this conversation, go back to step 4 instead). Anything else: ask which document to use and stop.
 2. Prepare. Run `doctor` and read its output. Remove what you can without deciding anything for the user, then run it again:
    - tracked files that it says the gate rewrites: add them to `volatilePaths` in `.orchestrator/config.json`;
    - a name in `requiredGateCommands` that is not in `am-gate.json`: correct the name;

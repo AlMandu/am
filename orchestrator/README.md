@@ -20,6 +20,7 @@
 ```
 /am-orchestrator:run docs/design.md     설계 문서 하나를 끝까지
 /am-orchestrator:run                    멈춘 실행을 이어서
+/am-orchestrator:run sessions 2         이 PC 에서 동시에 돌릴 세션 수를 2개로(sessions 만 주면 지금 값을 봄)
 ```
 
 스킬을 실행한 세션이 준비(`doctor`) → 분할(`split`) → 실행(`run`)을 알아서 이어 가고, 아래 경우에만 멈추고 결정 카드로 묻습니다.
@@ -33,6 +34,7 @@
 
 - 실행은 몇 시간이 걸릴 수 있습니다. 세션은 명령을 백그라운드로 띄우고 끝났다는 알림을 기다립니다. 그동안 저장소를 직접 고치거나 게이트가 쓰는 에디터를 열면 안 됩니다.
 - 서로 무관한 작업(의존 관계가 없고 예상 파일이 겹치지 않음)은 최대 3개까지 동시에 돕니다. 진행 메시지와 `status` 에 돌고 있는 작업이 모두 보입니다. 아래 "동시 진행" 참고.
+- 오케스트레이터가 띄우는 세션은 이 PC 의 모든 실행·저장소를 합쳐 최대 3개까지만 함께 돕니다. 다른 실행이 자리를 다 쓰고 있으면 기다렸다가 이어 갑니다. 아래 "동시 세션 제한" 참고.
 - 답을 기다리는 작업이 있어도 그 작업과 무관한 작업은 계속 진행합니다. 더 진행할 작업이 없을 때 모아서 묻습니다.
 - 화면·범위 질문은 `am:auto` 와 같은 규칙으로 추천안을 적용하고 "(자동 결정)"으로 남깁니다. 끝나면 세션이 "대신 정한 것"으로 모아 알려 줍니다.
 - push 와 merge 는 하지 않습니다. 실행은 `orch/<실행 ID>` 브랜치에 커밋만 쌓습니다.
@@ -92,13 +94,14 @@ node orchestrator.mjs run --dry-run          # 순서와 실제 claude 명령만
 node orchestrator.mjs run                    # 실행 (중단되면 같은 명령으로 이어 감)
 node orchestrator.mjs status                 # 작업별 상태
 node orchestrator.mjs status --json          # 다음에 할 일(next)과 답할 결정·막힌 작업을 구조로
+node orchestrator.mjs sessions 2             # 이 PC 에서 모든 실행을 합쳐 동시에 돌릴 세션 수(위 "동시 세션 제한")
 ```
 
 `status --json` 의 `next` 는 `doctor`, `split`, `wait`, `fix-tasks`, `decide`, `answer`, `blocked`, `run`, `done`, `stuck` 중 하나입니다. 스킬은 이 값만 보고 다음 명령을 정합니다.
 
-상태를 바꾸는 명령(`doctor`, `split`, `decide`, `answer`, `run`, `retry`, `done`)은 한 저장소에서 한 번에 하나만 돕니다. 실행 중에 다른 명령을 부르면 거절합니다. 작업 여러 개를 동시에 돌리는 것은 `run` 하나가 안에서 합니다.
+상태를 바꾸는 명령(`doctor`, `split`, `decide`, `answer`, `run`, `retry`, `done`)은 한 저장소에서 한 번에 하나만 돕니다(`sessions` 는 언제든 됨). 실행 중에 다른 명령을 부르면 거절합니다. 작업 여러 개를 동시에 돌리는 것은 `run` 하나가 안에서 합니다.
 
-`status --json` 의 `running.tasks` 는 돌고 있는 작업마다 단계와 작업 공간을, `parallel` 은 동시에 돌릴 수(`max`)와 하나씩 도는 이유(`reason`), 다시 확인이 필요한지(`stale`)를 알려 줍니다. `run --dry-run` 은 같이 돌 작업을 회차로 묶어 보여 줍니다.
+`status --json` 의 `running.tasks` 는 돌고 있는 작업마다 단계와 작업 공간을, `parallel` 은 동시에 돌릴 수(`max`, 이 PC 의 동시 세션 제한 포함)와 하나씩 도는 이유(`reason`), 다시 확인이 필요한지(`stale`)를, `sessions` 는 이 PC 의 동시 세션 제한과 지금 도는 수를 알려 줍니다. `run --dry-run` 은 같이 돌 작업을 회차로 묶어 보여 줍니다.
 
 다른 폴더에서 실행할 때는 `--repo <대상 저장소>` 를 붙입니다. 실행은 `orch/<실행 ID>` 브랜치에서 진행되고 push 와 병합은 하지 않습니다.
 
@@ -152,7 +155,7 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 | `pluginDir` | 없음 | 적으면 모든 호출에 `--plugin-dir` 로 넘김 |
 | `skillMode` | `auto` | `slash`, `inline`, 또는 doctor 결과에 따름 |
 | `branch` | `orch/{run}` | 실행용 브랜치. `""` 이면 현재 브랜치 |
-| `parallel` | `3` | 동시에 돌릴 작업 수. `1` 이면 예전처럼 하나씩. 아래 "동시 진행" 참고 |
+| `parallel` | `3` | 동시에 돌릴 작업 수. `1` 이면 예전처럼 하나씩. 이 PC 의 동시 세션 제한보다 크면 그 제한까지만. 아래 "동시 진행" 참고 |
 | `worktreeSetup` | 없음 | 새 작업 공간 안에서 먼저 돌릴 셸 명령. 예: `["npm ci"]`. 환경 변수 `ORCH_MAIN_REPO` 에 원래 저장소 경로 |
 | `requireGate` | `true` | `am-gate.json` 이 없으면 시작하지 않음 |
 | `orchestratorGate` | `true` | 점검 뒤 게이트를 직접 한 번 더 실행 |
@@ -193,8 +196,27 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 - 그 단계의 `extraArgs` 에 `--model` 이나 `--effort` 가 있으면 그 값만 넘깁니다. effort 를 `extraArgs` 로 적어 둔 예전 설정은 그대로 동작합니다.
 - 설정이 어떤 단계의 값을 위 표와 다르게 정하면 그 단계의 스킬만 inline 으로 부릅니다(SKILL.md 본문을 머리말 없이 넘김). 슬래시로 부르면 am 스킬 머리말의 값이 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지 Claude Code 문서에 없기 때문입니다. 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계가 나옵니다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않으므로, 그때는 설정한 값 대신 스킬 머리말의 값이 쓰일 수 있습니다.
 - 스킬을 실행한 세션(`am-orchestrator:run`, 표 마지막 줄)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다.
-- 기본값처럼 모든 단계가 Opus 면 동시에 3개를 돌릴 때 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나 `parallel` 을 낮춥니다. 분할의 effort 가 높으면 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
+- 기본값처럼 모든 단계가 Opus 면 동시에 3개를 돌릴 때 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나, `sessions 2` 처럼 이 PC 의 동시 세션 제한을 낮추거나(모든 실행에 적용), 이 저장소만 `parallel` 을 낮춥니다. 분할의 effort 가 높으면 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
 - am 과 한쪽만 업데이트하면 위 표와 설치된 am 스킬의 값이 다를 수 있습니다. 함께 업데이트하세요. 스킬에 값이 없는 예전 am(0.1.9 이하)에서는 위 표대로 넘깁니다.
+
+## 동시 세션 제한 (이 PC 전체)
+
+오케스트레이터가 띄우는 `claude` 세션(분할, 계획, 결정 답변, 구현, 수정, 점검, 커밋)은 이 PC 에서 모든 실행·저장소를 합쳐 최대 3개까지만 함께 돕니다. 두 저장소에서 실행을 함께 돌려도 합계가 넘지 않습니다. 설정하지 않아도 업데이트만 하면 적용되고, 저장소의 `.orchestrator/config.json` 은 고치지 않아도 됩니다.
+
+```
+/am-orchestrator:run sessions          지금 값, 설정 파일 위치, 돌고 있는 세션 목록
+/am-orchestrator:run sessions 2        최대 2개로
+/am-orchestrator:run sessions default  기본값(3)으로 되돌림
+node <경로>/orchestrator.mjs sessions 2   스킬 없이(저장소 밖에서도 됨)
+```
+
+- 값은 `<Claude 설정 폴더>/am-orchestrator/settings.json` 의 `maxSessions` 입니다(Claude 설정 폴더는 환경 변수 `CLAUDE_CONFIG_DIR`, 없으면 `~/.claude`). 플러그인 폴더 밖이라 업데이트해도 남습니다. 직접 고쳐도 되고, 1 이상의 정수가 아니거나 파일을 읽지 못하면 기본값을 쓰고 `sessions`·`doctor` 가 알려 줍니다.
+- 바꾼 값은 돌고 있는 실행에도 그다음 세션부터 적용됩니다. `sessions` 는 실행 중에도 부를 수 있습니다(저장소 잠금을 잡지 않음).
+- 한 실행 안에서는 `parallel` 과 이 제한 중 작은 수만큼 작업을 함께 돌립니다. 다른 실행이 자리를 다 쓰고 있으면 진행 줄에 "이 PC 에서 오케스트레이터 세션 N개가 돌고 있어 자리가 날 때까지 기다립니다"가 나오고, 자리가 나면 이어 갑니다. 기다린 시간은 단계 제한 시간에 들어가지 않고, 기다림에 상한은 없습니다(Ctrl+C 로 끝냄). 기다리는 순서는 정해져 있지 않습니다.
+- 돌고 있는 세션마다 `<Claude 설정 폴더>/am-orchestrator/sessions/` 에 기록이 하나 생기고 세션이 끝나면 지워집니다. 오케스트레이터가 강제로 끝나 기록이 남아도, 30초마다 새로 고치지 않은 기록은 5분 뒤 빈 자리로 봅니다(PC 가 잠자기에서 막 깨어났을 때는 2분 더 기다림). 같은 호스트 이름이고 프로세스가 없으면 바로 빈 자리입니다.
+- `doctor` 의 시험 호출, 게이트(빌드·테스트), 계획 세션 안의 Codex 2차 의견은 세지 않습니다.
+- 기록 폴더에 쓸 수 없으면(샌드박스, 읽기 전용 폴더 등) 실행 로그에 한 번 알리고 다른 실행과 함께 세지 않은 채 진행합니다. 한 실행 안의 제한은 그대로 지킵니다. `doctor` 가 써 볼 수 있는지 확인하고, `status --json` 의 `sessions` 는 `max`(제한), `inUse`(지금 도는 수), `shared`(doctor 가 확인한 쓰기 가능 여부)를 알려 줍니다.
+- 같은 홈 폴더를 여러 PC 가 함께 쓰거나(네트워크 홈) 실행마다 `CLAUDE_CONFIG_DIR` 이 다르면, 제한도 그 폴더 단위로 셉니다.
 
 ## 동시 진행
 
@@ -202,7 +224,7 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 - 계획은 늘 이 저장소에서 합니다(`.am/<slug>/` 에만 씀). 구현을 시작할 때 다른 작업이 돌고 있으면 별도 작업 공간(실행 브랜치의 지금 커밋에서 떨어져 나온 git worktree)을 만들어 구현·점검·커밋을 그 안에서 합니다. 혼자 도는 작업은 지금처럼 이 저장소에서 하고, 그동안은 새 작업을 시작하지 않습니다. 작업 목록이 한 줄로 이어진 구간은 예전과 똑같이 돕니다.
 - 작업 공간에는 그 작업과 먼저 끝난 작업의 `.am/<slug>/` 를 베껴 넣고, 끝나면 되돌려 베낍니다(`.am/` 은 git 에서 제외돼 worktree 에 따라오지 않음).
 - 합치기: 작업 공간에서 커밋이 끝나면 한 번에 하나씩 실행 브랜치에 합칩니다. 그사이 다른 작업이 먼저 합쳐졌으면 그 위로 rebase 하고 게이트를 다시 돌린 뒤 fast-forward 합니다. 병합 커밋은 생기지 않습니다. 충돌하거나 게이트가 실패하면 변경을 작업 폴더의 `integrate-N.patch` 로 남기고, 실행 브랜치의 새 커밋 위에서 구현부터 한 번 다시 합니다(그 patch 를 세션에 알려 줌). 두 번째도 안 되면 막힘으로 남깁니다.
-- `doctor` 는 `parallel` 이 2 이상이면 임시 작업 공간을 만들어 `worktreeSetup` 을 돌리고 게이트를 한 번 돌려 봅니다. 이 저장소에서 통과하던 명령이 모두 통과해야 하고(비차단 명령 포함), 제한 시간은 max(2분, 이 저장소 게이트 시간 × 3) 입니다. 안 되면 경고를 내고 실행은 하나씩 합니다. git 에서 제외된 의존 폴더(`node_modules` 등)가 없어서라면 `worktreeSetup` 에 만드는 명령을 적고 `doctor` 를 다시 돌립니다. `am-gate.json` 이나 `worktreeSetup` 이 바뀌었거나 업데이트 뒤 아직 확인하지 않았으면 `doctor` 를 다시 돌릴 때까지 하나씩 진행하고, `status --json` 의 `parallel.stale` 로 알려 줍니다(스킬은 새 실행마다 `doctor` 부터 합니다). `doctor --skip-gate` 로 확인을 건너뛰어도 하나씩 진행합니다.
+- `doctor` 는 `parallel` 이 2 이상이면(이 PC 의 동시 세션 제한이 1이어도) 임시 작업 공간을 만들어 `worktreeSetup` 을 돌리고 게이트를 한 번 돌려 봅니다. 이 저장소에서 통과하던 명령이 모두 통과해야 하고(비차단 명령 포함), 제한 시간은 max(2분, 이 저장소 게이트 시간 × 3) 입니다. 안 되면 경고를 내고 실행은 하나씩 합니다. git 에서 제외된 의존 폴더(`node_modules` 등)가 없어서라면 `worktreeSetup` 에 만드는 명령을 적고 `doctor` 를 다시 돌립니다. `am-gate.json` 이나 `worktreeSetup` 이 바뀌었거나 업데이트 뒤 아직 확인하지 않았으면 `doctor` 를 다시 돌릴 때까지 하나씩 진행하고, `status --json` 의 `parallel.stale` 로 알려 줍니다(스킬은 새 실행마다 `doctor` 부터 합니다). `doctor --skip-gate` 로 확인을 건너뛰어도 하나씩 진행합니다.
 - 막히거나 세션 오류(사용량 한도 등)가 나면 새 작업은 시작하지 않고, 돌고 있던 작업은 끝까지 돌린 뒤 멈춥니다. 종료 코드는 지금과 같고(막힘 1, 오류 2), 둘 다면 2 입니다.
 - 작업 공간은 일이 끝나는 대로 지웁니다. 막힌 작업과 중단된 작업의 작업 공간은 남겨 두고 다음 `run`·`retry` 가 같은 폴더에서 이어 갑니다(이어 가는 세션은 처음 연 폴더에서만 열림).
 
@@ -325,4 +347,8 @@ tests/fake-claude.mjs                     테스트용 가짜 claude
   report.md                          보고서
   <작업 ID>/NN-<단계>.out.json       claude 원본 출력, 덧붙인 지시문, 게이트 결과
 .am/<slug>/brief.md, plan.md, check.md
+
+이 PC 에 생기는 것 (<Claude 설정 폴더> 는 CLAUDE_CONFIG_DIR, 없으면 ~/.claude)
+<Claude 설정 폴더>/am-orchestrator/settings.json   동시 세션 제한(sessions <N> 로 씀)
+<Claude 설정 폴더>/am-orchestrator/sessions/       돌고 있는 세션 기록(끝나면 지워짐)
 ```

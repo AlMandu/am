@@ -49,7 +49,7 @@ test('the run skill follows the am skill rules: same common block, size limit, u
 
 test('the skill and the script agree on commands and on every "next" value', () => {
   const commands = [...SKILL.matchAll(/^\| `([a-z]+)[ `]/gm)].map((m) => m[1]);
-  assert.deepEqual(commands, ['doctor', 'split', 'status', 'decide', 'answer', 'run', 'retry', 'done']);
+  assert.deepEqual(commands, ['doctor', 'split', 'status', 'decide', 'answer', 'run', 'retry', 'done', 'sessions']);
   for (const c of commands) assert.ok(SCRIPT.includes(`case '${c}':`), `script has no "${c}" command`);
   const doc = / \* next: ([a-z| -]+)\n/.exec(SCRIPT);
   assert.ok(doc, 'the script documents its next values');

@@ -534,8 +534,16 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
     writeFileSync(`${base}.system.md`, system);
   }
   const [bin, ...pre] = ctx.cfg.claudeCommand;
+  // 이 PC 의 세션 자리를 잡은 뒤 띄운다. 기다린 시간은 제한 시간과 소요 분에 넣지 않는다
+  const who = ctx.tag || path.basename(dir).startsWith('_') ? '' : `${path.basename(dir)} `; // 함께 도는 작업이면 log 가 작업 ID 를 붙인다
+  const release = await takeSession({ repo: ctx.root || ctx.repo, phase, where: rel(ctx, dir) }, (n, max) => log(ctx, `    ${who}${phase}: 이 PC 에서 오케스트레이터 세션 ${n}개가 돌고 있어 자리가 날 때까지 기다립니다 (최대 ${max}개, 바꾸려면 \`sessions <N>\`)`));
   const started = Date.now();
-  const r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
+  let r;
+  try {
+    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
+  } finally {
+    release();
+  }
   writeFileSync(`${base}.out.json`, r.stdout);
   if (r.stderr) writeFileSync(`${base}.err.log`, r.stderr);
   const parsed = parseResult(r.stdout);
@@ -999,7 +1007,7 @@ function writeReport(ctx) {
     `- 브랜치: ${state.branch || '-'} (push 하지 않음)`,
     `- 진행: ${done.length} / ${plan.tasks.length} 완료${plan.tasks.filter((t) => st(t).running).map((t) => `, 지금 ${t.id} ${RUNNING_KO[st(t).running] || st(t).running}`).join('')}`,
     `- 비용 추정: $${totalCost(ctx).toFixed(2)} (claude 가 알려 준 값의 합, 구독 사용 시 참고용)`,
-    `- 동시 진행: ${par.max > 1 ? `서로 무관한 작업을 최대 ${par.max}개까지` : `하나씩${par.reason ? ` (${par.reason})` : ''}`}`,
+    `- 동시 진행: ${par.max > 1 ? `서로 무관한 작업을 최대 ${par.max}개까지${par.sessions ? ' (이 PC 의 동시 세션 제한)' : ''}` : `하나씩${par.reason ? ` (${par.reason})` : ''}`}`,
     '',
     '## 사람이 할 일',
     '',
@@ -1093,13 +1101,19 @@ export function startable(plan, state, active, max, { exclusive = false } = {}) 
 /**
  * 함께 돌릴 작업 수. 둘 이상은 doctor 가 별도 작업 공간에서 게이트를 확인했고 그 뒤 게이트 설정이 그대로일 때만.
  * stale: 확인한 적이 없거나 am-gate.json·worktreeSetup 이 바뀌어 doctor 를 다시 돌려야 함.
+ * sessions: 이 PC 의 동시 세션 제한. 그보다 많이 함께 돌리지 않는다.
  */
-export function parallelism(cfg, env, key) {
+export function parallelism(cfg, env, key, sessions = Infinity) {
   const want = Math.max(1, Math.floor(Number(cfg.parallel)) || 1);
-  if (want === 1) return { max: 1, reason: '' };
-  const probe = env?.worktree;
-  if (!probe || probe.key !== key) return { max: 1, stale: true, reason: '별도 작업 공간에서 게이트가 되는지 아직 확인하지 않았습니다(처음이거나 am-gate.json·worktreeSetup 이 바뀜). `doctor` 를 다시 실행하면 확인합니다' };
-  return probe.ok ? { max: want, reason: '' } : { max: 1, reason: `별도 작업 공간에서 게이트가 통과하지 않습니다: ${probe.reason}` };
+  let r;
+  if (want === 1) r = { max: 1, reason: '' };
+  else {
+    const probe = env?.worktree;
+    if (!probe || probe.key !== key) r = { max: 1, stale: true, reason: '별도 작업 공간에서 게이트가 되는지 아직 확인하지 않았습니다(처음이거나 am-gate.json·worktreeSetup 이 바뀜). `doctor` 를 다시 실행하면 확인합니다' };
+    else r = probe.ok ? { max: want, reason: '' } : { max: 1, reason: `별도 작업 공간에서 게이트가 통과하지 않습니다: ${probe.reason}` };
+  }
+  if (r.max <= sessions) return r;
+  return { ...r, max: sessions, sessions: true, reason: sessions === 1 ? '이 PC 에서 동시에 돌릴 세션을 1개로 제한했습니다(`sessions <N>` 으로 바꿈)' : r.reason };
 }
 
 /** 작업 공간 확인 결과가 아직 맞는지 가리는 열쇠: am-gate.json 과 worktreeSetup 의 해시. */
@@ -1107,7 +1121,9 @@ const worktreeKey = (repo, cfg) => {
   const gate = path.join(repo, 'am-gate.json');
   return sha(`${existsSync(gate) ? readText(gate) : ''}\n${JSON.stringify(cfg.worktreeSetup || [])}`);
 };
-const parallelOf = (ctx) => parallelism(ctx.cfg, ctx.env, worktreeKey(ctx.root, ctx.cfg));
+/** 이 PC 의 동시 세션 제한까지 넣은 동시 진행 수. 보여 주는 곳과 dry-run 이 쓴다(run 은 작업을 고를 때마다 제한을 다시 읽음). */
+const parallelOf = (ctx) => parallelism(ctx.cfg, ctx.env, worktreeKey(ctx.root, ctx.cfg), sessionLimit());
+const parLabel = (par) => (par.max > 1 ? `최대 ${par.max}개${par.sessions ? '(이 PC 의 동시 세션 제한)' : ''}` : '하나씩');
 
 // ------------------------------------------------------------------ 별도 작업 공간 (함께 도는 작업)
 
@@ -1559,6 +1575,222 @@ function acquireLock(repo, command) {
   });
 }
 
+// ------------------------------------------------------------------ 이 PC 전체의 동시 세션 수
+
+// 이 PC 에서 오케스트레이터가 띄우는 claude 세션은 모든 실행·저장소를 합쳐 최대 N개까지 함께 돈다.
+// 값(settings.json)과 돌고 있는 세션 기록(sessions/)은 Claude 설정 폴더 아래에 둔다. 플러그인 폴더는 업데이트 때 바뀌어 거기 두면 사라진다.
+// 기록은 세션이 도는 동안 주인이 30초마다 수정 시각을 새로 고친다. 5분 넘게 그대로인 기록은 주인이 사라진 것으로 본다
+// (강제 종료·터미널 닫힘·재부팅으로 지우지 못한 기록. pid 는 재사용될 수 있어 그것만으로는 가리지 못한다).
+export const DEFAULT_MAX_SESSIONS = 3;
+const HEARTBEAT_MS = 30000;
+const STALE_MS = 5 * 60000;
+// 잠자기에서 깨면 모든 기록이 오래돼 보인다. 이 프로세스가 90초 넘게 멈춰 있었으면(잠자기·시계 변경) 2분 동안은 오래된 기록도 산다고 본다:
+// 그사이 살아 있는 주인은 새로 고친다
+const WAKE_GAP_MS = 90000;
+const WAKE_GRACE_MS = 2 * 60000;
+const userDir = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am-orchestrator');
+const settingsFile = () => path.join(userDir(), 'settings.json');
+const sessionsDir = () => path.join(userDir(), 'sessions');
+// 기록 이름에 넣는 호스트 이름. macOS 는 네트워크를 바꾸면 호스트 이름이 바뀌므로 그때그때 읽는다
+const hostName = () => os.hostname().replace(/[^\w.-]/g, '_') || 'host';
+
+/** settings.json 의 내용. 없으면 {}, 읽지 못하면(깨진 JSON 등) null. */
+function readSettings() {
+  try {
+    const s = readJson(settingsFile());
+    return isObj(s) ? s : null;
+  } catch (err) {
+    return err.code === 'ENOENT' ? {} : null;
+  }
+}
+
+/** 지금 적용되는 제한. source: default(정한 값 없음) | set | invalid(잘못된 값이라 기본값을 씀, raw 에 그 값) | unreadable(파일을 읽지 못해 기본값) */
+function sessionSetting() {
+  const settings = readSettings();
+  if (!settings) return { max: DEFAULT_MAX_SESSIONS, source: 'unreadable' };
+  const raw = settings.maxSessions;
+  if (raw === undefined || raw === null) return { max: DEFAULT_MAX_SESSIONS, source: 'default' };
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? { max: n, source: 'set' } : { max: DEFAULT_MAX_SESSIONS, source: 'invalid', raw };
+}
+const sessionLimit = () => sessionSetting().max;
+const SOURCE_KO = { default: '기본값', set: '직접 정함', invalid: 'settings.json 의 maxSessions 값이 잘못돼 기본값을 씀', unreadable: 'settings.json 을 읽지 못해 기본값을 씀' };
+
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM'; // 프로세스는 있지만 신호를 보낼 권한이 없음
+  }
+};
+
+/**
+ * 세션 기록 하나가 아직 자리를 쥐고 있는가. 호스트 이름이 지금과 같고 pid 가 죽었으면 아니다(다른 호스트 이름의 pid 는 확인할 수 없다).
+ * 5분 넘게 새로 고쳐지지 않았으면 아니다. 단 이 프로세스가 막 깨어났으면(woke) 주인이 새로 고칠 때까지 산다고 본다.
+ * 막 시작한 프로세스(young)는 PC 가 잠자기에서 막 깼는지 알 수 없으므로, 같은 호스트에서 pid 가 살아 있는 기록은 한 번 새로 고칠 때까지 산다고 본다.
+ */
+export function recordHeld({ host, pid, mtimeMs }, { now, myHost, alive, woke = false, young = false }) {
+  if (host === myHost) {
+    if (!alive(pid)) return false;
+    if (young) return true;
+  }
+  return woke || now - mtimeMs <= STALE_MS;
+}
+
+let lastTick = 0; // 이 프로세스가 마지막으로 깨어 있던 때(벽시계)
+let wokeAt = 0;
+const noteAwake = () => {
+  const t = Date.now();
+  if (lastTick && t - lastTick > WAKE_GAP_MS) wokeAt = t;
+  lastTick = t;
+};
+
+/**
+ * 이 PC 에서 돌고 있는 세션 기록(recordHeld 로 가림). clean 이면 자리를 쥐지 않은 기록을 지운다.
+ * clean 이 아니면(보여 주기만 할 때) 아무것도 지우지 않는다.
+ */
+function liveSessions({ clean = true } = {}) {
+  const dir = sessionsDir();
+  let names;
+  try {
+    names = readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  if (clean) noteAwake();
+  const opts = { now: Date.now(), myHost: hostName(), alive: pidAlive, woke: Boolean(wokeAt) && Date.now() - wokeAt < WAKE_GRACE_MS, young: clean && process.uptime() * 1000 < HEARTBEAT_MS + 15000 };
+  const out = [];
+  for (const name of names) {
+    const m = /^(.+)~(\d+)~\d+\.json$/.exec(name);
+    if (!m) continue;
+    const file = path.join(dir, name);
+    if (leftover.has(file)) continue; // 이 프로세스가 놓았는데 지우지 못한 기록
+    let mtimeMs;
+    try {
+      mtimeMs = statSync(file).mtimeMs;
+    } catch {
+      continue; // 그사이 주인이 놓음
+    }
+    const pid = Number(m[2]);
+    if (!recordHeld({ host: m[1], pid, mtimeMs }, opts)) {
+      if (clean) {
+        try {
+          rmSync(file, { force: true });
+        } catch {
+          /* 다른 프로세스가 먼저 지웠거나 잡고 있으면 다음에 */
+        }
+      }
+      continue;
+    }
+    let rec = {};
+    try {
+      rec = readJson(file);
+    } catch {
+      /* 쓰는 중이거나 다시 만드는 중: 이름과 수정 시각만으로 센다 */
+    }
+    out.push({ ...rec, file, pid });
+  }
+  return out;
+}
+
+const heldSessions = new Map(); // 이 프로세스가 잡고 있는 자리 기록 → 내용. 끝날 때(Ctrl+C 포함) 지운다
+const leftover = new Set(); // 놓았지만 지우지 못한 기록(Windows 에서 백신 등이 잠깐 잡음). 세지 않고, 타이머와 끝날 때 다시 지운다
+const removeRecord = (file) => {
+  try {
+    rmSync(file, { force: true });
+    leftover.delete(file);
+  } catch {
+    leftover.add(file);
+  }
+};
+let sessionSeq = 0;
+let shareWarned = false;
+
+/** 처음 자리를 잡을 때 한 번: 끝날 때 기록을 지우는 처리와, 깨어 있음을 적고 잡고 있는 기록의 수정 시각을 새로 고치는 타이머. */
+function startSessionHooks() {
+  noteAwake();
+  process.on('exit', () => {
+    for (const f of [...heldSessions.keys(), ...leftover]) removeRecord(f); // 그래도 남은 기록은 5분 뒤 빈 자리로 본다
+  });
+  // 동기로만 다룬다: 놓기(heldSessions 에서 빼고 지움) 사이에 끼어들어 놓은 기록을 되살리지 않게
+  setInterval(() => {
+    noteAwake();
+    for (const f of [...leftover]) removeRecord(f);
+    const t = new Date();
+    for (const [file, content] of heldSessions) {
+      try {
+        utimesSync(file, t, t);
+      } catch (err) {
+        if (err.code !== 'ENOENT') continue;
+        try {
+          writeFileSync(file, content); // 다른 프로세스가 오래된 것으로 잘못 보고 지웠으면 다시 만든다
+        } catch {
+          /* 다음 차례에 다시 */
+        }
+      }
+    }
+  }, HEARTBEAT_MS).unref();
+}
+
+const FS_BUSY = ['EPERM', 'EBUSY', 'EACCES']; // 백신·색인 프로그램이 잠깐 잡는 경우(Windows)
+
+/**
+ * 이 PC 의 세션 자리 하나를 잡고, 놓는 함수를 돌려준다. 내 기록을 먼저 쓰고 살아 있는 기록을 센 뒤 제한을 넘으면 지우고
+ * 1~3초 뒤 다시 한다(세고 나서 쓰면 둘이 마지막 자리를 함께 잡을 수 있다). 자리가 날 때까지 기다리며, 처음 기다릴 때 onWait(쓰는 수, 제한).
+ * 기록 폴더에 쓰지 못하면 한 번 알리고 이번 세션은 세지 않고 진행한다(한 실행 안의 제한은 작업을 고를 때 지킨다). 다음 세션 때 다시 시도한다.
+ */
+async function takeSession(info, onWait) {
+  if (!sessionSeq) startSessionHooks();
+  sessionSeq += 1;
+  const dir = sessionsDir();
+  const file = path.join(dir, `${hostName()}~${process.pid}~${sessionSeq}.json`);
+  const release = () => {
+    heldSessions.delete(file);
+    removeRecord(file);
+  };
+  let waited = false;
+  for (;;) {
+    const max = sessionLimit();
+    const content = `${JSON.stringify({ pid: process.pid, host: os.hostname(), ...info, startedAt: now() })}\n`;
+    for (let i = 0; ; i += 1) {
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(file, content);
+        break;
+      } catch (err) {
+        if (i < 3 && FS_BUSY.includes(err.code)) {
+          await new Promise((res) => setTimeout(res, 50 * (i + 1)));
+          continue;
+        }
+        if (!shareWarned) say(`  ! 세션 기록 폴더에 쓰지 못해 다른 실행과 함께 세지 못합니다(${err.code || err.message}): ${dir}\n    이 실행 안에서는 동시 세션 제한(${max}개)을 그대로 지킵니다. 다음 세션부터 다시 시도합니다.`);
+        shareWarned = true;
+        return () => {};
+      }
+    }
+    heldSessions.set(file, content);
+    const live = liveSessions().length;
+    if (live <= max) return release;
+    release();
+    if (!waited && onWait) onWait(live - 1, max);
+    waited = true;
+    await new Promise((res) => setTimeout(res, 1000 + Math.random() * 2000));
+  }
+}
+
+/** doctor 가 기록 폴더에 쓸 수 있는지 본다(쓰고 바로 지움). 쓸 수 있으면 null, 아니면 이유. */
+function sessionsWritable() {
+  const probe = path.join(sessionsDir(), `${hostName()}~${process.pid}~doctor.tmp`);
+  try {
+    mkdirSync(sessionsDir(), { recursive: true });
+    writeFileSync(probe, '');
+    rmSync(probe, { force: true });
+    return null;
+  } catch (err) {
+    return err.code || err.message;
+  }
+}
+
 // ------------------------------------------------------------------ 명령
 
 /** 설정 파일이 없으면 만든다. 만들었으면 true. */
@@ -1591,6 +1823,31 @@ function ensureConfig(repo) {
     });
   }
   return true;
+}
+
+/** sessions: 이 PC 의 동시 세션 제한을 보여 주거나(인자 없음) 정한다(<N> 또는 default). 저장소와 상관없고 잠금도 잡지 않는다. */
+function cmdSessions(arg) {
+  const file = settingsFile();
+  if (arg !== undefined) {
+    if (arg !== 'default' && !(/^\d+$/.test(arg) && Number(arg) >= 1)) fail('사용법: sessions [<1 이상의 정수> | default]');
+    const settings = readSettings() || {}; // 읽지 못하는 파일은 새로 쓴다
+    if (arg === 'default') delete settings.maxSessions;
+    else settings.maxSessions = Number(arg);
+    try {
+      writeJson(file, settings);
+    } catch (err) {
+      fail(`설정을 저장하지 못했습니다: ${file} (${err.code || err.message}). 이 폴더에 쓸 수 있게 하거나, 환경 변수 CLAUDE_CONFIG_DIR 로 쓸 수 있는 Claude 설정 폴더를 가리키세요.`);
+    }
+    say(arg === 'default' ? `기본값(${DEFAULT_MAX_SESSIONS}개)으로 되돌렸습니다.` : `바꿨습니다: 최대 ${arg}개.`);
+    say('돌고 있는 실행에도 그다음 세션부터 적용됩니다.');
+  }
+  const cur = sessionSetting();
+  say(`이 PC 에서 오케스트레이터가 동시에 돌리는 claude 세션: 최대 ${cur.max}개 (${SOURCE_KO[cur.source]}${cur.source === 'invalid' ? `: ${JSON.stringify(cur.raw)}` : ''})`);
+  say(`설정 파일: ${file}`);
+  const live = liveSessions({ clean: false });
+  say(`지금 도는 세션 ${live.length}개`);
+  for (const s of live) say(`  - ${s.repo || '?'}  ${s.phase || '?'}${s.where ? `  ${s.where}` : ''}  (${s.startedAt || '?'} 시작, pid ${s.pid})`);
+  if (arg === undefined) say('바꾸려면 `sessions <N>` (1 이상), 기본값으로 되돌리려면 `sessions default`');
 }
 
 function cmdInit(repo) {
@@ -1689,6 +1946,13 @@ async function cmdDoctor(repo, opt) {
   else no(`am 플러그인 폴더(hooks/gate.mjs, skills/*/SKILL.md)를 찾지 못했습니다${root ? `: ${root}` : ''}. config.json 의 amPluginRoot 에 am 저장소의 plugin/ 경로를 적으세요.`);
 
   if (String(process.env.AM_GATE || '').trim().toLowerCase() === 'off') no('환경 변수 AM_GATE=off 가 설정돼 있습니다. 게이트가 꺼진 채로는 무인 실행을 하지 않습니다.');
+  const limit = sessionSetting();
+  const unshared = sessionsWritable();
+  env.sessionsShared = !unshared;
+  const limitNote = `${SOURCE_KO[limit.source]}${limit.source === 'invalid' ? `: ${JSON.stringify(limit.raw)}` : ''}`;
+  if (unshared) warn(`이 PC 의 동시 세션 제한 ${limit.max}개(${limitNote}): 기록 폴더에 쓸 수 없어(${unshared}) 다른 실행과 함께 세지 못합니다. 한 실행 안에서는 지킵니다: ${sessionsDir()}`);
+  else if (limit.source === 'invalid' || limit.source === 'unreadable') warn(`이 PC 의 동시 세션 제한 ${limit.max}개(${limitNote}). \`sessions <N>\` 으로 다시 정하세요: ${settingsFile()}`);
+  else ok(`이 PC 의 동시 세션 제한 ${limit.max}개(${limitNote}, 모든 실행을 합쳐 셈). 바꾸려면 \`sessions <N>\``);
   const parallel = Math.max(1, Math.floor(Number(ctx.cfg.parallel)) || 1);
   const key = worktreeKey(repo, ctx.cfg);
   if (!existsSync(path.join(repo, 'am-gate.json'))) {
@@ -1719,7 +1983,7 @@ async function cmdDoctor(repo, opt) {
     if (report.status === 'pass' && parallel > 1) {
       const probe = await probeWorktree({ ...ctx, pluginRoot: root }, report);
       env.worktree = { ...probe, key };
-      if (probe.ok) ok(`별도 작업 공간(git worktree)에서도 게이트 통과 (${(probe.ms / 1000).toFixed(1)}초): 서로 무관한 작업을 최대 ${parallel}개까지 동시에 진행합니다`);
+      if (probe.ok) ok(`별도 작업 공간(git worktree)에서도 게이트 통과 (${(probe.ms / 1000).toFixed(1)}초): 서로 무관한 작업을 최대 ${Math.min(parallel, limit.max)}개까지 동시에 진행합니다${limit.max < parallel ? `(parallel ${parallel}, 이 PC 의 동시 세션 제한 ${limit.max})` : ''}`);
       else warn(`별도 작업 공간(git worktree)에서는 게이트가 통과하지 않아 작업을 하나씩 진행합니다: ${probe.reason}\n    git 에서 제외된 폴더(설치한 의존성 등)가 없어서라면 config.json 의 worktreeSetup 에 그것을 만드는 명령을 적고 doctor 를 다시 실행하세요. 동시 진행을 끄려면 parallel: 1`);
     }
   }
@@ -1829,7 +2093,7 @@ function statusData(repo, opt) {
   const base = baseContext(repo);
   const par = parallelOf(base);
   // 별도 작업 공간 확인이 없거나 낡았으면(stale) run 은 하나씩 돈다. next 는 바꾸지 않는다: 진행 중인 실행이 있을 때 doctor 로 돌려보내면 스킬이 새 실행을 만든다
-  const data = { ready: Boolean(base.env) && base.env.ok !== false, amVersion: base.pluginRoot ? amVersion(base.pluginRoot) : null, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
+  const data = { ready: Boolean(base.env) && base.env.ok !== false, amVersion: base.pluginRoot ? amVersion(base.pluginRoot) : null, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: liveSessions({ clean: false }).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
   const current = path.join(repo, ORCH_DIR, 'current');
   const runId = opt.run || (existsSync(current) ? readText(current).trim() : '');
   let ctx = null;
@@ -2013,7 +2277,7 @@ function cmdDone(repo, id, opt) {
 
 function dryRun(ctx) {
   const par = parallelOf(ctx);
-  say(`실행 ${ctx.runId}: 스킬 호출 방식 ${modeLabel(ctx)}, 동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}\n\n순서 (같은 회차의 작업은 함께 돎)`);
+  say(`실행 ${ctx.runId}: 스킬 호출 방식 ${modeLabel(ctx)}, 동시 진행 ${parLabel(par)}\n\n순서 (같은 회차의 작업은 함께 돎)`);
   const state = structuredClone(ctx.state);
   const order = [];
   for (let round = 1; ; round += 1) {
@@ -2069,9 +2333,12 @@ async function cmdRun(repo, opt) {
     saveState(ctx);
     writeReport(ctx);
   };
-  const par = opt.only ? { max: 1, reason: '' } : parallelOf(ctx);
-  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${modeLabel(ctx)}  구현 스킬 am:${implementSkill(ctx)}  동시 진행 ${par.max > 1 ? `최대 ${par.max}개` : '하나씩'}`);
-  if (par.reason) say(`  하나씩 진행하는 이유: ${par.reason}`);
+  // par 는 이 PC 의 세션 제한을 넣지 않은 값: 로그 머리표는 이것을 따른다(실행 중 제한을 올리면 여러 작업의 로그가 섞이지 않게).
+  // 함께 돌릴 수는 작업을 고를 때마다 제한을 다시 읽어 정한다.
+  const par = opt.only ? { max: 1, reason: '' } : parallelism(cfg, ctx.env, worktreeKey(ctx.root, cfg));
+  const shown = opt.only ? par : parallelOf(ctx);
+  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${modeLabel(ctx)}  구현 스킬 am:${implementSkill(ctx)}  동시 진행 ${parLabel(shown)}`);
+  if (shown.reason) say(`  하나씩 진행하는 이유: ${shown.reason}`);
   const limit = Number(opt['max-tasks']) || Infinity;
   const active = new Map(); // 돌고 있는 작업 ID → 끝나면 { t, result, error } 를 내는 약속(reject 하지 않음)
   const errors = [];
@@ -2099,7 +2366,7 @@ async function cmdRun(repo, opt) {
       if (!t.dependsOn.every((d) => state.tasks[d]?.status === 'done') || (s === 'pending' && openDecisions(ctx.plan, t).length)) fail(`${t.id} 는 아직 시작할 수 없습니다(의존 작업 또는 결정 대기).`);
       return [t];
     }
-    return startable(ctx.plan, state, [...active.keys()], Math.min(par.max, limit - finished), { exclusive: dirtyFiles(ctx).length > 0 });
+    return startable(ctx.plan, state, [...active.keys()], Math.min(par.max, sessionLimit(), limit - finished), { exclusive: dirtyFiles(ctx).length > 0 });
   };
   try {
     for (;;) {
@@ -2174,7 +2441,8 @@ const USAGE = `am-orchestrator: 설계 문서를 작업으로 나누고 작업�
   answer <작업ID> "<답>"     계획 중에 나온 결정에 답하고 계획을 마무리합니다
   retry <작업ID> [--from plan|implement|check|commit]
                             막힌 작업을 지정한 단계부터 다시 하게 합니다
-  done <작업ID>              사람이 직접 끝낸 작업을 완료로 표시합니다`;
+  done <작업ID>              사람이 직접 끝낸 작업을 완료로 표시합니다
+  sessions [<N> | default]  이 PC 에서 모든 실행을 합쳐 동시에 돌릴 claude 세션 수를 보거나 바꿉니다(기본 ${DEFAULT_MAX_SESSIONS}). 저장소와 상관없음`;
 
 const VALUE_FLAGS = new Set(['repo', 'run', 'only', 'max-tasks', 'from']);
 
@@ -2218,6 +2486,8 @@ async function main(argv) {
       return cmdRetry(repo, a, opt);
     case 'done':
       return cmdDone(repo, a, opt);
+    case 'sessions':
+      return cmdSessions(a);
     default:
       say(USAGE);
       return undefined;
@@ -2236,7 +2506,7 @@ const isMain = () => {
 if (isMain()) {
   // Ctrl+C 나 종료 신호: 돌고 있던 세션을 그대로 두면 혼자 계속 파일을 고치므로 함께 끝낸다.
   // 상태는 단계가 바뀔 때마다 저장돼 있어, 다시 run 하면 끊긴 단계부터 이어 간다.
-  for (const sig of ['SIGINT', 'SIGTERM']) {
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(sig, () => {
       for (const child of activeChildren) killTree(child);
       if (onInterrupt) onInterrupt();
