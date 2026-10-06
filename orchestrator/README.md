@@ -37,7 +37,7 @@
 - 화면·범위 질문은 `am:auto` 와 같은 규칙으로 추천안을 적용하고 "(자동 결정)"으로 남깁니다. 끝나면 세션이 "대신 정한 것"으로 모아 알려 줍니다.
 - push 와 merge 는 하지 않습니다. 실행은 `orch/<실행 ID>` 브랜치에 커밋만 쌓습니다.
 - 세션을 닫았거나 사용량 한도로 멈췄으면 인자 없이 다시 실행합니다. 끊긴 단계부터 이어 갑니다.
-- 스킬을 실행한 세션은 그 차례 동안 `opus`, effort `high` 로 돕니다. 오케스트레이터가 띄우는 세션의 값은 아래 "모델과 effort" 참고.
+- 스킬을 실행한 세션과 오케스트레이터가 띄우는 세션의 모델·effort 는 아래 "모델과 effort" 표 참고.
 - 늘 드는 토큰은 약 54, 스킬 호출 한 번은 약 2.3k 입니다(`claude --plugin-dir orchestrator plugin details am-orchestrator` 기준).
 
 ## 흐름
@@ -174,21 +174,26 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 
 오케스트레이터가 띄우는 세션에는 단계마다 `--model` 과 `--effort` 를 넘깁니다. 설정에 아무것도 적지 않으면 아래 값으로 돕니다.
 
-| 단계 | 모델 | effort |
+<!-- am:models:start -->
+
+| 세션 | 모델 | effort |
 |---|---|---|
 | 분할(`split`) | `opus` | `xhigh` |
 | 계획(`plan`), 결정 답변(`answer`), `doctor` 의 시험 호출 | `opus` | `high` |
 | 구현(`implement`), 수정(`fix`) | `opus` | `high` |
 | 점검(`check`) | `opus` | `high` |
 | 커밋(`commit`) | `opus` | `medium` |
+| 이 스킬을 실행한 세션(`am-orchestrator:run`, 그 차례에만) | `opus` | `high` |
 
-- 계획·구현·점검·커밋의 값은 그 단계가 부르는 am 스킬에 정해 둔 값과 같습니다(테스트가 지킴). 분할은 한 세션이 모든 작업을 정하고 뒤에 형식 검사만 있어 가장 높게 두었습니다.
+<!-- am:models:end -->
+
+- 계획·구현·점검·커밋의 값은 그 단계가 부르는 am 스킬에 정해 둔 값과 같습니다. 분할은 한 세션이 모든 작업을 정하고 뒤에 형식 검사만 있어 따로 정합니다. 표와 스킬의 값은 저장소 루트의 `models.json` 한 곳에서 생성됩니다(`node scripts/models.mjs`, 테스트가 어긋남을 잡음).
 - 바꾸려면 `.orchestrator/config.json` 의 `model`, `effort` 에 적습니다. 정하는 순서는 단계에 적은 값 → 물려받는 단계의 값(`fix` 는 `implement`, `answer` 는 `plan`) → `default` → 위 표입니다. 예: `{ "model": { "default": "sonnet", "implement": "opus" }, "effort": { "commit": "low" } }`. 둘 다 객체로 적어야 하고, `"model": "sonnet"` 처럼 문자열 하나로 적으면 세션을 띄우기 전에 멈추고 알려 줍니다.
 - 이어 가는 세션(`fix`, `answer`, 표시 줄을 되묻는 호출)에도 처음과 같은 `--model`·`--effort` 를 넘깁니다. 실행 도중 설정을 고치면 그다음 호출부터(이어 가는 호출 포함) 고친 값이 쓰입니다.
 - 그 단계의 `extraArgs` 에 `--model` 이나 `--effort` 가 있으면 그 값만 넘깁니다. effort 를 `extraArgs` 로 적어 둔 예전 설정은 그대로 동작합니다.
 - 설정이 어떤 단계의 값을 위 표와 다르게 정하면 그 단계의 스킬만 inline 으로 부릅니다(SKILL.md 본문을 머리말 없이 넘김). 슬래시로 부르면 am 스킬 머리말의 값이 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지 Claude Code 문서에 없기 때문입니다. 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계가 나옵니다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않으므로, 그때는 설정한 값 대신 스킬 머리말의 값이 쓰일 수 있습니다.
-- 스킬을 실행한 세션(`am-orchestrator:run`)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다.
-- 모든 단계가 Opus 라 동시에 3개를 돌리면 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나 `parallel` 을 낮춥니다. 분할의 `xhigh` 는 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
+- 스킬을 실행한 세션(`am-orchestrator:run`, 표 마지막 줄)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다.
+- 기본값처럼 모든 단계가 Opus 면 동시에 3개를 돌릴 때 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나 `parallel` 을 낮춥니다. 분할의 effort 가 높으면 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
 - am 과 한쪽만 업데이트하면 위 표와 설치된 am 스킬의 값이 다를 수 있습니다. 함께 업데이트하세요. 스킬에 값이 없는 예전 am(0.1.9 이하)에서는 위 표대로 넘깁니다.
 
 ## 동시 진행

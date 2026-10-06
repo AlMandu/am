@@ -6,12 +6,16 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { load } from '../scripts/models.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
 const SKILL = read('orchestrator', 'skills', 'run', 'SKILL.md');
 const SCRIPT = read('orchestrator', 'scripts', 'orchestrator.mjs');
 const amSkill = (name) => read('plugin', 'skills', name, 'SKILL.md');
+// Model and effort of the run skill and the split stage, from models.json at the repository root.
+const MODELS = load().orchestrator;
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const common = (text) => {
   const m = /<!-- am:common:start -->([\s\S]*?)<!-- am:common:end -->/.exec(text);
   assert.ok(m, 'common block markers');
@@ -38,7 +42,7 @@ test('the run skill follows the am skill rules: same common block, size limit, u
   assert.match(SKILL, /\ndescription: "[^"]{40,}"\n/);
   assert.match(SKILL, /\ndisable-model-invocation: true\n/);
   // The model and effort of the session that drives the run. A misspelled key is ignored without an error.
-  assert.match(SKILL, /\nmodel: opus\neffort: high\n---\n/);
+  assert.match(SKILL, new RegExp(`\\nmodel: ${esc(MODELS.run.model)}\\neffort: ${esc(MODELS.run.effort)}\\n---\\n`));
   assert.match(read('orchestrator', 'skills', 'run', 'agents', 'openai.yaml'), /allow_implicit_invocation: false/);
   assert.ok(!/(^|[^\w.])\/am[:-]/m.test(SKILL.replace(/<!-- am:common:start -->[\s\S]*?<!-- am:common:end -->/, '')), 'refer to skills by name, not with a slash prefix');
 });
@@ -87,9 +91,9 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   for (const [stage, skill] of Object.entries({ plan: 'plan', implement: 'do', check: 'check', commit: 'commit' })) {
     const row = new RegExp(`\\n  ${stage}: \\{ model: '([^']+)', effort: '([^']+)' \\},`).exec(SCRIPT);
     assert.ok(row, `STAGE_DEFAULTS.${stage}`);
-    assert.match(amSkill(skill), new RegExp(`\\nmodel: ${row[1]}\\neffort: ${row[2]}\\n---\\n`), `${stage} and am:${skill}`);
+    assert.match(amSkill(skill), new RegExp(`\\nmodel: ${esc(row[1])}\\neffort: ${esc(row[2])}\\n---\\n`), `${stage} and am:${skill}`);
   }
-  assert.match(SCRIPT, /\n  split: \{ model: 'opus', effort: 'xhigh' \},/);
+  assert.ok(SCRIPT.includes(`\n  split: { model: '${MODELS.split.model}', effort: '${MODELS.split.effort}' },`), 'STAGE_DEFAULTS.split');
   // The second opinion through Codex: plan sessions may run exactly this am script, which the common rules call by this path.
   assert.ok(existsSync(path.join(REPO, 'plugin', 'scripts', 'codex-opinion.mjs')));
   assert.ok(amSkill('plan').includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>`'));

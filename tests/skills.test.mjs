@@ -4,12 +4,14 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { load } from '../scripts/models.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80 };
-// Model and effort a skill's turn runs with in Claude Code (Codex ignores both keys).
-const RUNS_WITH = { plan: ['opus', 'high'], do: ['opus', 'high'], check: ['opus', 'high'], commit: ['opus', 'medium'], auto: ['opus', 'high'] };
+// Model and effort a skill's turn runs with in Claude Code (Codex ignores both keys), from models.json at the repository root.
+const MODELS = load().am;
+const RUNS_WITH = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, [MODELS[name].model, MODELS[name].effort]]));
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
 const frontmatter = (text) => {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
@@ -64,8 +66,9 @@ test('the second-opinion agent stays pinned and read-only, and the common rules 
   // Claude Code ignores a misspelled key without an error, which would silently unpin the agent.
   assert.deepEqual(Object.keys(fm).sort(), ['description', 'effort', 'model', 'name', 'tools']);
   assert.equal(fm.name, 'second-opinion');
-  assert.equal(fm.model, 'claude-opus-5-5'); // full ID: the `opus` alias follows the main session's Opus version
-  assert.equal(fm.effort, 'xhigh');
+  assert.equal(fm.model, MODELS['second-opinion'].model);
+  assert.match(fm.model, /^claude-/); // full ID: the `opus` alias follows the main session's Opus version
+  assert.equal(fm.effort, MODELS['second-opinion'].effort);
   assert.equal(fm.tools, 'Read, Grep, Glob');
   assert.match(fm.description, /^"[^"]{40,}"$/);
   assert.match(common(read('plan')), /am:second-opinion subagent/);

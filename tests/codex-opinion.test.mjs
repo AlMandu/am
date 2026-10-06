@@ -7,12 +7,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CODEX_ARGS, MAX_BRIEF_BYTES, buildPrompt, checkBrief, main } from '../plugin/scripts/codex-opinion.mjs';
+import { load } from '../scripts/models.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(here, '..', 'plugin', 'scripts', 'codex-opinion.mjs');
 const AGENT = path.join(here, '..', 'plugin', 'agents', 'second-opinion.md');
 const FAKE = path.join(here, 'fake-codex.mjs');
 const WIN = process.platform === 'win32';
+// Codex model and effort come from models.json at the repository root (scripts/models.mjs writes them into CODEX_ARGS).
+const MODELS = load().am;
+const CODEX = MODELS['codex-opinion'];
 
 const bases = [];
 after(() => {
@@ -96,10 +100,12 @@ test('answer: fixed read-only flags, prompt on stdin, only the last message prin
   const out = c.argv.indexOf('--output-last-message');
   assert.deepEqual(c.argv.slice(0, out), CODEX_ARGS);
   assert.deepEqual(c.argv.slice(out + 2), ['-']);
-  for (const flag of ['read-only', 'approval_policy=never', 'model_reasoning_effort=high', 'mcp_servers={}', '--ignore-rules', '--ephemeral']) assert.ok(CODEX_ARGS.includes(flag), flag);
+  for (const flag of ['read-only', 'approval_policy=never', `model_reasoning_effort=${CODEX.effort}`, 'mcp_servers={}', '--ignore-rules', '--ephemeral']) assert.ok(CODEX_ARGS.includes(flag), flag);
+  // An empty model leaves the user's codex config in charge.
+  assert.deepEqual(CODEX_ARGS.filter((a) => a.startsWith('model=')), CODEX.model ? [`model=${CODEX.model}`] : []);
   assert.match(c.stdin, /^You are the second opinion of the am workflow, run through Codex/);
   assert.match(c.stdin, /Another agent is planning or changing code/, 'second-opinion.md body');
-  assert.ok(!c.stdin.includes('model: claude-opus'), 'frontmatter left out');
+  assert.ok(!c.stdin.includes(`model: ${MODELS['second-opinion'].model}`), 'frontmatter left out');
   assert.match(c.stdin, /# Brief\n\n## Choices\n1\. Cache: A or B\n$/);
   assert.ok(!existsSync(c.argv[out + 1]), 'temporary answer file removed');
 });

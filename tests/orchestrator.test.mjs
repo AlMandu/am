@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { applySplit, claudeArgs, codexOpinionRules, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, claudeArgs, codexOpinionRules, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, snapshot, STAGE_DEFAULTS, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ORCH = path.join(here, '..', 'orchestrator', 'scripts', 'orchestrator.mjs');
@@ -25,6 +25,13 @@ const CHAIN = () => planOf([task('T01', 't01-a'), task('T02', 't02-b', ['T01']),
 const own = (id, slug, dependsOn = []) => task(id, slug, dependsOn, { files: [`src/${slug}.txt`] });
 const PAR = () => planOf([own('T01', 't01-a'), own('T02', 't02-b', ['T01']), own('T03', 't03-c')]);
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+// Stage defaults come from models.json (scripts/models.mjs writes STAGE_DEFAULTS), so the tests read them instead of repeating them.
+const DEF = (phase) => [STAGE_DEFAULTS[phase].model, STAGE_DEFAULTS[phase].effort];
+/** Values no stage uses by default: a config that names one always changes the stage it is set for. */
+const unused = (key, pool) => pool.filter((v) => !Object.values(STAGE_DEFAULTS).some((s) => s[key] === v));
+const [M1, M2] = unused('model', ['sonnet', 'haiku', 'fable', 'opus']);
+const [E1, E2] = unused('effort', ['low', 'max', 'medium', 'high', 'xhigh']);
+const E3 = ['low', 'max', 'medium', 'high', 'xhigh'].find((v) => v !== E1 && v !== E2); // only has to differ from E1 and E2
 
 /** 임시 저장소 하나: 게이트(BROKEN 파일이 있으면 실패), 설계 문서, 오케스트레이터 설정. */
 function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn = false, slow = false, localOnly = false } = {}) {
@@ -210,7 +217,7 @@ test('claudeArgs: 단계별 권한과 이어 가기', () => {
   assert.deepEqual(claudeArgs(eff, 'answer', { prompt: 'x', resume: 's' }).slice(-2), ['--effort', 'medium'], 'answer 는 plan 의 플래그를 물려받는다');
   assert.deepEqual(claudeArgs(eff, 'fix', { prompt: 'x', resume: 's' }).slice(-2), ['--effort', 'low'], '따로 적으면 그 값이 우선');
   const check = claudeArgs(eff, 'check', { prompt: 'x' });
-  assert.equal(check[check.indexOf('--effort') + 1], 'high', '플래그를 적지 않은 단계는 기본 effort 로');
+  assert.equal(check[check.indexOf('--effort') + 1], STAGE_DEFAULTS.check.effort, '플래그를 적지 않은 단계는 기본 effort 로');
   const denied = fix[fix.indexOf('--disallowedTools') + 1].split(',');
   assert.ok(denied.includes('Bash(git stash)') && denied.includes('Bash(git stash push *)') && denied.includes('Bash(git stash pop)'));
   assert.ok(!denied.includes('Bash(git stash *)'), 'git stash list 처럼 읽기만 하는 명령은 막지 않는다');
@@ -251,40 +258,37 @@ test('claudeArgs: 설정에 적지 않은 단계는 기본 모델과 effort 로 
       return a.includes(flag) ? a[a.indexOf(flag) + 1] : null;
     });
   };
+  assert.ok(M1 && M2 && E1 && E2, '기본값에 쓰지 않은 모델과 effort 가 2개씩 있어야 시험할 수 있다');
   const d = defaults();
-  assert.deepEqual(of(d, 'split'), ['opus', 'xhigh']);
-  assert.deepEqual(of(d, 'plan'), ['opus', 'high']);
-  assert.deepEqual(of(d, 'implement'), ['opus', 'high']);
-  assert.deepEqual(of(d, 'check'), ['opus', 'high']);
-  assert.deepEqual(of(d, 'commit'), ['opus', 'medium']);
-  assert.deepEqual(of(d, 'probe', { format: 'stream-json' }), ['opus', 'high'], 'doctor 의 시험 호출은 plan 의 값으로: 그 모델을 못 쓰는 계정은 doctor 에서 드러난다');
-  assert.deepEqual(of(d, 'fix', { resume: 's' }), ['opus', 'high'], '이어 가는 세션에도 처음과 같은 값을 넘긴다');
-  assert.deepEqual(of(d, 'answer', { resume: 's' }), ['opus', 'high']);
-  assert.deepEqual(of(d, 'split', { resume: 's' }), ['opus', 'xhigh'], '표시 줄을 되묻는 호출도 같다');
+  for (const phase of ['split', 'plan', 'implement', 'check', 'commit']) assert.deepEqual(of(d, phase), DEF(phase), phase);
+  assert.deepEqual(of(d, 'probe', { format: 'stream-json' }), DEF('plan'), 'doctor 의 시험 호출은 plan 의 값으로: 그 모델을 못 쓰는 계정은 doctor 에서 드러난다');
+  assert.deepEqual(of(d, 'fix', { resume: 's' }), DEF('implement'), '이어 가는 세션에도 처음과 같은 값을 넘긴다');
+  assert.deepEqual(of(d, 'answer', { resume: 's' }), DEF('plan'));
+  assert.deepEqual(of(d, 'split', { resume: 's' }), DEF('split'), '표시 줄을 되묻는 호출도 같다');
   // 설정: 단계에 적은 값 → 물려받는 단계의 값 → default → 기본값
-  const cfg = merge(defaults(), { model: { default: 'sonnet', implement: 'opus' }, effort: { default: 'low', implement: 'max', fix: 'medium' } });
-  assert.deepEqual(of(cfg, 'check'), ['sonnet', 'low'], 'default 는 적지 않은 모든 단계에 쓰인다');
-  assert.deepEqual(of(cfg, 'implement'), ['opus', 'max']);
-  assert.deepEqual(of(cfg, 'fix', { resume: 's' }), ['opus', 'medium']);
-  assert.deepEqual(of(cfg, 'answer', { resume: 's' }), ['sonnet', 'low']);
+  const cfg = merge(defaults(), { model: { default: M1, implement: M2 }, effort: { default: E1, implement: E2, fix: E3 } });
+  assert.deepEqual(of(cfg, 'check'), [M1, E1], 'default 는 적지 않은 모든 단계에 쓰인다');
+  assert.deepEqual(of(cfg, 'implement'), [M2, E2]);
+  assert.deepEqual(of(cfg, 'fix', { resume: 's' }), [M2, E3]);
+  assert.deepEqual(of(cfg, 'answer', { resume: 's' }), [M1, E1]);
   // extraArgs 에 같은 플래그가 있으면 그쪽 것만 넘긴다
-  const extra = merge(defaults(), { extraArgs: { all: ['--effort', 'low'], commit: ['--model', 'haiku'] } });
-  assert.deepEqual(of(extra, 'commit'), ['haiku', 'low']);
-  assert.deepEqual(of(extra, 'plan'), ['opus', 'low']);
+  const extra = merge(defaults(), { extraArgs: { all: ['--effort', E1], commit: ['--model', M2] } });
+  assert.deepEqual(of(extra, 'commit'), [M2, E1]);
+  assert.deepEqual(of(extra, 'plan'), [DEF('plan')[0], E1]);
   // `--이름=값` 한 덩어리로 적어도 같다
-  const joined = merge(defaults(), { extraArgs: { commit: ['--model=haiku'], check: ['--effort=low'] } });
-  assert.deepEqual(of(joined, 'commit'), [null, 'medium'], '모델은 extraArgs 의 --model=haiku 만 넘긴다');
-  assert.ok(claudeArgs(joined, 'commit', { prompt: 'x' }).includes('--model=haiku'));
-  assert.deepEqual(of(joined, 'check'), ['opus', null]);
+  const joined = merge(defaults(), { extraArgs: { commit: [`--model=${M2}`], check: [`--effort=${E1}`] } });
+  assert.deepEqual(of(joined, 'commit'), [null, DEF('commit')[1]], `모델은 extraArgs 의 --model=${M2} 만 넘긴다`);
+  assert.ok(claudeArgs(joined, 'commit', { prompt: 'x' }).includes(`--model=${M2}`));
+  assert.deepEqual(of(joined, 'check'), [DEF('check')[0], null]);
   assert.ok(stageOverridden(joined, 'commit') && stageOverridden(joined, 'check') && !stageOverridden(joined, 'plan'));
   // 설정이 단계의 값을 기본값과 다르게 정했는지: 어디에 적었든(단계 키, default, extraArgs) 넘기는 값으로 본다
   const stages = ['plan', 'implement', 'check', 'commit'];
   assert.deepEqual(stages.filter((p) => stageOverridden(d, p)), []);
   assert.deepEqual(stages.filter((p) => stageOverridden(cfg, p)), stages);
   assert.deepEqual(stages.filter((p) => stageOverridden(extra, p)), stages);
-  const same = merge(defaults(), { model: { default: 'opus' }, effort: { commit: 'medium' }, extraArgs: { plan: ['--effort', 'high'] } });
+  const same = merge(defaults(), { model: Object.fromEntries(stages.map((p) => [p, DEF(p)[0]])), effort: { commit: DEF('commit')[1] }, extraArgs: { plan: ['--effort', DEF('plan')[1]] } });
   assert.deepEqual(stages.filter((p) => stageOverridden(same, p)), [], '기본값과 같은 값을 적은 것은 바꾼 것이 아니다');
-  assert.deepEqual(stages.filter((p) => stageOverridden(merge(defaults(), { effort: { implement: 'max' } }), p)), ['implement']);
+  assert.deepEqual(stages.filter((p) => stageOverridden(merge(defaults(), { effort: { implement: E2 } }), p)), ['implement']);
 });
 
 // ------------------------------------------------------------------ 흐름
@@ -445,26 +449,26 @@ test('슬래시 스킬이 없으면 SKILL.md 를 채워 넘기는 방식으로 �
 test('설정이 단계의 모델이나 effort 를 바꾸면 그 단계의 스킬만 inline 으로 불러 넘긴 값이 쓰이게 한다', () => {
   const one = () => planOf([task('T01', 't01-a')]);
   const flags = (c) => ['--model', '--effort'].map((f) => c.argv[c.argv.indexOf(f) + 1]);
-  const r = prepared({ plan: one(), config: { model: { commit: 'sonnet' }, effort: { check: 'medium' } } });
+  const r = prepared({ plan: one(), config: { model: { commit: M1 }, effort: { check: E1 } } });
   assert.match(r.orch('run', '--dry-run').out, /스킬 호출 방식 slash\(check·commit 는 설정이 모델·effort 를 바꿔 inline\)/);
   const run = r.orch('run');
   assert.equal(run.code, 0, run.out);
   assert.match(run.out, /스킬 호출 방식 slash\(check·commit 는 설정이 모델·effort 를 바꿔 inline\)/);
   const calls = r.calls();
   // 바꾸지 않은 단계는 슬래시 호출 그대로, 기본값으로(스킬 머리말과 같은 값이라 어느 쪽이 쓰여도 같다)
-  assert.deepEqual(flags(calls.find((c) => c.prompt.startsWith('/am:plan Plan task T01'))), ['opus', 'high']);
-  assert.deepEqual(flags(calls.find((c) => c.prompt === `${IMPL} t01-a`)), ['opus', 'high']);
+  assert.deepEqual(flags(calls.find((c) => c.prompt.startsWith('/am:plan Plan task T01'))), DEF('plan'));
+  assert.deepEqual(flags(calls.find((c) => c.prompt === `${IMPL} t01-a`)), DEF('implement'));
   // 바꾼 단계는 머리말을 뗀 SKILL.md 를 넘기므로 플래그만 남는다
-  assert.deepEqual(flags(calls.find((c) => /T01\/skill-check\.md exactly/.test(c.prompt))), ['opus', 'medium']);
-  assert.deepEqual(flags(calls.find((c) => /T01\/skill-commit\.md exactly/.test(c.prompt))), ['sonnet', 'medium']);
+  assert.deepEqual(flags(calls.find((c) => /T01\/skill-check\.md exactly/.test(c.prompt))), [DEF('check')[0], E1]);
+  assert.deepEqual(flags(calls.find((c) => /T01\/skill-commit\.md exactly/.test(c.prompt))), [M1, DEF('commit')[1]]);
   assert.ok(!calls.some((c) => c.prompt.startsWith('/am:check') || c.prompt.startsWith('/am:commit')));
   assert.ok(!readFileSync(path.join(r.runDir(), 'T01', 'skill-commit.md'), 'utf8').startsWith('---'));
   // skillMode 를 slash 로 고정했으면 바꾼 단계도 슬래시 호출 그대로 둔다
-  const s = prepared({ plan: one(), config: { skillMode: 'slash', model: { commit: 'sonnet' } } });
+  const s = prepared({ plan: one(), config: { skillMode: 'slash', model: { commit: M1 } } });
   const fixed = s.orch('run');
   assert.equal(fixed.code, 0, fixed.out);
   assert.match(fixed.out, /스킬 호출 방식 slash {2}구현 스킬/);
-  assert.deepEqual(flags(s.calls().find((c) => c.prompt === '/am:commit task T01 t01-a')), ['sonnet', 'medium']);
+  assert.deepEqual(flags(s.calls().find((c) => c.prompt === '/am:commit task T01 t01-a')), [M1, DEF('commit')[1]]);
   // 객체가 아닌 값(문자열 하나)은 조용히 기본값으로 돌리지 않고, 세션을 띄우기 전에 알린다
   s.setConfig({ effort: 'low' });
   const bad = s.orch('run');
