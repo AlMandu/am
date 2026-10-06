@@ -28,7 +28,7 @@ export const CODEX_ARGS = [
   'exec',
   '--sandbox', 'read-only',
   '-c', 'approval_policy=never',
-  '-c', 'model_reasoning_effort=high',
+  '-c', 'model_reasoning_effort=medium',
   '-c', 'mcp_servers={}',
   '--ignore-rules',
   '--ephemeral',

@@ -4,15 +4,15 @@
   "_orchestrator": "run: am-orchestrator:run 스킬을 부른 차례. split: 설계 문서를 작업으로 나누는 세션.",
   "am": {
     "plan": { "model": "opus", "effort": "high" },
-    "do": { "model": "opus", "effort": "high" },
+    "do": { "model": "opus", "effort": "medium" },
     "check": { "model": "opus", "effort": "high" },
     "commit": { "model": "opus", "effort": "medium" },
-    "auto": { "model": "opus", "effort": "high" },
-    "second-opinion": { "model": "claude-opus-5-5", "effort": "xhigh" },
-    "codex-opinion": { "model": "", "effort": "high" }
+    "auto": { "model": "opus", "effort": "medium" },
+    "second-opinion": { "model": "claude-opus-5-5", "effort": "high" },
+    "codex-opinion": { "model": "", "effort": "medium" }
   },
   "orchestrator": {
-    "run": { "model": "opus", "effort": "high" },
-    "split": { "model": "opus", "effort": "xhigh" }
+    "run": { "model": "opus", "effort": "medium" },
+    "split": { "model": "opus", "effort": "high" }
   }
 }

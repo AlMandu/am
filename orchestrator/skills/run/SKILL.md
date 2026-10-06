@@ -4,7 +4,7 @@ description: "큰 설계 문서를 작은 작업으로 나누고, 작업마다 a
 argument-hint: "<설계 문서 경로 | 비우면 진행 중인 실행을 이어 감>"
 disable-model-invocation: true
 model: opus
-effort: high
+effort: medium
 ---
 
 # am-orchestrator:run

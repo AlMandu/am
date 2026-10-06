@@ -73,9 +73,9 @@ const PROFILE = { probe: 'plan', answer: 'plan', fix: 'implement' };
 // plan·implement·check·commit 은 그 단계가 부르는 am 스킬 머리말의 값과 같아야 한다(tests/orchestrator-skill.test.mjs).
 // 모델은 별칭으로 적는다: 사용자의 Claude Code 버전과 공급자에 맞는 모델로 풀린다.
 export const STAGE_DEFAULTS = {
-  split: { model: 'opus', effort: 'xhigh' },
+  split: { model: 'opus', effort: 'high' },
   plan: { model: 'opus', effort: 'high' },
-  implement: { model: 'opus', effort: 'high' },
+  implement: { model: 'opus', effort: 'medium' },
   check: { model: 'opus', effort: 'high' },
   commit: { model: 'opus', effort: 'medium' },
 };

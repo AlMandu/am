@@ -178,12 +178,12 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 
 | 세션 | 모델 | effort |
 |---|---|---|
-| 분할(`split`) | `opus` | `xhigh` |
+| 분할(`split`) | `opus` | `high` |
 | 계획(`plan`), 결정 답변(`answer`), `doctor` 의 시험 호출 | `opus` | `high` |
-| 구현(`implement`), 수정(`fix`) | `opus` | `high` |
+| 구현(`implement`), 수정(`fix`) | `opus` | `medium` |
 | 점검(`check`) | `opus` | `high` |
 | 커밋(`commit`) | `opus` | `medium` |
-| 이 스킬을 실행한 세션(`am-orchestrator:run`, 그 차례에만) | `opus` | `high` |
+| 이 스킬을 실행한 세션(`am-orchestrator:run`, 그 차례에만) | `opus` | `medium` |
 
 <!-- am:models:end -->
 

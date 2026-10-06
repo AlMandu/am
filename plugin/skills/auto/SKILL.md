@@ -4,7 +4,7 @@ description: "요청 하나를 계획 → 구현 → 점검 → 커밋까지 중
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 model: opus
-effort: high
+effort: medium
 ---
 
 # am:auto

@@ -86,12 +86,12 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | 대상 | 모델 | effort |
 |---|---|---|
 | `am:plan` | `opus` | `high` |
-| `am:do` | `opus` | `high` |
+| `am:do` | `opus` | `medium` |
 | `am:check` | `opus` | `high` |
 | `am:commit` | `opus` | `medium` |
-| `am:auto` | `opus` | `high` |
-| 2차 의견 서브에이전트(`am:second-opinion`) | `claude-opus-5-5` | `xhigh` |
-| Codex 2차 의견 | 사용자의 codex 설정 | `high` |
+| `am:auto` | `opus` | `medium` |
+| 2차 의견 서브에이전트(`am:second-opinion`) | `claude-opus-5-5` | `high` |
+| Codex 2차 의견 | 사용자의 codex 설정 | `medium` |
 
 <!-- am:models:end -->
 

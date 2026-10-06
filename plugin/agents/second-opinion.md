@@ -3,7 +3,7 @@ name: second-opinion
 description: "am 스킬이 기술적 선택을 정할 때 부르는 독립 2차 의견입니다. 대화 기록 없이 결정 요약만 받아 코드를 직접 읽고, 선택지마다 고른 안과 이유를 돌려줍니다. am 스킬이 요청할 때만 씁니다."
 tools: Read, Grep, Glob
 model: claude-opus-5-5
-effort: xhigh
+effort: high
 ---
 
 # am:second-opinion

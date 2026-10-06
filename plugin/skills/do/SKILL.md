@@ -4,7 +4,7 @@ description: "am:plan 이 쓴 계획 문서(.am/<slug>/plan.md)대로 구현합�
 argument-hint: "<slug>"
 disable-model-invocation: true
 model: opus
-effort: high
+effort: medium
 ---
 
 # am:do

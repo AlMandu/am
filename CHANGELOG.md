@@ -1,5 +1,18 @@
 # Changelog
 
+## am-orchestrator 0.4.1 (2026-10-06)
+
+- 토큰을 줄이려고 기본 effort 를 낮췄다. 구현(`implement`)·수정(`fix`)은 `high` → `medium`, 분할(`split`)은 `xhigh` → `high`, `am-orchestrator:run` 을 실행한 차례는 `high` → `medium`. 모델은 모두 `opus` 그대로이고, 계획·점검·커밋 단계는 바뀌지 않았다.
+- 예전 값으로 돌리려면 대상 저장소의 `.orchestrator/config.json` 에 `"effort": { "implement": "high", "split": "xhigh" }` 를 적는다. `skillMode` 가 `auto`(기본)이면 구현 단계는 inline 으로 불려 이 값이 쓰이고, `slash` 로 고정했으면 am:do 머리말의 값이 쓰일 수 있다. 실행한 차례의 값은 설정으로 바꾸지 못한다.
+- am 0.1.12 와 함께 업데이트해야 구현 단계의 값이 am:do 와 맞는다.
+
+## 0.1.12 (2026-10-06)
+
+- 토큰을 줄이려고 기본 effort 를 낮췄다(Claude Code 전용). `am:do`·`am:auto` 는 `high` → `medium`, 2차 의견 서브에이전트는 `xhigh` → `high`, Codex 2차 의견은 `high` → `medium`. 모델은 모두 그대로(Opus)다. 세션 중간에 모델이 바뀌면 그 대화를 캐시 없이 다시 보내 오히려 비싸지기 때문이다.
+- 품질을 받치는 `am:plan`·`am:check` 는 `high`, 짧은 `am:commit` 은 `medium` 그대로다. 값은 Claude·Codex 2차 의견이 정했고, 둘이 끝까지 갈린 계획·점검·커밋·분할은 사용자가 정했다.
+- `am:auto` 가 한 세션에서 끝내는 작업은 계획부터 커밋까지 모두 `medium` 으로 돈다(따로 부르는 `am:plan`·`am:check` 보다 낮음). am-orchestrator 에 넘긴 큰 작업은 단계별 값을 따른다. 어려운 작업에서는 구현·점검 왕복이 늘어 절약분 일부가 상쇄될 수 있다.
+- 설치한 스킬의 값을 사용자가 따로 바꾸는 방법은 없다. 환경 변수 `CLAUDE_CODE_EFFORT_LEVEL` 은 여전히 우선한다. 훅은 바뀌지 않아 Codex 훅 재신뢰는 필요 없다.
+
 ## am-orchestrator 0.4.0 (2026-10-05)
 
 - am 0.1.11 의 Codex 2차 의견을 무인 실행에서도 쓴다. 계획 세션은 읽기 전용 그대로이고, `doctor` 가 찾은 am 경로의 `scripts/codex-opinion.mjs` 하나만 더 실행할 수 있다. `codex exec` 자체는 열지 않는다.
