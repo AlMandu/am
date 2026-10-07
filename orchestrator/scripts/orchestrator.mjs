@@ -269,14 +269,15 @@ function statusEntries(repo) {
 const MODIFIED = /^( M|M |MM)$/; // 추적 중인 파일의 내용 변경: 되돌릴 원본이 HEAD 에 있다
 const isVolatile = (ctx, p) => ctx.volatile.some((re) => re.test(p));
 const sha = (buf) => createHash('sha1').update(buf).digest('hex');
+// 아래 거르개는 이미 읽은 statusEntries 목록을 받을 수 있다. 그 사이에 트리를 바꾸는 일이 없을 때만 넘긴다.
 /** 사람이나 작업이 만든 변경. volatilePaths 에 적힌 파일은 뺀다. */
-const dirtyFiles = (ctx) => statusEntries(ctx.repo).filter((e) => !isVolatile(ctx, e.path)).map((e) => `${e.code} ${e.path}`);
+const dirtyFiles = (ctx, entries = statusEntries(ctx.repo)) => entries.filter((e) => !isVolatile(ctx, e.path)).map((e) => `${e.code} ${e.path}`);
 /** 오류 문구에 붙이는 목록 미리보기: 앞 10개를 줄마다 하나씩. */
 const firstTen = (list) => list.slice(0, 10).join('\n');
 /** 남은 변경 전부. volatilePaths 중 추적되지 않는 것(빌드 산출물)만 뺀다. */
-const leftovers = (ctx) => statusEntries(ctx.repo).filter((e) => !(e.code === '??' && isVolatile(ctx, e.path))).map((e) => `${e.code} ${e.path}`);
+const leftovers = (ctx, entries = statusEntries(ctx.repo)) => entries.filter((e) => !(e.code === '??' && isVolatile(ctx, e.path))).map((e) => `${e.code} ${e.path}`);
 /** 내용이 바뀐 volatilePaths 파일. */
-const volatileDirty = (ctx) => statusEntries(ctx.repo).filter((e) => MODIFIED.test(e.code) && isVolatile(ctx, e.path)).map((e) => e.path);
+const volatileDirty = (ctx, entries = statusEntries(ctx.repo)) => entries.filter((e) => MODIFIED.test(e.code) && isVolatile(ctx, e.path)).map((e) => e.path);
 
 /**
  * 지금 작업 트리(무시되는 파일 제외)를 담은 tree 객체의 id. 작업 트리와 실제 인덱스는 건드리지 않는다.
@@ -284,12 +285,12 @@ const volatileDirty = (ctx) => statusEntries(ctx.repo).filter((e) => MODIFIED.te
  * 실패하기 때문에 쓰지 않는다. 만들지 못하면 null: 호출한 쪽은 "그 사이에 누가 바꿨는지" 증명할 수 없으므로 되돌리기를 건너뛴다.
  */
 export function snapshot(repo) {
-  const tmpPath = git(repo, ['rev-parse', '--git-path', 'orch-snapshot-index'], { allowFail: true });
-  const realPath = git(repo, ['rev-parse', '--git-path', 'index'], { allowFail: true });
-  if (tmpPath.code !== 0 || realPath.code !== 0) return null;
-  const tmp = path.resolve(repo, tmpPath.out.trim());
+  const paths = git(repo, ['rev-parse', '--git-path', 'orch-snapshot-index', '--git-path', 'index'], { allowFail: true });
+  const lines = paths.out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean); // 인자 순서대로 한 줄씩
+  if (paths.code !== 0 || lines.length !== 2) return null;
+  const tmp = path.resolve(repo, lines[0]);
   try {
-    const real = path.resolve(repo, realPath.out.trim());
+    const real = path.resolve(repo, lines[1]);
     if (existsSync(real)) {
       copyFileSync(real, tmp); // 실제 인덱스를 베껴 두면 바뀐 파일만 다시 읽는다
       // git 은 "인덱스 파일의 수정 시각 이후에 바뀐 파일"만 내용을 다시 비교한다. 사본은 지금 시각을 갖게 되므로,
@@ -340,6 +341,11 @@ function discard(ctx, dir, files, why) {
 /** am 과 같은 방식: 폴더가 git 에서 제외돼 있지 않으면 그 안에 `*` 한 줄짜리 .gitignore 를 둔다. */
 function ensureIgnored(repo, dir) {
   mkdirSync(path.join(repo, dir), { recursive: true });
+  try {
+    if (readFileSync(path.join(repo, dir, '.gitignore'), 'utf8') === '*\n') return; // 이미 둔 파일이면 git 에 묻지 않는다
+  } catch {
+    /* 없거나 읽지 못하면 아래에서 확인한다 */
+  }
   if (git(repo, ['check-ignore', '-q', dir], { allowFail: true }).code !== 0) writeFileSync(path.join(repo, dir, '.gitignore'), '*\n');
 }
 
@@ -410,8 +416,15 @@ function amVersion(root) {
   }
 }
 
+/** 이 프로세스에서 git 저장소임을 이미 확인한 경로(실패한 경로는 넣지 않는다). */
+const knownRepos = new Set();
+
 function baseContext(repo) {
-  if (git(repo, ['rev-parse', '--show-toplevel'], { allowFail: true }).code !== 0) fail(`git 저장소가 아닙니다: ${repo}`);
+  const key = path.resolve(repo);
+  if (!knownRepos.has(key)) {
+    if (git(repo, ['rev-parse', '--show-toplevel'], { allowFail: true }).code !== 0) fail(`git 저장소가 아닙니다: ${repo}`);
+    knownRepos.add(key);
+  }
   const cfg = loadConfig(repo);
   const envFile = path.join(repo, ORCH_DIR, 'env.json');
   const env = existsSync(envFile) ? readJson(envFile) : null;
@@ -1347,8 +1360,10 @@ async function runTask(ctx, t) {
 
   // 1) 계획: am:plan 이 .am/<slug>/plan.md 를 쓴다
   if (s.status === 'pending') {
-    discard(ctx, dir, volatileDirty(ctx), '이전 빌드가 다시 쓴 파일'); // 작업 시작 시점에 남아 있는 volatile 변경은 지난 빌드의 흔적이다
-    const stray = dirtyFiles(ctx);
+    const entries = statusEntries(repo);
+    const stale = volatileDirty(ctx, entries);
+    discard(ctx, dir, stale, '이전 빌드가 다시 쓴 파일'); // 작업 시작 시점에 남아 있는 volatile 변경은 지난 빌드의 흔적이다
+    const stray = dirtyFiles(ctx, stale.length ? undefined : entries); // 되돌린 파일이 있으면 다시 읽는다
     if (stray.length) fail(`${t.id} 를 시작하려면 작업 트리가 깨끗해야 합니다. 커밋하거나 치운 뒤 다시 실행하세요.\n${firstTen(stray)}`);
     writeBrief(ctx, t);
     begin('plan');
@@ -1515,9 +1530,10 @@ async function runTask(ctx, t) {
         const b = git(repo, ['rev-parse', '--verify', '--quiet', `${rev}:${p}`], { allowFail: true });
         return b.code === 0 ? b.out.trim() : null;
       };
-      const byGate = snap ? statusEntries(repo).filter((e) => MODIFIED.test(e.code) && blob(snap, e.path) !== null && blob(snap, e.path) === blob('HEAD', e.path)).map((e) => e.path) : [];
+      const entries = snap ? statusEntries(repo) : undefined;
+      const byGate = snap ? entries.filter((e) => MODIFIED.test(e.code) && blob(snap, e.path) !== null && blob(snap, e.path) === blob('HEAD', e.path)).map((e) => e.path) : [];
       discard(ctx, dir, byGate, '커밋 중 게이트가 다시 쓴 파일');
-      const left = leftovers(ctx);
+      const left = leftovers(ctx, byGate.length ? undefined : entries); // 되돌린 파일이 있으면 다시 읽는다
       if (left.length) {
         writeText(path.join(dir, 'commit-reply.md'), r.text);
         return block(`커밋 뒤에도 변경 ${left.length}개가 남았습니다: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ' …' : ''}. 커밋 세션의 설명: ${rel(ctx, path.join(dir, 'commit-reply.md'))}`, { commits, commitBase: undefined });
