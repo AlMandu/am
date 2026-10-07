@@ -6,24 +6,28 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem } from '../plugin/scripts/stage.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
 
 // A fake claude: records its arguments in calls.jsonl and answers as fake.json in the working folder says.
-// fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "exit": 0, "write": { "path": "content" } }
+// fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "exit": 0, "write": { "path": "content" },
+//   "writes": [{ "path": "content written by the 1st call only" }, ...], "hang": [1] (calls that never end) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const argv = process.argv.slice(2);
 appendFileSync('calls.jsonl', JSON.stringify(argv) + '\\n');
 const s = existsSync('fake.json') ? JSON.parse(readFileSync('fake.json', 'utf8')) : {};
 const n = readFileSync('calls.jsonl', 'utf8').trim().split('\\n').length;
-for (const [f, t] of Object.entries(s.write || {})) { mkdirSync(path.dirname(f), { recursive: true }); writeFileSync(f, t); }
+if ((s.hang || []).includes(n)) setTimeout(() => {}, 60000);
+else {
+for (const [f, t] of Object.entries({ ...s.write, ...(s.writes || [])[n - 1] })) { mkdirSync(path.dirname(f), { recursive: true }); writeFileSync(f, t); }
 if (s.crash) { process.stderr.write('boom'); process.exit(3); }
 const replies = s.replies || ['done\\nAM_STAGE: READY'];
 const text = replies[Math.min(n, replies.length) - 1];
 process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
+}
 `;
 
 function makeRepo(t, { plan, request = 'Fix the typo', fake } = {}) {
@@ -82,6 +86,25 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   for (const r of ['Edit(/am-gate.json)', 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git stash push *)']) assert.ok(hand.allow.includes(r), r);
   assert.ok(permissions('handover', { orchRoot: '/orch', push: true }).allow.includes('Bash(git push *)'));
   for (const s of [...STAGES, 'handover']) assert.ok(permissions(s).deny.includes('AskUserQuestion'), s);
+  // The compaction session reads and writes only under .am/: no shell at all.
+  const compact = permissions('compact');
+  assert.equal(compact.mode, 'dontAsk');
+  assert.deepEqual(compact.allow, ['Read', 'Glob', 'Grep', 'Edit(/.am/**)', 'Edit(.am/**)']);
+  assert.deepEqual(compact.deny, ['AskUserQuestion']);
+});
+
+test('the compaction session: its own model and markers, a prompt cmd.exe can pass', () => {
+  const args = claudeArgs(permissions('compact'), { prompt: 'x', systemFile: 's.md', model: COMPACT_MODEL });
+  assert.equal(flag(args, '--model'), COMPACT_MODEL.model);
+  assert.equal(flag(args, '--effort'), COMPACT_MODEL.effort);
+  assert.equal(TIMEOUT_MIN.compact, 15);
+  assert.deepEqual(COMPACT_MARKS, ['COMPACTED', 'BLOCKED']);
+  // Its markers never reach am:auto as a stage status.
+  assert.ok(!Object.keys(MARKS).includes('compact') && !Object.values(MARKS).flat().includes('COMPACTED'));
+  const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
+  assert.ok(!/["%]/.test(prompt), prompt);
+  assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
+  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool']) assert.ok(system.includes(keep), keep);
 });
 
 test('instructions: slash call of the stage skill, unattended rules written out in every stage', () => {
@@ -133,6 +156,26 @@ test('doKind: hand over a large new plan only when the run skill is installed', 
   assert.match(doKind('# p\n## Steps\n1. a\n', { orchestrator: orch }).error, /no Scale line/);
 });
 
+test('context size: estimate, files per stage, and which files to shorten', () => {
+  assert.equal(estimateTokens('abcdefgh'), 2);
+  assert.equal(estimateTokens('abcde'), 2, 'rounded up');
+  assert.equal(estimateTokens('한국어 계획'), 6, 'one token per non-ASCII character, plus the space');
+  assert.equal(estimateTokens(''), 0);
+  assert.deepEqual(contextFiles('plan'), ['request.md', 'plan.md']);
+  assert.deepEqual(contextFiles('do'), ['plan.md']);
+  assert.deepEqual(contextFiles('do', { fix: true }), ['plan.md', 'check.md']);
+  assert.deepEqual(contextFiles('handover'), [], 'the orchestrator copies the handed plan.md whole');
+  assert.deepEqual(contextFiles('check'), ['plan.md']);
+  for (const k of ['compactmem', 'commit']) assert.deepEqual(contextFiles(k), ['plan.md', 'check.md']);
+  assert.equal(CONTEXT_LIMIT, 13000);
+  assert.equal(CONTEXT_TARGET, 8500);
+  assert.deepEqual(pickCompaction({ 'plan.md': 13000 }), { files: [], budget: 0 }, 'at the limit nothing is shortened');
+  assert.deepEqual(pickCompaction({ 'plan.md': 12000, 'check.md': 1001 }), { files: ['plan.md'], budget: 7499 });
+  // The largest first, until what is left as it is holds at most half the target (4,250).
+  assert.deepEqual(pickCompaction({ 'request.md': 6000, 'plan.md': 9000 }), { files: ['plan.md', 'request.md'], budget: 8500 });
+  assert.deepEqual(pickCompaction({ 'request.md': 3000, 'plan.md': 11000 }), { files: ['plan.md'], budget: 5500 });
+});
+
 test('reading the end: result object, marker line, claude arguments', () => {
   assert.equal(parseResult('[{"type":"system"},{"type":"result","result":"x"}]').result, 'x');
   assert.equal(parseResult('noise\n{"type":"result","result":"y"}').result, 'y');
@@ -159,7 +202,7 @@ test('a plan stage runs one session and reports its marker, cost, reply and refu
   const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } } });
   const { code, result, calls } = await run(dir, ['plan', 'demo']);
   assert.equal(code, 0);
-  assert.deepEqual({ ...result, reply: !!result.reply }, { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'] });
+  assert.deepEqual({ ...result, reply: !!result.reply }, { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null });
   assert.equal(calls.length, 1);
   assert.equal(flag(calls[0], '-p'), '/am:plan Read the request in .am/demo/request.md (slug demo)');
   assert.match(readFileSync(path.join(dir, flag(calls[0], '--append-system-prompt-file')), 'utf8'), /This is the plan stage/);
@@ -171,9 +214,8 @@ test('a plan stage runs one session and reports its marker, cost, reply and refu
 });
 
 test('a plan stage that says READY without saving plan.md is asked once to save it', async (t) => {
-  const saved = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY', 'Saved.\nAM_STAGE: READY'] } });
-  // The fake writes on every call; the first call writes nowhere useful, the second saves the plan.
-  writeFileSync(path.join(saved, 'fake-claude.mjs'), FAKE.replace("for (const [f, t] of Object.entries(s.write || {}))", "if (n === 2) writeFileSync('.am/demo/plan.md', 'x');\nfor (const [f, t] of Object.entries(s.write || {}))"));
+  // The first call writes nothing, the second saves the plan.
+  const saved = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY', 'Saved.\nAM_STAGE: READY'], writes: [{}, { '.am/demo/plan.md': 'x' }] } });
   const r1 = await run(saved, ['plan', 'demo']);
   assert.equal(r1.result.status, 'READY');
   assert.match(flag(r1.calls[1], '-p'), /^The plan was not saved: \.am\/demo\/plan\.md does not exist/);
@@ -252,4 +294,82 @@ test('a session over its time limit is stopped and reported', async (t) => {
   const { result } = await run(dir, ['check', 'demo'], { timeoutMin: { check: 0.005 } });
   assert.equal(result.status, 'failed');
   assert.match(result.reason, /no end within/);
+});
+
+// A Korean plan of about 15,700 estimated tokens, and the same plan shortened.
+const FILLER = '설명 문장입니다. '.repeat(2000);
+const SHORT = '# p\n## 요약\n- 규모: 구현 1회, 커밋 1개\n## 결정\n- 범위 (자동 결정)\n## 단계\n1. a. Check: x (완료)\n2. b. Check: y\n## 변경 기록\n';
+const BIG = SHORT.replace('## 결정', `- ${FILLER}\n## 결정`);
+const plan = (dir) => readFileSync(path.join(dir, '.am', 'demo', 'plan.md'), 'utf8');
+
+test('task files above the limit are shortened in a session of their own before the stage, with the original kept', async (t) => {
+  const dir = makeRepo(t, { plan: BIG, fake: { replies: ['Shortened.\nAM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  const { result, calls } = await run(dir, ['do', 'demo']);
+  assert.equal(result.status, 'DONE');
+  assert.equal(calls.length, 2);
+  // The compaction session: its own prompt, system file, model and permissions.
+  assert.match(flag(calls[0], '-p'), /^Shorten the task files of \.am\/demo\//);
+  assert.equal(flag(calls[0], '--append-system-prompt-file'), '.am/demo/stage-compact.system.md');
+  assert.equal(flag(calls[0], '--model'), 'opus');
+  assert.equal(flag(calls[0], '--allowedTools'), 'Read,Glob,Grep,Edit(/.am/**),Edit(.am/**)');
+  assert.equal(flag(calls[1], '-p'), '/am:do demo');
+  assert.ok(!calls[1].includes('--model'));
+  assert.equal(plan(dir), SHORT);
+  assert.equal(readFileSync(path.join(dir, '.am', 'demo', 'plan.orig-1.md'), 'utf8'), BIG);
+  assert.deepEqual(result.compacted, { files: ['.am/demo/plan.md'], before: estimateTokens(BIG), after: estimateTokens(SHORT), originals: ['.am/demo/plan.orig-1.md'] });
+  assert.ok(result.compacted.before > CONTEXT_LIMIT);
+  assert.match(readFileSync(path.join(dir, '.am', 'demo', 'stage-do.system.md'), 'utf8'), /shortened \.am\/demo\/plan\.md to keep this context small; the originals are \.am\/demo\/plan\.orig-1\.md\. Open an original only when/);
+  assert.equal(result.costUsd, 0.75, 'the compaction session (0.25) and the stage session (0.5)');
+});
+
+test('a second compaction keeps the first original and writes the next number', async (t) => {
+  const dir = makeRepo(t, { plan: BIG, fake: { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  writeFileSync(path.join(dir, '.am', 'demo', 'plan.orig-1.md'), 'first original');
+  const { result } = await run(dir, ['check', 'demo']);
+  assert.deepEqual(result.compacted.originals, ['.am/demo/plan.orig-2.md']);
+  assert.equal(readFileSync(path.join(dir, '.am', 'demo', 'plan.orig-1.md'), 'utf8'), 'first original');
+  assert.equal(readFileSync(path.join(dir, '.am', 'demo', 'plan.orig-2.md'), 'utf8'), BIG);
+});
+
+test('a compaction that breaks the plan, ends without its marker or runs over time is undone and the stage goes on', async (t) => {
+  const cases = [
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT.replace('구현 1회', '구현 2회') }] }, /Scale line/],
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT.replace(' (완료)', '') }] }, /Scale line, done marks/],
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT.replace(' (자동 결정)', '') }] }, /auto-decided marks 1 -> 0/],
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT.replace('## 변경 기록\n', '') }] }, /heading lost: ## 변경 기록/],
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': `${SHORT}${FILLER}` }] }, /still about \d+ tokens, above 13000/],
+    [{ replies: ['Shortened.', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] }, /without an AM_STAGE line/],
+    [{ replies: ['AM_STAGE: BLOCKED', 'AM_STAGE: DONE'] }, /said BLOCKED/],
+  ];
+  for (const [fake, why] of cases) {
+    const dir = makeRepo(t, { plan: BIG, fake });
+    const { result, calls } = await run(dir, ['do', 'demo']);
+    assert.equal(result.status, 'DONE', String(why));
+    assert.deepEqual(Object.keys(result.compacted), ['files', 'failed']);
+    assert.match(result.compacted.failed, why);
+    assert.equal(plan(dir), BIG, `original back: ${why}`);
+    assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'plan.orig-1.md')), `copy removed: ${why}`);
+    assert.doesNotMatch(readFileSync(path.join(dir, '.am', 'demo', 'stage-do.system.md'), 'utf8'), /shortened/);
+    assert.equal(calls.length, 2);
+  }
+  const slow = makeRepo(t, { plan: BIG, fake: { hang: [1], replies: ['', 'AM_STAGE: DONE'] } });
+  const { result } = await run(slow, ['do', 'demo'], { timeoutMin: { ...TIMEOUT_MIN, compact: 0.005 } });
+  assert.equal(result.status, 'DONE');
+  assert.match(result.compacted.failed, /no end within/);
+  assert.equal(plan(slow), BIG);
+});
+
+test('within the limit no compaction session runs', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  const { result, calls } = await run(dir, ['do', 'demo']);
+  assert.equal(calls.length, 1);
+  assert.equal(result.compacted, null);
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'stage-compact.system.md')));
+});
+
+test('compactionProblem: check.md keeps its verdict', () => {
+  assert.equal(compactionProblem('check.md', 'Verdict: NOTE\n## a\n', 'NOTE\n## a\n'), null);
+  assert.match(compactionProblem('check.md', 'Verdict: BLOCK\n', 'Verdict: NOTE\n'), /verdict BLOCK -> NOTE/);
+  assert.match(compactionProblem('plan.md', 'x', ''), /deleted or emptied/);
+  assert.match(compactionProblem('plan.md', '- OPEN card\n', '- card\n'), /OPEN marks 1 -> 0/);
 });

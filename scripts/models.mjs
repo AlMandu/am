@@ -20,7 +20,7 @@ const MODEL = {
   codex: [/^([A-Za-z0-9._:-]+)?$/, '빈 문자열(사용자의 codex 설정) 또는 따옴표 없이 쓰는 모델 이름'],
 };
 const ENTRIES = {
-  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', compactmem: 'alias', auto: 'alias', 'second-opinion': 'full', 'codex-opinion': 'codex' },
+  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', compactmem: 'alias', auto: 'alias', compact: 'alias', 'second-opinion': 'full', 'codex-opinion': 'codex' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs uses the same map).
@@ -105,9 +105,16 @@ export function targets() {
         return `\n  ${model ? `'-c', 'model=${model}',\n  ` : ''}'-c', 'model_reasoning_effort=${effort}',`;
       },
     },
+    {
+      file: 'plugin/scripts/stage.mjs',
+      what: 'COMPACT_MODEL',
+      pattern: /\nexport const COMPACT_MODEL = \{ model: '[^'\n]*', effort: '[^'\n]*' \};/g,
+      text: (m) => `\nexport const COMPACT_MODEL = { model: '${m.am.compact.model}', effort: '${m.am.compact.effort}' };`,
+    },
     generated('README.md', (m) =>
       table('대상', [
         ...['plan', 'do', 'check', 'compactmem', 'commit', 'auto'].map((n) => [code(`am:${n}`), m.am[n]]),
+        ['단계 사이 맥락 압축 세션(`am:auto`, Claude Code)', m.am.compact],
         ['2차 의견 서브에이전트(`am:second-opinion`)', m.am['second-opinion']],
         ['Codex 2차 의견', m.am['codex-opinion'], m.am['codex-opinion'].model ? undefined : '사용자의 codex 설정'],
       ]),

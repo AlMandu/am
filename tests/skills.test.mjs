@@ -93,7 +93,7 @@ test('am:auto drives the stage runner and handles every status it prints', async
   // The plan stage reads the request from this file (cmd.exe cannot pass every request as an argument).
   assert.ok(auto.includes('`.am/<slug>/request.md`'));
   for (const status of [...new Set(Object.values(MARKS).flat()), 'failed', 'unavailable']) assert.ok(auto.includes(`\`${status}\``), `status ${status}`);
-  for (const field of ['status', 'reason', 'reply', 'costUsd']) assert.ok(auto.includes(`\`${field}\``), field);
+  for (const field of ['status', 'reason', 'reply', 'costUsd', 'compacted']) assert.ok(auto.includes(`\`${field}\``), field);
 });
 
 test('the second-opinion agent stays pinned and read-only, and the common rules send choices to it', () => {

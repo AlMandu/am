@@ -6,13 +6,15 @@
 // effort apply), and ends with one marker line that this script reads. Called by am:auto:
 //   node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
-// Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied}.
+// Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
+// (originals kept as <name>.orig-<n>.md); `compacted` reports it.
+// Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker. Exit codes: 0 result printed, 1 bad input.
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,7 +25,7 @@ const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const USAGE = 'usage: node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]';
 export const STAGES = ['plan', 'do', 'check', 'compactmem', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
-export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compactmem: 20, commit: 25 };
+export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compactmem: 20, commit: 25, compact: 15 };
 // End markers each session may give; anything else is `failed`.
 export const MARKS = {
   plan: ['READY', 'NEEDS_DECISION'],
@@ -33,7 +35,55 @@ export const MARKS = {
   compactmem: ['PROPOSED', 'NOTHING', 'BLOCKED'],
   commit: ['COMMITTED', 'NOTHING', 'BLOCKED', 'NEEDS_DECISION'],
 };
+// End markers of the compaction session. Kept apart from MARKS: they never reach am:auto as a stage status.
+export const COMPACT_MARKS = ['COMPACTED', 'BLOCKED'];
 const TAIL_CHARS = 600;
+// The compaction session runs no skill, so it gets its model and effort as arguments (written by scripts/models.mjs).
+export const COMPACT_MODEL = { model: 'opus', effort: 'medium' };
+
+// ------------------------------------------------------------------ context size
+
+// Estimated tokens of the task files a stage reads. Above the limit they are shortened before the stage, to about the target.
+export const CONTEXT_LIMIT = 13000;
+export const CONTEXT_TARGET = 8500;
+
+/** A conservative token estimate: 4 ASCII characters per token, every other character one token (so Korean is not undercounted). */
+export function estimateTokens(text) {
+  let ascii = 0;
+  let other = 0;
+  for (const ch of String(text || '')) {
+    if (ch.codePointAt(0) < 128) ascii++;
+    else other++;
+  }
+  return Math.ceil(ascii / 4) + other;
+}
+
+/** The task files under .am/<slug>/ a session of this kind reads. Common text (system prompt, skill body) is not counted. */
+export function contextFiles(kind, { fix = false } = {}) {
+  if (kind === 'plan') return ['request.md', 'plan.md'];
+  if (kind === 'do') return fix ? ['plan.md', 'check.md'] : ['plan.md'];
+  // The orchestrator copies the handed plan.md as its design document, so a hand-over passes it on whole.
+  if (kind === 'handover') return [];
+  if (kind === 'check') return ['plan.md'];
+  return ['plan.md', 'check.md'];
+}
+
+/**
+ * Which files to shorten, from {name: tokens}: none while the sum is within the limit; otherwise the largest first, until
+ * the files left as they are hold at most half the target. `budget` is what the picked files may hold together afterwards.
+ */
+export function pickCompaction(sizes, { limit = CONTEXT_LIMIT, target = CONTEXT_TARGET } = {}) {
+  const total = Object.values(sizes).reduce((a, b) => a + b, 0);
+  if (total <= limit) return { files: [], budget: 0 };
+  const files = [];
+  let rest = total;
+  for (const [name, size] of Object.entries(sizes).sort((a, b) => b[1] - a[1])) {
+    if (rest <= target / 2) break;
+    files.push(name);
+    rest -= size;
+  }
+  return { files, budget: target - rest };
+}
 
 // ------------------------------------------------------------------ permissions
 
@@ -68,6 +118,9 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
       return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)']), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
     case 'commit':
       return { mode: 'dontAsk', allow: sh([...read, ...gitRead, 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
+    case 'compact':
+      // Shortens task files under .am/ before a stage; nothing else.
+      return { mode: 'dontAsk', allow: [...read, ...edit('.am')], deny: noHuman };
     case 'handover': {
       const orch = orchRoot ? nodeScript(path.join(orchRoot, 'scripts', 'orchestrator.mjs')) : [];
       const merge = ['Bash(git checkout *)', 'Bash(git merge --ff-only *)', 'Bash(git branch -d *)', 'Bash(git branch --show-current)'];
@@ -135,7 +188,7 @@ const STAGE_RULES = {
 };
 
 /** The prompt and appended system prompt of one session. */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '' } = {}) {
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '', compacted = null } = {}) {
   const prompts = {
     plan: `/am:plan Read the request in .am/${slug}/request.md (slug ${slug})`,
     do: `/am:do ${slug}`,
@@ -146,7 +199,28 @@ export function instructions(stage, slug, { push = false, fix = false, resume = 
   };
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && (stage === 'plan' || stage === 'handover') ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
-  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}${note}\n` };
+  const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
+  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}${note}${shortened}\n` };
+}
+
+/**
+ * The prompt and system prompt of the compaction session. `files`: [{file, size, goal}], paths from the repository root.
+ * The prompt holds no quotes or `%`: through cmd.exe it could not be passed.
+ */
+export function compactInstructions(slug, files) {
+  const list = files.map((f) => `- ${f.file}: about ${f.size} tokens now; bring it to about ${f.goal} tokens.`).join('\n');
+  const system = `You shorten the task files of an am:auto run before its next stage starts in a fresh session; that session reads these files instead of any conversation. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool.
+Files to shorten (token counts are this runner's estimate: 4 ASCII characters, or 1 other character, per token):
+${list}
+- Change only these files, in place, with the Edit or Write tool. Change nothing else. The runner keeps a copy of each original and tells the next session where it is.
+- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
+- Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), and the word OPEN.
+- Shorten: explanations and background, long reasons (one line each), examples, Change log lines that repeat or were superseded.
+- Do not add anything, and do not change what a kept line says.
+- The runner checks the result mechanically (the marks, numbered lines and headings above, and the total size) and puts the originals back if a check fails.
+- End your final reply with exactly one line: AM_STAGE: COMPACTED, or AM_STAGE: BLOCKED when the files cannot be shortened without losing what must be kept.
+`;
+  return { prompt: `Shorten the task files of .am/${slug}/ as your system prompt says`, system };
 }
 
 /** What the do stage becomes: `do`, `handover`, or {error} when the plan cannot tell. */
@@ -262,9 +336,10 @@ export function lastMark(text, values) {
   return found;
 }
 
-/** The claude arguments of one session. No --model or --effort: the slash call carries the skill's own. */
-export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '' }) {
+/** The claude arguments of one session. No --model or --effort for a stage: the slash call carries the skill's own. Only the compaction session, which runs no skill, passes `model`. */
+export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null }) {
   const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', perm.mode];
+  if (model) args.push('--model', model.model, '--effort', model.effort);
   if (perm.allow.length) args.push('--allowedTools', perm.allow.join(','));
   if (perm.deny.length) args.push('--disallowedTools', perm.deny.join(','));
   if (pluginDir) args.push('--plugin-dir', pluginDir);
@@ -290,6 +365,97 @@ function ensureIgnored(cwd) {
   if (r.status !== 0) writeFileSync(path.join(cwd, '.am', '.gitignore'), '*\n');
 }
 
+// ------------------------------------------------------------------ compaction
+
+const count = (text, re) => (String(text).match(re) || []).length;
+const COUNTED = [
+  [/\((?:done|완료)\)/gi, 'done marks'],
+  [/\((?:auto-decided|자동 결정)\)/gi, 'auto-decided marks'],
+  [/\bOPEN\b/g, 'OPEN marks'],
+  [/^\d+\.\s/gm, 'numbered lines'],
+];
+
+/** Why a shortened file cannot stand in for its original, or null. */
+export function compactionProblem(name, before, after) {
+  if (!String(after ?? '').trim()) return `${name} was deleted or emptied`;
+  if (name === 'plan.md' && JSON.stringify(readPlan(before)) !== JSON.stringify(readPlan(after))) return `${name}: the Scale line, done marks or hand-over line read differently`;
+  for (const [re, what] of COUNTED) if (count(before, re) !== count(after, re)) return `${name}: ${what} ${count(before, re)} -> ${count(after, re)}`;
+  const headings = new Set(String(after).match(/^## .*$/gm)?.map((h) => h.trimEnd()) || []);
+  const lost = (String(before).match(/^## .*$/gm) || []).map((h) => h.trimEnd()).find((h) => !headings.has(h));
+  if (lost) return `${name}: heading lost: ${lost}`;
+  const verdict = (t) => /\b(BLOCK|NOTE)\b/.exec(t)?.[1] ?? null;
+  if (name === 'check.md' && verdict(before) !== verdict(after)) return `${name}: verdict ${verdict(before)} -> ${verdict(after)}`;
+  return null;
+}
+
+/** `<name>.orig-<n>.md` with the first n not taken, from the repository root. */
+function originalName(slug, name, taken) {
+  const base = name.replace(/\.md$/, '');
+  for (let n = 1; ; n++) {
+    const rel = `.am/${slug}/${base}.orig-${n}.md`;
+    if (!taken(rel)) return rel;
+  }
+}
+
+/**
+ * Shortens the task files a stage of this kind reads when they hold more than the limit, in a short claude session of
+ * their own. Each shortened file keeps its original as `<name>.orig-<n>.md`. A failed check, a session without its marker
+ * or over its time puts every original back and removes the new copies. Returns {compacted, costUsd}; `compacted` is
+ * null (nothing to do), {files, before, after, originals}, or {files, failed}.
+ */
+export async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET } = {}) {
+  const abs = (rel) => path.join(cwd, rel);
+  const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
+  const texts = {};
+  for (const name of contextFiles(kind, { fix })) {
+    const t = read(`.am/${slug}/${name}`);
+    if (t !== null) texts[name] = t;
+  }
+  const sizes = Object.fromEntries(Object.entries(texts).map(([n, t]) => [n, estimateTokens(t)]));
+  const { files: names, budget } = pickCompaction(sizes, { limit, target });
+  if (!names.length) return { compacted: null, costUsd: 0 };
+  const files = names.map((n) => `.am/${slug}/${n}`);
+  const picked = names.reduce((a, n) => a + sizes[n], 0);
+  const originals = [];
+  for (const n of names) {
+    const rel = originalName(slug, n, (p) => existsSync(abs(p)));
+    writeFileSync(abs(rel), texts[n], { flag: 'wx' });
+    originals.push(rel);
+  }
+  const { prompt, system } = compactInstructions(
+    slug,
+    names.map((n, i) => ({ file: files[i], size: sizes[n], goal: Math.floor((budget * sizes[n]) / picked) })),
+  );
+  const systemRel = `.am/${slug}/stage-compact.system.md`;
+  writeFileSync(abs(systemRel), system);
+  const [bin, ...pre] = claude;
+  const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact'), { prompt, systemFile: systemRel, model: COMPACT_MODEL })], { cwd, env, timeoutMs: (timeoutMin.compact ?? TIMEOUT_MIN.compact) * 60000 });
+  const parsed = parseResult(r.stdout);
+  const costUsd = parsed && Number.isFinite(parsed.total_cost_usd) ? parsed.total_cost_usd : 0;
+
+  let failed = null;
+  if (r.spawnError) failed = `could not start ${bin}: ${r.spawnError}`;
+  else if (r.timedOut) failed = `no end within ${timeoutMin.compact ?? TIMEOUT_MIN.compact} minutes`;
+  else if (!parsed || r.code !== 0 || parsed.is_error) failed = `the session ended with an error or unreadable output (exit ${r.code})`;
+  else {
+    const mark = lastMark(parsed.result, COMPACT_MARKS);
+    if (mark !== 'COMPACTED') failed = mark ? `the session said ${mark}` : 'the session ended without an AM_STAGE line';
+  }
+  const now = Object.fromEntries(Object.keys(texts).map((n) => [n, read(`.am/${slug}/${n}`)]));
+  for (const n of Object.keys(texts)) {
+    if (failed) break;
+    failed = names.includes(n) ? compactionProblem(n, texts[n], now[n]) : now[n] === texts[n] ? null : `${n} was changed but not picked`;
+  }
+  const after = Object.values(now).reduce((a, t) => a + estimateTokens(t ?? ''), 0);
+  if (!failed && after > limit) failed = `still about ${after} tokens, above ${limit}`;
+  if (failed) {
+    for (const [n, t] of Object.entries(texts)) if (now[n] !== t) writeFileSync(abs(`.am/${slug}/${n}`), t);
+    for (const rel of originals) rmSync(abs(rel), { force: true });
+    return { compacted: { files, failed }, costUsd };
+  }
+  return { compacted: { files, before: Object.values(sizes).reduce((a, b) => a + b, 0), after, originals }, costUsd };
+}
+
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
@@ -303,7 +469,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const fix = flags.includes('--fix');
   const dir = path.join(cwd, '.am', slug);
   const planFile = path.join(dir, 'plan.md');
-  const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [] };
+  const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null };
   const done = (fields = {}) => {
     out.write(`${JSON.stringify(Object.assign(result, fields))}\n`);
     return 0;
@@ -325,9 +491,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   result.stage = kind;
   const [bin, ...pre] = claude;
+  // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
+  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin });
+  result.compacted = compaction.compacted;
+  result.costUsd = compaction.costUsd;
   const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
   const perm = permissions(kind, { push, amRoot, orchRoot, memDir });
-  const { prompt, system } = instructions(kind, slug, { ...opts, memDir, unquoted: resolveCommand(bin, env).shell });
+  const { prompt, system } = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
   const pluginDir = pluginDirFor(amRoot, env);
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;
   writeFileSync(path.join(cwd, systemRel), system);
@@ -336,7 +506,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const call = async (args) => {
     const r = await exec(bin, [...pre, ...args], { cwd, env, timeoutMs });
     const parsed = parseResult(r.stdout);
-    if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = parsed.total_cost_usd; // a resumed session reports the whole conversation
+    if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + parsed.total_cost_usd; // a resumed session reports the whole conversation
     if (parsed?.session_id) result.sessionId = parsed.session_id;
     for (const d of Array.isArray(parsed?.permission_denials) ? parsed.permission_denials : []) {
       const input = (d && d.tool_input) || {};
