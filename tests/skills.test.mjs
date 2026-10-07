@@ -8,7 +8,7 @@ import { load } from '../scripts/models.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, compactmem: 80 };
 // Model and effort a skill's turn runs with in Claude Code (Codex ignores both keys), from models.json at the repository root.
 const MODELS = load().am;
 const RUNS_WITH = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, [MODELS[name].model, MODELS[name].effort]]));
@@ -42,8 +42,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do and am:auto are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto']) {
+test('am:plan, am:do, am:auto and am:compactmem are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto', 'compactmem']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -54,12 +54,23 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const [name, [model, effort]] of Object.entries(RUNS_WITH)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'auto', 'compactmem'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.equal(fm.model, model, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
     assert.equal(fm.effort, effort, name);
   }
+});
+
+test('am:compactmem never runs inside an am-orchestrator session (user decision)', () => {
+  const skill = read('compactmem');
+  assert.match(skill, /never inside an am-orchestrator run[^\n]*its instructions say you are running inside am-orchestrator[^\n]*say so in one line and stop without reading or writing anything/);
+  // The words the skill looks for are the ones every orchestrator session gets.
+  const orch = readFileSync(path.resolve(ROOT, '..', '..', 'orchestrator', 'scripts', 'orchestrator.mjs'), 'utf8');
+  assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
+  assert.doesNotMatch(orch, /compactmem/, 'the orchestrator never calls it');
+  assert.match(read('check'), /in Claude Code outside an am-orchestrator run the am:compactmem skill/);
+  assert.match(read('auto'), /skip check, compactmem and commit/);
 });
 
 test('am:auto declares the hand-over hook, and only am:auto', () => {

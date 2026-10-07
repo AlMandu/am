@@ -52,4 +52,4 @@ Target: $ARGUMENTS
    - NOTE: everything else, including steps dropped with a reason in the Change log or by the user. Notes never block a commit.
    Fix small, safe, local problems right away and run the gate once more. If a failure comes from files outside this task, do not fix it; report it.
 6. With a slug, write `.am/<slug>/check.md` (20 lines or fewer): verdict, gate result, what you checked at runtime, the human checklist, notes.
-7. Reply: the verdict in one line, then what was verified (gate, runtime, review), then the human checklist, then the next step (the am:commit skill, or what to fix).
+7. Reply: the verdict in one line, then what was verified (gate, runtime, review), then the human checklist, then the next step (in Claude Code outside an am-orchestrator run the am:compactmem skill, then the am:commit skill; elsewhere the am:commit skill; or what to fix).

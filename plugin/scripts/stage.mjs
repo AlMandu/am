@@ -4,7 +4,7 @@
 // phases. Each stage gets its allowed tools up front (a stage session cannot show a
 // permission prompt), calls its am skill by slash command (so the skill's own model and
 // effort apply), and ends with one marker line that this script reads. Called by am:auto:
-//   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]
+//   node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
@@ -20,16 +20,17 @@ import { findOrchestrator, readPlan } from '../hooks/handover.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]';
-export const STAGES = ['plan', 'do', 'check', 'commit'];
+const USAGE = 'usage: node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]';
+export const STAGES = ['plan', 'do', 'check', 'compactmem', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
-export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, commit: 25 };
+export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compactmem: 20, commit: 25 };
 // End markers each session may give; anything else is `failed`.
 export const MARKS = {
   plan: ['READY', 'NEEDS_DECISION'],
   do: ['DONE', 'BLOCKED', 'NEEDS_DECISION'],
   handover: ['HANDED', 'BLOCKED', 'NEEDS_DECISION'],
   check: ['NOTE', 'BLOCK', 'NEEDS_DECISION'],
+  compactmem: ['PROPOSED', 'NOTHING', 'BLOCKED'],
   commit: ['COMMITTED', 'NOTHING', 'BLOCKED', 'NEEDS_DECISION'],
 };
 const TAIL_CHARS = 600;
@@ -41,8 +42,14 @@ const sh = (rules) => (WIN ? rules.flatMap((r) => (r.startsWith('Bash') ? [r, r.
 /** One script by every path shape a session may write: the native path, mixed slashes, forward slashes only. */
 const nodeScript = (file) => [...new Set([file, file.replace(/[\\/]scripts[\\/]/, '/scripts/'), file.split(path.sep).join('/')])].flatMap((f) => [`Bash(node "${f}" *)`, `Bash(node ${f} *)`]);
 
+/** Claude Code's auto memory folder of the project at root: what the am:compactmem skill falls back to when no folder is named. */
+export const memoryDir = (root, env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects', path.resolve(root).replace(/[^A-Za-z0-9]/g, '-'), 'memory');
+
+/** An Edit rule for everything under an absolute folder: `//` starts a path from the file system root, a Windows drive as `/c` (measured on Windows). */
+export const absEdit = (dir) => `Edit(/${path.resolve(dir).split(path.sep).join('/').replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`)}/**)`;
+
 /** Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root. */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '' } = {}) {
+export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', memDir = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
   const edit = (dir) => [`Edit(/${dir}/**)`, `Edit(${dir}/**)`];
@@ -56,6 +63,9 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
     case 'do':
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
+    case 'compactmem':
+      // Reads the memory folder outside the repository; writes only the proposal under .am/. A deny rule wins over any allowance, so memory is never changed here.
+      return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)']), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
     case 'commit':
       return { mode: 'dontAsk', allow: sh([...read, ...gitRead, 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'handover': {
@@ -109,6 +119,13 @@ const STAGE_RULES = {
 - Do not settle or reopen technical choices here; report one that needs it as a BLOCK finding. Do not commit, push, stash, reset or switch branches.
 - Always write .am/${slug}/check.md.
 - ${MARK('check')}`,
+  compactmem: (slug, { memDir }) => `This is the memory stage for .am/${slug}/, with the am:compactmem skill, between the check and the commit.${memDir ? `
+- The memory folder of this project is ${memDir}, unless your system prompt names another one; this session cannot read environment variables, so use this path for the skill's fallback.` : ''}
+- This run is unattended: write the proposal to .am/${slug}/compactmem.md and stop there. Never change, create or delete a file in the memory folder; the user applies the proposal later.
+- Do not settle open items by asking, and never end with AM_STAGE: NEEDS_DECISION here, even when the two reviewers of a choice stay split: keep that memory in the proposal, with both picks and reasons, for the user to decide when applying it.
+- What this session can do: read anything, including the memory folder outside the repository; create or change files only under .am/${slug}/ with the Write or Edit tool; run read-only git commands (including git show). Everything else is refused.
+- This stage cannot finish when the proposal cannot be written: end with AM_STAGE: BLOCKED and say why. NOTHING means no memory folder, no memory file, or no memory about this task.
+- ${MARK('compactmem')}`,
   commit: (slug, { push }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
 - If the gate could not run (status \`error\`, or \`node\` missing), commit but do not push, and say why.
@@ -118,17 +135,18 @@ const STAGE_RULES = {
 };
 
 /** The prompt and appended system prompt of one session. */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false } = {}) {
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '' } = {}) {
   const prompts = {
     plan: `/am:plan Read the request in .am/${slug}/request.md (slug ${slug})`,
     do: `/am:do ${slug}`,
     handover: resume ? '/am-orchestrator:run' : `/am-orchestrator:run .am/${slug}/plan.md`,
     check: `/am:check ${slug}`,
+    compactmem: `/am:compactmem ${slug}`,
     commit: push ? '/am:commit push' : '/am:commit',
   };
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && (stage === 'plan' || stage === 'handover') ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
-  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume })}${note}\n` };
+  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}${note}\n` };
 }
 
 /** What the do stage becomes: `do`, `handover`, or {error} when the plan cannot tell. */
@@ -307,8 +325,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   result.stage = kind;
   const [bin, ...pre] = claude;
-  const perm = permissions(kind, { push, amRoot, orchRoot });
-  const { prompt, system } = instructions(kind, slug, { ...opts, unquoted: resolveCommand(bin, env).shell });
+  const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
+  const perm = permissions(kind, { push, amRoot, orchRoot, memDir });
+  const { prompt, system } = instructions(kind, slug, { ...opts, memDir, unquoted: resolveCommand(bin, env).shell });
   const pluginDir = pluginDirFor(amRoot, env);
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;
   writeFileSync(path.join(cwd, systemRel), system);

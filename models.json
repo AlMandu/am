@@ -1,6 +1,6 @@
 {
   "_": "스킬과 플러그인이 띄우는 세션의 모델·effort 원본. 고친 뒤 저장소 루트에서 `node scripts/models.mjs` 로 반영한다(테스트가 어긋남을 잡는다). 어느 플러그인에도 들어가지 않는다.",
-  "_am": "plan·do·check·commit·auto: 그 스킬을 부른 차례(모델은 별칭). second-opinion: 2차 의견 서브에이전트(전체 모델 ID). codex-opinion: Codex 2차 의견(model 을 비우면 사용자의 codex 설정). 오케스트레이터의 plan·implement·check·commit 단계는 plan·do·check·commit 값을 그대로 쓴다.",
+  "_am": "plan·do·check·compactmem·commit·auto: 그 스킬을 부른 차례(모델은 별칭). second-opinion: 2차 의견 서브에이전트(전체 모델 ID). codex-opinion: Codex 2차 의견(model 을 비우면 사용자의 codex 설정). 오케스트레이터의 plan·implement·check·commit 단계는 plan·do·check·commit 값을 그대로 쓴다.",
   "_orchestrator": "run: am-orchestrator:run 스킬을 부른 차례. split: 설계 문서를 작업으로 나누는 세션.",
   "am": {
     "plan": { "model": "opus", "effort": "high" },
@@ -8,6 +8,7 @@
     "check": { "model": "opus", "effort": "high" },
     "commit": { "model": "opus", "effort": "medium" },
     "auto": { "model": "opus", "effort": "medium" },
+    "compactmem": { "model": "opus", "effort": "medium" },
     "second-opinion": { "model": "claude-opus-5-5", "effort": "high" },
     "codex-opinion": { "model": "", "effort": "medium" }
   },

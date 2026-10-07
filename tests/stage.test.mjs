@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit } from '../plugin/scripts/stage.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -58,6 +58,19 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
     assert.equal(p.mode, 'acceptEdits');
     for (const r of ['Bash(git commit *)', 'Bash(git push *)', 'Bash(git checkout *)', 'Bash(git reset *)', 'Bash(git stash push)', 'AskUserQuestion']) assert.ok(p.deny.includes(r), `${s}: ${r}`);
   }
+  // The memory stage reads anything (the memory folder is outside the repository) and writes only under .am/.
+  const mem = permissions('compactmem');
+  assert.equal(mem.mode, 'dontAsk');
+  assert.ok(mem.allow.includes('Read') && mem.allow.includes('Edit(/.am/**)') && mem.allow.includes('Bash(git show *)'));
+  assert.ok(!mem.allow.includes('Bash') && !mem.allow.includes('Edit') && !mem.allow.some((r) => r.includes('git commit')));
+  // The memory folder itself is denied, which wins over any allowance (rule form measured on Windows with claude -p).
+  const cfg = path.join(os.tmpdir(), 'cfg');
+  const dirOf = memoryDir(path.join(os.tmpdir(), 'My Repo'), { CLAUDE_CONFIG_DIR: cfg });
+  assert.equal(dirOf, path.join(cfg, 'projects', path.resolve(os.tmpdir(), 'My Repo').replace(/[^A-Za-z0-9]/g, '-'), 'memory'));
+  assert.ok(permissions('compactmem', { memDir: dirOf }).deny.includes(absEdit(dirOf)));
+  assert.match(absEdit('C:\\Users\\me\\.claude\\projects\\C--x\\memory'), /^Edit\(\/\/c\/Users\/me\/\.claude\/projects\/C--x\/memory\/\*\*\)$/, 'on Windows');
+  if (process.platform !== 'win32') assert.equal(absEdit('/home/me/m'), 'Edit(//home/me/m/**)');
+  assert.deepEqual(MARKS.compactmem, ['PROPOSED', 'NOTHING', 'BLOCKED'], 'never stops am:auto for a question');
   const commit = permissions('commit');
   assert.ok(commit.allow.includes('Bash(git commit *)') && commit.deny.includes('Bash(git push *)') && !commit.allow.includes('Bash(git push *)'));
   const pushed = permissions('commit', { push: true });
@@ -77,6 +90,10 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.match(instructions('plan', 'demo').system, /If \.am\/demo\/plan\.md already exists[^\n]*continue that plan/);
   assert.equal(instructions('do', 'demo').prompt, '/am:do demo');
   assert.equal(instructions('check', 'demo').prompt, '/am:check demo');
+  assert.equal(instructions('compactmem', 'demo').prompt, '/am:compactmem demo');
+  assert.match(instructions('compactmem', 'demo').system, /write the proposal to \.am\/demo\/compactmem\.md and stop there\. Never change, create or delete a file in the memory folder/);
+  assert.match(instructions('compactmem', 'demo', { memDir: '/m' }).system, /The memory folder of this project is \/m, unless your system prompt names another one/);
+  assert.match(instructions('compactmem', 'demo').system, /never end with AM_STAGE: NEEDS_DECISION here/);
   assert.equal(instructions('commit', 'demo').prompt, '/am:commit');
   assert.equal(instructions('commit', 'demo', { push: true }).prompt, '/am:commit push');
   assert.equal(instructions('handover', 'demo').prompt, '/am-orchestrator:run .am/demo/plan.md');
@@ -178,6 +195,18 @@ test('a missing marker is asked for once in the same session', async (t) => {
   const r2 = await run(none, ['do', 'demo']);
   assert.equal(r2.result.status, 'failed');
   assert.match(r2.result.reason, /without an AM_STAGE line/);
+});
+
+test('the memory stage runs between check and commit and reports PROPOSED or NOTHING', async (t) => {
+  assert.deepEqual(STAGES, ['plan', 'do', 'check', 'compactmem', 'commit']);
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Proposal saved.\nAM_STAGE: PROPOSED'] } });
+  const { result, calls } = await run(dir, ['compactmem', 'demo']);
+  assert.equal(result.stage, 'compactmem');
+  assert.equal(result.status, 'PROPOSED');
+  assert.equal(flag(calls[0], '-p'), '/am:compactmem demo');
+  assert.equal(flag(calls[0], '--permission-mode'), 'dontAsk');
+  const none = makeRepo(t, { plan: SMALL, fake: { replies: ['No memory.\nAM_STAGE: NOTHING'] } });
+  assert.equal((await run(none, ['compactmem', 'demo'])).result.status, 'NOTHING');
 });
 
 test('the do stage becomes a hand-over for a large plan, with push only in push mode', async (t) => {

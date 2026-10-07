@@ -20,7 +20,7 @@ const MODEL = {
   codex: [/^([A-Za-z0-9._:-]+)?$/, '빈 문자열(사용자의 codex 설정) 또는 따옴표 없이 쓰는 모델 이름'],
 };
 const ENTRIES = {
-  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', auto: 'alias', 'second-opinion': 'full', 'codex-opinion': 'codex' },
+  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', compactmem: 'alias', auto: 'alias', 'second-opinion': 'full', 'codex-opinion': 'codex' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs uses the same map).
@@ -87,7 +87,7 @@ function generated(file, render) {
 export function targets() {
   const amSkill = (name) => frontmatter(`plugin/skills/${name}/SKILL.md`, (m) => m.am[name]);
   return [
-    ...['plan', 'do', 'check', 'commit', 'auto'].map(amSkill),
+    ...['plan', 'do', 'check', 'compactmem', 'commit', 'auto'].map(amSkill),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),
     ...['split', ...Object.keys(STAGE_SKILLS)].map((stage) => ({
@@ -107,7 +107,7 @@ export function targets() {
     },
     generated('README.md', (m) =>
       table('대상', [
-        ...['plan', 'do', 'check', 'commit', 'auto'].map((n) => [code(`am:${n}`), m.am[n]]),
+        ...['plan', 'do', 'check', 'compactmem', 'commit', 'auto'].map((n) => [code(`am:${n}`), m.am[n]]),
         ['2차 의견 서브에이전트(`am:second-opinion`)', m.am['second-opinion']],
         ['Codex 2차 의견', m.am['codex-opinion'], m.am['codex-opinion'].model ? undefined : '사용자의 codex 설정'],
       ]),
