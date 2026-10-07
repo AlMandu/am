@@ -55,10 +55,21 @@ test('every skill sets the model and effort its turn runs with', () => {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
     const userOnly = ['plan', 'do', 'auto'].includes(name) ? ['disable-model-invocation'] : [];
-    assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly].sort(), name);
+    const hooks = name === 'auto' ? ['hooks'] : [];
+    assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.equal(fm.model, model, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
     assert.equal(fm.effort, effort, name);
   }
+});
+
+test('am:auto declares the hand-over hook, and only am:auto', () => {
+  // Claude Code only (measured on 2.1: a plugin skill's frontmatter hook registers when the skill is invoked and
+  // stays for the session, with CLAUDE_PLUGIN_ROOT set). One line, so the frontmatter stays one key per line.
+  const line = `hooks: { PreToolUse: [ { matcher: "Read|Edit|Write|MultiEdit|NotebookEdit", hooks: [ { type: command, command: "node -e \\"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/handover.mjs')).then((m) => m.main()).catch(() => {})\\"", timeout: 60 } ] } ] }`;
+  assert.ok(read('auto').includes(`\n${line}\nmodel: `));
+  assert.ok(existsSync(path.join(ROOT, '..', 'hooks', 'handover.mjs')));
+  for (const name of Object.keys(LIMITS).filter((n) => n !== 'auto')) assert.doesNotMatch(read(name), /\nhooks:/, name);
+  assert.match(read('auto'), /this skill's hook denies file edits outside `\.am\/`/);
 });
 
 test('the second-opinion agent stays pinned and read-only, and the common rules send choices to it', () => {

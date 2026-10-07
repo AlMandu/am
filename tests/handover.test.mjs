@@ -1,0 +1,159 @@
+// Run: node --test tests/handover.test.mjs
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { decide, readPlan } from '../plugin/hooks/handover.mjs';
+
+const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
+const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';
+
+function setup() {
+  const base = mkdtempSync(path.join(tmpdir(), 'am-handover-'));
+  const repo = path.join(base, 'repo');
+  mkdirSync(path.join(repo, '.git'), { recursive: true });
+  return { repo, stateDir: path.join(base, 'state') };
+}
+
+function plan(repo, slug, text, mtime) {
+  const file = path.join(repo, '.am', slug, 'plan.md');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, text);
+  if (mtime) utimesSync(file, mtime, mtime);
+  return file;
+}
+
+function hook(env, tool, file, { session = 's1', installed = true, calls } = {}) {
+  const raw = JSON.stringify({ session_id: session, cwd: env.repo, tool_name: tool, tool_input: { file_path: file } });
+  const r = decide(raw, { stateDir: env.stateDir, installed: () => (calls && calls.push(1), installed) });
+  assert.equal(r.code, 0);
+  if (!r.stdout) return null;
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  return out.hookSpecificOutput.permissionDecisionReason;
+}
+
+test('reads the scale line in both languages, done marks and the hand-over line', () => {
+  assert.deepEqual(readPlan(LARGE), { scale: [2, 3], started: false, handedOver: false });
+  assert.deepEqual(readPlan(SMALL), { scale: [1, 1], started: false, handedOver: false });
+  assert.deepEqual(readPlan('Scale: 3 implementation runs, 2 commits').scale, [3, 2]);
+  assert.equal(readPlan('no scale').scale, null);
+  assert.equal(readPlan('## 단계\n1. 첫 단계. (완료) 확인: x\n').started, true);
+  assert.equal(readPlan('## Steps\n2. Step two (done)\n').started, true);
+  // The template's own rule text mentions marking a step done; it is not a mark.
+  assert.equal(readPlan('> Rules: 2) run each step\'s check and mark the step done\n').started, false);
+  assert.equal(readPlan('## 변경 기록\n- am-orchestrator run 스킬로 넘김: run.id 20261007-1412, 시작 브랜치 main\n').handedOver, true);
+  assert.equal(readPlan('- 오케스트레이터에 넘김 (run 20261007-1412)\n').handedOver, true);
+  assert.equal(readPlan('- 목표: am-orchestrator 의 토큰을 줄인다\n').handedOver, false);
+  assert.equal(readPlan('- 20261007-1412 빌드 로그\n').handedOver, false);
+  assert.equal(readPlan('- went to the am-orchestrator run skill, run.id fix-2, start branch main\n').handedOver, true);
+});
+
+test('denies an edit while this session\'s large plan is neither handed over nor started', () => {
+  const env = setup();
+  const p = path.join(env.repo, '.am', 'big', 'plan.md');
+  assert.equal(hook(env, 'Write', p), null); // creating the plan binds it
+  plan(env.repo, 'big', LARGE);
+  const reason = hook(env, 'Edit', path.join(env.repo, 'src', 'a.js'));
+  assert.match(reason, /\.am\/big\/plan\.md \(the plan this session created\) says 2 implementation runs and 3 commits/);
+  assert.match(reason, /hand this plan over to the run skill/);
+  assert.ok(hook(env, 'Write', path.join(env.repo, 'b.txt')));
+  assert.ok(hook(env, 'MultiEdit', path.join(env.repo, 'c.txt')));
+  assert.ok(existsSync(path.join(env.stateDir, 's1.json')));
+});
+
+test('lets through what a hand-over writes, reads, other tools and files outside a repository', () => {
+  const env = setup();
+  plan(env.repo, 'big', LARGE);
+  for (const f of ['.am/big/opinion-1.md', '.am/.gitignore', '.orchestrator/config.json', '.orchestrator/tasks.json', 'am-gate.json']) {
+    assert.equal(hook(env, 'Write', path.join(env.repo, f)), null, f);
+  }
+  assert.equal(hook(env, 'Read', path.join(env.repo, 'src', 'a.js')), null);
+  const raw = JSON.stringify({ session_id: 's1', cwd: env.repo, tool_name: 'Bash', tool_input: { command: 'echo x > src/a.js' } });
+  assert.equal(decide(raw, { stateDir: env.stateDir, installed: () => true }).stdout, '');
+  assert.equal(hook(env, 'Write', path.join(path.dirname(env.repo), 'outside.txt')), null);
+  assert.equal(decide('not json', { stateDir: env.stateDir }).stdout, '');
+});
+
+test('allows a small plan, a started plan, a handed-over plan and a missing orchestrator', () => {
+  const env = setup();
+  const file = plan(env.repo, 'p', SMALL);
+  const edit = (o) => hook(env, 'Edit', path.join(env.repo, 'a.js'), o);
+  assert.equal(edit(), null);
+  writeFileSync(file, LARGE.replace('1. 첫 단계.', '1. 첫 단계. (완료)'));
+  assert.equal(edit(), null);
+  writeFileSync(file, LARGE + '- am-orchestrator run 스킬로 넘김, run.id 20261007-1412, 시작 브랜치 main\n');
+  assert.equal(edit(), null);
+  writeFileSync(file, LARGE);
+  assert.equal(edit({ session: 'other', installed: false }), null);
+  assert.ok(edit({ session: 'third' }));
+});
+
+test('checks installation once per session and only when a plan would be blocked', () => {
+  const env = setup();
+  const file = plan(env.repo, 'p', SMALL);
+  const calls = [];
+  hook(env, 'Edit', path.join(env.repo, 'a.js'), { calls });
+  assert.equal(calls.length, 0);
+  writeFileSync(file, LARGE);
+  hook(env, 'Edit', path.join(env.repo, 'a.js'), { calls });
+  hook(env, 'Edit', path.join(env.repo, 'b.js'), { calls });
+  assert.equal(calls.length, 1);
+});
+
+test('a plan without a scale line is denied once', () => {
+  const env = setup();
+  plan(env.repo, 'p', '# t\n## 단계\n1. a\n');
+  hook(env, 'Read', path.join(env.repo, '.am', 'p', 'plan.md'));
+  assert.match(hook(env, 'Edit', path.join(env.repo, 'a.js')), /\.am\/p\/plan\.md \(the plan this session read\) has no Scale line/);
+  assert.equal(hook(env, 'Edit', path.join(env.repo, 'a.js')), null);
+});
+
+test('judges the session\'s own plan, not a newer one, and ranks created over edited over read', () => {
+  const env = setup();
+  const old = Date.now() / 1000 - 3600;
+  plan(env.repo, 'mine', SMALL, old);
+  plan(env.repo, 'other', LARGE); // newer, e.g. an orchestrator task plan or another session's
+  hook(env, 'Read', path.join(env.repo, '.am', 'mine', 'plan.md'));
+  assert.equal(hook(env, 'Edit', path.join(env.repo, 'a.js')), null);
+  // Without a bound plan the newest decides, and the reason says how to bind.
+  assert.match(hook(env, 'Edit', path.join(env.repo, 'a.js'), { session: 's2' }), /\.am\/other\/plan\.md \(the newest plan: this session has not read, edited or created one yet; if it is not yours, read or edit your own plan\.md first/);
+  // An edit outranks a read; a later read does not move the binding.
+  hook(env, 'Read', path.join(env.repo, '.am', 'other', 'plan.md'), { session: 's3' });
+  hook(env, 'Edit', path.join(env.repo, '.am', 'mine', 'plan.md'), { session: 's3' });
+  hook(env, 'Read', path.join(env.repo, '.am', 'other', 'plan.md'), { session: 's3' });
+  assert.equal(hook(env, 'Edit', path.join(env.repo, 'a.js'), { session: 's3' }), null);
+});
+
+test('a later am:auto in the same session takes over the binding; a task plan without a scale line does not', () => {
+  const env = setup();
+  const write = (slug, text) => {
+    const file = path.join(env.repo, '.am', slug, 'plan.md');
+    assert.equal(decide(JSON.stringify({ session_id: 's1', cwd: env.repo, tool_name: 'Write', tool_input: { file_path: file, content: text } }), { stateDir: env.stateDir, installed: () => true }).stdout, '');
+    plan(env.repo, slug, text);
+  };
+  write('big', LARGE);
+  assert.ok(hook(env, 'Edit', path.join(env.repo, 'a.js')));
+  write('small', SMALL); // a second am:auto request, stopped first one
+  assert.equal(hook(env, 'Edit', path.join(env.repo, 'a.js')), null);
+  write('big2', LARGE);
+  assert.ok(hook(env, 'Edit', path.join(env.repo, 'a.js')));
+  // Editing a plan that has no scale line (an orchestrator task plan) keeps the binding.
+  const task = plan(env.repo, 'task-1', '# task\n## 단계\n1. a\n');
+  const raw = JSON.stringify({ session_id: 's1', cwd: env.repo, tool_name: 'Edit', tool_input: { file_path: task, old_string: 'a', new_string: 'b' } });
+  decide(raw, { stateDir: env.stateDir, installed: () => true });
+  assert.match(hook(env, 'Edit', path.join(env.repo, 'a.js')), /\.am\/big2\/plan\.md/);
+});
+
+test('lets through edits in the run\'s task worktrees, which have their own .git', () => {
+  const env = setup();
+  plan(env.repo, 'big', LARGE);
+  const wt = path.join(env.repo, '.orchestrator', 'wt', '20261007-1412', 'T01');
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(path.join(wt, '.git'), 'gitdir: x\n');
+  plan(wt, 'task-1', '# task\n');
+  assert.equal(hook(env, 'Edit', path.join(wt, 'src', 'a.js')), null);
+  assert.equal(hook(env, 'Edit', path.join(wt, '.am', 'task-1', 'plan.md')), null);
+  assert.ok(hook(env, 'Edit', path.join(env.repo, 'src', 'a.js')));
+});
