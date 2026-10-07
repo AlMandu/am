@@ -3,17 +3,19 @@
 // blocking gate commands from am-gate.json. Used by hook.mjs (PreToolUse, Claude
 // Code and Codex) and by the am:check skill through the CLI:
 //   node gate.mjs --run [--json] [--cwd <dir>]
+// handover.mjs imports denyOutput, findRepoRoot and readStdin. am-orchestrator runs
+// the CLI with --run --json --cwd once more after check and before commit.
 // Node only, no dependencies.
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const STATUS = { PASS: 'pass', FAIL: 'fail', ERROR: 'error', UNCONFIGURED: 'unconfigured', BYPASSED: 'bypassed' };
-export const CONFIG_FILE = 'am-gate.json';
+const CONFIG_FILE = 'am-gate.json';
 // Must stay below the hooks.json timeout (900 s): a timed-out hook does not block.
-export const HOOK_BUDGET_MS = 840000;
+const HOOK_BUDGET_MS = 840000;
 export const MAX_REASON_CHARS = 8000;
 const DEFAULT_TIMEOUT_MS = 300000;
 const TAIL_LINES = 40;
@@ -25,7 +27,7 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 // ---------------------------------------------------------------- detection
 
 /** Splits a command line into words and separators. Backslash is not an escape (Windows paths). */
-export function tokenize(command) {
+function tokenize(command) {
   const tokens = [];
   let buf = '';
   let quote = null;
@@ -70,7 +72,7 @@ export function tokenize(command) {
 }
 
 /** Groups tokens into the simple commands of a compound line. */
-export function segments(tokens) {
+function segments(tokens) {
   const out = [];
   let cur = [];
   for (const t of tokens) {
@@ -241,7 +243,7 @@ export function findRepoRoot(startDir) {
 }
 
 /** {config} | {error} | null when the repository has no am-gate.json. */
-export function loadConfig(root) {
+function loadConfig(root) {
   const file = path.join(root, CONFIG_FILE);
   if (!existsSync(file)) return null;
   let raw;
@@ -272,7 +274,8 @@ export function loadConfig(root) {
 // ----------------------------------------------------------------- running
 
 // `run` goes through a shell, so the real command is a grandchild: kill the whole tree.
-function killTree(child) {
+// stage.mjs and codex-opinion.mjs use it too.
+export function killTree(child) {
   if (child.pid === undefined) return;
   if (process.platform === 'win32') {
     spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill('SIGKILL'));
@@ -286,7 +289,7 @@ function killTree(child) {
 }
 
 /** Runs one shell command (cmd.exe on Windows, /bin/sh elsewhere) with a hard timeout. Never rejects. */
-export function runCommand(run, { cwd, timeoutMs }) {
+function runCommand(run, { cwd, timeoutMs }) {
   return new Promise((resolve) => {
     const started = Date.now();
     let child;
@@ -338,6 +341,26 @@ export function programExists(run, cwd, env = process.env) {
   if (/[\\/]/.test(program) || program.startsWith('.')) return has(path.resolve(cwd, program));
   const dirs = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
   return (win && has(path.join(cwd, program))) || dirs.some((d) => has(path.join(d, program)));
+}
+
+/**
+ * The first regular file `name + ext` on PATH (folders outer, `exts` inner), or null.
+ * A name holding a path separator is checked as given. A .cmd or .bat has to go through
+ * cmd.exe. stage.mjs and codex-opinion.mjs use it too.
+ */
+export function findOnPath(name, env, exts) {
+  const dirs = /[\\/]/.test(name) ? [''] : String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const p = dir ? path.join(dir, name + ext) : name + ext;
+      try {
+        if (statSync(p).isFile()) return { file: p, shell: /\.(cmd|bat)$/i.test(p) };
+      } catch {
+        /* not here */
+      }
+    }
+  }
+  return null;
 }
 
 function tailOf(text) {
@@ -398,7 +421,7 @@ export async function runGate({ dir, mode = 'cli', budgetMs = HOOK_BUDGET_MS, en
   return report;
 }
 
-export function formatReport(report) {
+function formatReport(report) {
   const lines = [`gate: ${report.status}${report.reason ? ` - ${report.reason}` : ''}`, `  repo: ${report.root}`];
   for (const c of report.commands) {
     const verdict = c.timedOut ? 'TIMEOUT' : c.exit === 0 ? 'ok' : `exit ${c.exit}`;
@@ -416,12 +439,13 @@ function contextOutput(message, { warn }) {
   return JSON.stringify(out) + '\n';
 }
 
-function denyOutput(reason) {
+// handover.mjs uses it too.
+export function denyOutput(reason) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n';
 }
 
 /**
- * PreToolUse decision for one hook payload. Returns {code, stdout, stderr}.
+ * PreToolUse decision for one hook payload. Returns {stdout}; the caller always exits 0.
  * Contract: always exit 0; stdout is empty or one JSON object. Blocking uses
  * permissionDecision "deny": Codex 0.160 ran the command despite exit 2 (measured).
  */
@@ -430,14 +454,14 @@ export async function decide(raw, { env = process.env, budgetMs = HOOK_BUDGET_MS
   try {
     payload = JSON.parse(raw);
   } catch {
-    return { code: 0, stdout: contextOutput('am gate: hook input was not JSON - this command was not checked.', { warn: true }), stderr: '' };
+    return { stdout: contextOutput('am gate: hook input was not JSON - this command was not checked.', { warn: true }) };
   }
-  if (!payload || !SHELL_TOOLS.has(payload.tool_name)) return { code: 0, stdout: '', stderr: '' };
+  if (!payload || !SHELL_TOOLS.has(payload.tool_name)) return { stdout: '' };
   const input = payload.tool_input || {};
   const cwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
   const base = typeof input.workdir === 'string' && input.workdir ? resolveDir(cwd, input.workdir) : cwd;
   const commits = findCommits(commandText(input), base);
-  if (commits.length === 0) return { code: 0, stdout: '', stderr: '' };
+  if (commits.length === 0) return { stdout: '' };
 
   const notes = [];
   const passed = [];
@@ -450,21 +474,21 @@ export async function decide(raw, { env = process.env, budgetMs = HOOK_BUDGET_MS
         'Fix the failure and commit again. If it comes from files outside your current task, do not fix them; tell the user.';
       if (notes.length) text += `\nNote: ${notes.join('; ')}`;
       if (text.length > MAX_REASON_CHARS) text = text.slice(0, MAX_REASON_CHARS - 20) + '\n...(truncated)';
-      return { code: 0, stdout: denyOutput(text), stderr: '' };
+      return { stdout: denyOutput(text) };
     }
     if (report.status === STATUS.ERROR) {
-      return { code: 0, stdout: contextOutput(`am gate: ERROR - ${report.reason}. This commit was NOT checked; tell the user.`, { warn: true }), stderr: '' };
+      return { stdout: contextOutput(`am gate: ERROR - ${report.reason}. This commit was NOT checked; tell the user.`, { warn: true }) };
     }
     if (report.status === STATUS.BYPASSED) {
-      return { code: 0, stdout: contextOutput('am gate: bypassed by AM_GATE=off - this commit was not checked.', { warn: true }), stderr: '' };
+      return { stdout: contextOutput('am gate: bypassed by AM_GATE=off - this commit was not checked.', { warn: true }) };
     }
     if (report.status === STATUS.PASS) passed.push(report);
   }
-  if (passed.length === 0) return { code: 0, stdout: '', stderr: '' }; // unconfigured: stay quiet
+  if (passed.length === 0) return { stdout: '' }; // unconfigured: stay quiet
   const n = passed.reduce((s, r) => s + r.commands.length, 0);
   const secs = (passed.reduce((s, r) => s + r.durationMs, 0) / 1000).toFixed(1);
   const extra = notes.length ? ` - ${notes.join('; ')}` : '';
-  return { code: 0, stdout: contextOutput(`am gate: pass (${n} command${n === 1 ? '' : 's'}, ${secs}s)${extra}`, { warn: false }), stderr: '' };
+  return { stdout: contextOutput(`am gate: pass (${n} command${n === 1 ? '' : 's'}, ${secs}s)${extra}`, { warn: false }) };
 }
 
 /** Reads all of stdin; gives up after 5 s so a hook without input cannot hang. */

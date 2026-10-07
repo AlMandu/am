@@ -5,7 +5,7 @@ import { decide, readStdin } from './gate.mjs';
 try {
   const result = await decide(await readStdin());
   if (result.stdout) process.stdout.write(result.stdout);
-  process.exitCode = result.code;
+  process.exitCode = 0;
 } catch (err) {
   // A bug here must not stop every commit: warn and let the command through.
   const message = `am gate: hook crashed (${err && err.message}) - this commit was NOT checked; tell the user.`;

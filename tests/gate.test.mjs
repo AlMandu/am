@@ -1,10 +1,10 @@
 // Run: node --test tests/gate.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { findCommits, commandText, decide, runGate, programExists, STATUS, MAX_REASON_CHARS } from '../plugin/hooks/gate.mjs';
+import { findCommits, commandText, decide, runGate, programExists, findOnPath, STATUS, MAX_REASON_CHARS } from '../plugin/hooks/gate.mjs';
 
 const BASE = path.resolve(tmpdir(), 'am-gate-base');
 
@@ -97,8 +97,7 @@ function parseStdout(stdout) {
 
 /** Blocked = exit 0 + permissionDecision "deny" with a bounded reason (Claude Code and Codex). */
 function denialReason(r) {
-  assert.equal(r.code, 0);
-  assert.equal(r.stderr, '');
+  assert.deepEqual(Object.keys(r), ['stdout']);
   const h = parseStdout(r.stdout).hookSpecificOutput;
   assert.equal(h.hookEventName, 'PreToolUse');
   assert.equal(h.permissionDecision, 'deny');
@@ -109,7 +108,6 @@ function denialReason(r) {
 test('passing gate lets the commit through and says so', async () => {
   const repo = makeRepo({ commands: [{ name: 'build', run: OK }] });
   const r = await decide(payload(repo, 'git commit -m x'));
-  assert.equal(r.code, 0);
   const out = parseStdout(r.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
   assert.match(out.hookSpecificOutput.additionalContext, /^am gate: pass \(1 command, /);
@@ -147,6 +145,7 @@ test('a command that hangs past its timeout blocks, and the process tree is kill
   const t0 = Date.now();
   const reason = denialReason(await decide(payload(repo, 'git commit -m x')));
   assert.match(reason, /did not finish within/);
+  // runCommand settles on close, which waits for the grandchild that holds the pipes, so returning within 10 s shows the tree was killed
   assert.ok(Date.now() - t0 < 10000);
   rmSync(repo, { recursive: true, force: true });
 });
@@ -161,7 +160,6 @@ test('running out of the shared time budget blocks with advice', async () => {
 test('a missing gate command is an error that warns but does not block', async () => {
   const repo = makeRepo({ commands: [{ name: 'tool', run: 'am-gate-no-such-command-xyz' }] });
   const r = await decide(payload(repo, 'git commit -m x'));
-  assert.equal(r.code, 0);
   const out = parseStdout(r.stdout);
   assert.match(out.hookSpecificOutput.additionalContext, /ERROR - could not run "tool"/);
   assert.ok(out.systemMessage);
@@ -183,13 +181,30 @@ test('programExists finds PATH programs, repo scripts and shell builtins', () =>
   rmSync(repo, { recursive: true, force: true });
 });
 
+test('findOnPath picks regular files only, in PATH then extension order', () => {
+  const d1 = mkdtempSync(path.join(tmpdir(), 'am-path1-'));
+  const d2 = mkdtempSync(path.join(tmpdir(), 'am-path2-'));
+  mkdirSync(path.join(d1, 'tool.cmd')); // a folder with the program's name is skipped
+  writeFileSync(path.join(d2, 'tool.cmd'), '@echo off\r\n');
+  const env = { PATH: [d1, d2].join(path.delimiter) };
+  assert.deepEqual(findOnPath('tool', env, ['.exe', '.cmd']), { file: path.join(d2, 'tool.cmd'), shell: true });
+  assert.equal(findOnPath('tool', { PATH: d1 }, ['.exe', '.cmd']), null);
+  assert.deepEqual(findOnPath('tool', { Path: d2 }, ['.cmd']), { file: path.join(d2, 'tool.cmd'), shell: true });
+  writeFileSync(path.join(d2, 'tool.exe'), '');
+  assert.deepEqual(findOnPath('tool', env, ['.exe', '.cmd']), { file: path.join(d2, 'tool.exe'), shell: false });
+  // A name with a path is checked as given, not searched on PATH.
+  assert.equal(findOnPath(path.join(d2, 'tool'), { PATH: '' }, ['.cmd']).file, path.join(d2, 'tool') + '.cmd');
+  assert.equal(findOnPath(path.join(d2, 'missing'), { PATH: d2 }, ['.cmd']), null);
+  rmSync(d1, { recursive: true, force: true });
+  rmSync(d2, { recursive: true, force: true });
+});
+
 test('no config stays quiet; broken config warns', async () => {
   const none = makeRepo();
   const quiet = await decide(payload(none, 'git commit -m x'));
-  assert.deepEqual([quiet.code, quiet.stdout, quiet.stderr], [0, '', '']);
+  assert.deepEqual(quiet, { stdout: '' });
   const broken = makeRepo('{ not json');
   const warn = await decide(payload(broken, 'git commit -m x'));
-  assert.equal(warn.code, 0);
   assert.match(parseStdout(warn.stdout).hookSpecificOutput.additionalContext, /ERROR - am-gate\.json/);
   rmSync(none, { recursive: true, force: true });
   rmSync(broken, { recursive: true, force: true });
@@ -202,7 +217,7 @@ test('git -C picks the target repository gate, not the session folder', async ()
   writeFileSync(path.join(inner, 'am-gate.json'), JSON.stringify({ commands: [{ name: 'inner-build', run: FAIL }] }));
   assert.match(denialReason(await decide(payload(outer, 'git -C sub commit -m x'))), /inner-build/);
   const passed = await decide(payload(outer, 'git commit -m x'));
-  assert.equal(passed.code, 0);
+  assert.match(parseStdout(passed.stdout).hookSpecificOutput.additionalContext, /^am gate: pass/);
   rmSync(outer, { recursive: true, force: true });
 });
 
@@ -216,13 +231,12 @@ test('Codex workdir is honored', async () => {
 test('AM_GATE=off bypasses with a warning; other tools and commands are ignored', async () => {
   const repo = makeRepo({ commands: [{ name: 'build', run: FAIL }] });
   const off = await decide(payload(repo, 'git commit -m x'), { env: { ...process.env, AM_GATE: 'off' } });
-  assert.equal(off.code, 0);
   assert.match(parseStdout(off.stdout).hookSpecificOutput.additionalContext, /bypassed/);
   for (const r of [
     await decide(JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 'x' }, cwd: repo })),
     await decide(payload(repo, 'git status')),
   ]) {
-    assert.deepEqual([r.code, r.stdout, r.stderr], [0, '', '']);
+    assert.deepEqual(r, { stdout: '' });
   }
   rmSync(repo, { recursive: true, force: true });
 });
@@ -234,4 +248,20 @@ test('cli mode runs every command and reports non-blocking failures without fail
   assert.equal(report.commands.length, 2);
   assert.equal(report.commands[1].exit, 3);
   rmSync(repo, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------- hooks.json
+
+test('hooks.json handlers use only type, command and timeout', () => {
+  const config = JSON.parse(readFileSync(new URL('../plugin/hooks/hooks.json', import.meta.url), 'utf8'));
+  let handlers = 0;
+  for (const [event, groups] of Object.entries(config.hooks)) {
+    for (const group of groups) {
+      for (const handler of group.hooks) {
+        handlers++;
+        for (const key of Object.keys(handler)) assert.ok(['type', 'command', 'timeout'].includes(key), `${event}: ${key}`);
+      }
+    }
+  }
+  assert.ok(handlers > 0);
 });

@@ -6,13 +6,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs } from '../plugin/scripts/stage.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
 
 // A fake claude: records its arguments in calls.jsonl and answers as fake.json in the working folder says.
-// fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "exit": 0, "write": { "path": "content" },
+// fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "hang": [1] (calls that never end) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -129,13 +129,22 @@ test('instructions: slash call of the stage skill, unattended rules written out 
     assert.match(system, /marked OPEN[\s\S]*AM_STAGE: NEEDS_DECISION/, s);
     for (const m of MARKS[s]) assert.ok(system.includes(`AM_STAGE: ${m}`), `${s}: ${m}`);
   }
-  // The same stop list in am:auto.
+  // The same mark rule in am:auto (with code marks there).
+  assert.match(AUTO, /the mark `\(auto-decided\)` translated into the plan's language \(`\(자동 결정\)` in a Korean plan\)/);
+  // The same stop list in am:auto. Two of its stops are left out on purpose: the run skill's Prepare questions
+  // only reach the handover stage, whose rules name them on their own ("any question of its Prepare step, are stops");
+  // an empty request, an unclear push keyword, an unreadable skill file and BLOCK after the retry belong to the
+  // session running am:auto, so a stage session has them as "this stage cannot finish" or "the request cannot be planned".
   for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "The user's or project's instructions say the next action needs confirmation", 'The two reviewers of a technical choice still split on it after their rounds']) assert.ok(AUTO.includes(stop), stop);
   // Through cmd.exe (claude.cmd) only the unquoted rules for node scripts survive; those sessions are told the form.
   assert.match(instructions('handover', 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/);
   assert.doesNotMatch(instructions('handover', 'demo').system, /path unquoted/);
   assert.doesNotMatch(instructions('check', 'demo', { unquoted: true }).system, /path unquoted/);
   assert.match(instructions('plan', 'demo').system, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
+  // The size of one implementation run, word for word as in am:auto.
+  const oneRun = AUTO.match(/One implementation run is [^\n]*? separately\./);
+  assert.ok(oneRun, 'am:auto defines one implementation run');
+  assert.ok(instructions('plan', 'demo').system.includes(oneRun[0]), oneRun[0]);
   assert.match(instructions('do', 'demo').system, /do not use the am:check skill/);
   assert.match(instructions('do', 'demo', { fix: true }).system, /Read \.am\/demo\/check\.md first and fix only the causes it reports/);
   assert.match(instructions('handover', 'demo', { push: true }).system, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`[\s\S]*push the start branch/);
@@ -289,8 +298,7 @@ test('failures: no claude command is `unavailable`, a crash is `failed`, bad inp
 });
 
 test('a session over its time limit is stopped and reported', async (t) => {
-  const dir = makeRepo(t, { plan: SMALL });
-  writeFileSync(path.join(dir, 'fake-claude.mjs'), 'setTimeout(() => {}, 60000);\n');
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
   const { result } = await run(dir, ['check', 'demo'], { timeoutMin: { check: 0.005 } });
   assert.equal(result.status, 'failed');
   assert.match(result.reason, /no end within/);
@@ -372,4 +380,21 @@ test('compactionProblem: check.md keeps its verdict', () => {
   assert.match(compactionProblem('check.md', 'Verdict: BLOCK\n', 'Verdict: NOTE\n'), /verdict BLOCK -> NOTE/);
   assert.match(compactionProblem('plan.md', 'x', ''), /deleted or emptied/);
   assert.match(compactionProblem('plan.md', '- OPEN card\n', '- card\n'), /OPEN marks 1 -> 0/);
+});
+
+test('compactionProblem: a verdict label wins over an earlier opposite word', () => {
+  assert.equal(compactionProblem('check.md', 'No BLOCK finding.\nVerdict: NOTE\n', 'Verdict: NOTE\n'), null);
+  assert.match(compactionProblem('check.md', 'No BLOCK finding.\n## 판정\n- 판정: NOTE\n', 'No BLOCK finding.\n## 판정\n- 판정: BLOCK\n'), /verdict NOTE -> BLOCK/);
+});
+
+test('compactionProblem: without a label the first BLOCK/NOTE counts', () => {
+  assert.equal(compactionProblem('check.md', 'NOTE\nA BLOCK would need a failing gate.\n', 'NOTE\n'), null);
+  assert.match(compactionProblem('check.md', 'NOTE\nA BLOCK would need a failing gate.\n', 'BLOCK\n'), /verdict NOTE -> BLOCK/);
+});
+
+test('cmdExeArgs: only the --allowedTools value is filtered', () => {
+  assert.deepEqual(cmdExeArgs(['-p', 'x', '--allowedTools', 'Read,Bash(node "C:/a.mjs" *),Bash(node C:/a.mjs *)']), ['-p', 'x', '--allowedTools', 'Read,Bash(node C:/a.mjs *)']);
+  assert.throws(() => cmdExeArgs(['-p', 'say "hi", ok']), /cannot go through cmd\.exe/);
+  assert.throws(() => cmdExeArgs(['--disallowedTools', 'Read,Bash(node "C:/a.mjs" *)']), /cannot go through cmd\.exe/);
+  assert.throws(() => cmdExeArgs(['-p', '100%']), /cannot go through cmd\.exe/);
 });

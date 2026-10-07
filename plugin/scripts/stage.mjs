@@ -14,11 +14,12 @@
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { findOrchestrator, readPlan } from '../hooks/handover.mjs';
+import { findOnPath, killTree } from '../hooks/gate.mjs';
+import { findOrchestrator, readPlan, withinOneRun } from '../hooks/handover.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -149,7 +150,7 @@ const unattended = (slug, stage, push) => `You are one stage of the am:auto skil
 const STAGE_RULES = {
   plan: (slug) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
 - Always write .am/${slug}/plan.md, even when the change looks small: skip the step that offers to do a small change directly.
-- Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and a plan of at most 150 lines. M is the number of logical units the am:commit skill would commit separately.
+- Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.
 - Do not implement, even where the skill would go on after the plan; the next stage does that.
 - What this session can do: read anything; create or change files only under .am/${slug}/ with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
 - ${MARK('plan')}`,
@@ -229,7 +230,7 @@ export function doKind(planText, { orchestrator = findOrchestrator, fix = false 
   // A done mark, or a fix after am:check, means this plan is implemented here, whatever else its Change log mentions.
   if (fix || info.started) return { kind: 'do' };
   if (info.handedOver) return { kind: 'handover', resume: true, orchRoot: orchestrator() || '' };
-  if (info.scale && info.scale[0] <= 1 && info.scale[1] <= 1) return { kind: 'do' };
+  if (withinOneRun(info.scale)) return { kind: 'do' };
   const orchRoot = orchestrator();
   if (!orchRoot) return { kind: 'do' };
   if (!info.scale) return { error: 'the plan has no Scale line (`Scale: N implementation runs, M commits` / `규모: 구현 N회, 커밋 M개`); add it to the Summary and run this stage again' };
@@ -242,29 +243,19 @@ export function doKind(planText, { orchestrator = findOrchestrator, fix = false 
 function resolveCommand(cmd, env) {
   if (!WIN) return { file: cmd, shell: false };
   const exts = path.extname(cmd) ? [''] : String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
-  const dirs = /[\\/]/.test(cmd) ? [''] : String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const p = dir ? path.join(dir, cmd + ext) : cmd + ext;
-      if (existsSync(p)) return { file: p, shell: /\.(cmd|bat)$/i.test(p) };
-    }
-  }
-  return { file: cmd, shell: false };
+  return findOnPath(cmd, env, exts) ?? { file: cmd, shell: false };
 }
 
 const quote = (arg) => (/^[A-Za-z0-9_\-./:=\\]+$/.test(arg) ? arg : `"${arg}"`);
 
-function killTree(child) {
-  if (child.pid === undefined) return;
-  if (WIN) {
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill('SIGKILL'));
-    return;
-  }
-  try {
-    process.kill(-child.pid, 'SIGKILL');
-  } catch {
-    child.kill('SIGKILL');
-  }
+/**
+ * cmd.exe cannot pass `"` or `%` inside an argument: from the --allowedTools value drop the allow rules that quote a path
+ * (their unquoted twins stay); any other argument that still holds one throws.
+ */
+export function cmdExeArgs(args) {
+  const safe = args.map((a, i) => (args[i - 1] === '--allowedTools' && a.includes('"') ? a.split(',').filter((r) => !r.includes('"')).join(',') : a));
+  if (safe.some((a) => a.includes('%') || a.includes('"'))) throw new Error('an argument holds " or % and cannot go through cmd.exe');
+  return safe;
 }
 
 const active = new Set(); // running sessions, ended when this script is stopped
@@ -276,9 +267,7 @@ function exec(cmd, args, { cwd, env, timeoutMs }) {
     try {
       const target = resolveCommand(cmd, env);
       const opts = { cwd, env, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
-      // cmd.exe cannot pass `"` or `%` inside an argument: drop the allow rules that quote a path (their unquoted twins stay).
-      const safe = target.shell ? args.map((a) => (a.includes('"') ? a.split(',').filter((r) => !r.includes('"')).join(',') : a)) : args;
-      if (target.shell && safe.some((a) => a.includes('%') || a.includes('"'))) throw new Error('an argument holds " or % and cannot go through cmd.exe');
+      const safe = target.shell ? cmdExeArgs(args) : args;
       child = target.shell ? spawn([target.file, ...safe].map(quote).join(' '), { ...opts, shell: true }) : spawn(target.file, safe, opts);
     } catch (err) {
       resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message });
@@ -375,6 +364,16 @@ const COUNTED = [
   [/^\d+\.\s/gm, 'numbered lines'],
 ];
 
+/**
+ * The verdict of a check.md, or null. Same expression as verdictFromFile in am-orchestrator: a labelled verdict first,
+ * else the first BLOCK/NOTE. tests/orchestrator-skill.test.mjs checks both on the same cases.
+ */
+export function checkVerdict(text) {
+  const t = String(text || '');
+  const m = /^[\s#>*\-]*(?:verdict|판정|결론)[^\n]*?\b(BLOCK|NOTE)\b/im.exec(t);
+  return m ? m[1].toUpperCase() : /\b(BLOCK|NOTE)\b/.exec(t)?.[1] ?? null;
+}
+
 /** Why a shortened file cannot stand in for its original, or null. */
 export function compactionProblem(name, before, after) {
   if (!String(after ?? '').trim()) return `${name} was deleted or emptied`;
@@ -383,8 +382,7 @@ export function compactionProblem(name, before, after) {
   const headings = new Set(String(after).match(/^## .*$/gm)?.map((h) => h.trimEnd()) || []);
   const lost = (String(before).match(/^## .*$/gm) || []).map((h) => h.trimEnd()).find((h) => !headings.has(h));
   if (lost) return `${name}: heading lost: ${lost}`;
-  const verdict = (t) => /\b(BLOCK|NOTE)\b/.exec(t)?.[1] ?? null;
-  if (name === 'check.md' && verdict(before) !== verdict(after)) return `${name}: verdict ${verdict(before)} -> ${verdict(after)}`;
+  if (name === 'check.md' && checkVerdict(before) !== checkVerdict(after)) return `${name}: verdict ${checkVerdict(before)} -> ${checkVerdict(after)}`;
   return null;
 }
 
@@ -403,7 +401,7 @@ function originalName(slug, name, taken) {
  * or over its time puts every original back and removes the new copies. Returns {compacted, costUsd}; `compacted` is
  * null (nothing to do), {files, before, after, originals}, or {files, failed}.
  */
-export async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET } = {}) {
+async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
   const texts = {};

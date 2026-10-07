@@ -1,6 +1,6 @@
 ---
 name: check
-description: "커밋 전 점검: 프로젝트 게이트(빌드·테스트)를 돌리고, 할 수 있는 만큼 실제로 실행해 확인하고, 변경을 계획과 대조합니다. 사용자가 검증·테스트·점검을 요청하거나 am:check 를 실행할 때 씁니다. 경고는 커밋을 막지 않고, 게이트 실패와 확인된 결함만 막습니다."
+description: "커밋 전 점검: 프로젝트 게이트(빌드·테스트)를 돌리고, 할 수 있는 만큼 실제로 실행해 확인하고, 변경을 계획과 대조합니다. 사용자가 검증·테스트·점검을 요청하거나 am:check 를 실행할 때 씁니다. 경고는 커밋을 막지 않고, 게이트 실패, 확인된 결함, 이유 없이 빠진 계획 단계, 정해야 하는 기술 선택만 막습니다."
 argument-hint: "[slug]"
 model: opus
 effort: high
@@ -18,7 +18,7 @@ Target: $ARGUMENTS
 - Every other technical choice is settled by a second opinion, not by your own recommendation. A technical choice is a design or implementation decision with two or more workable options that differ in structure, behavior or cost; where only one option is sensible, just take it.
   1. Settle your own pick first and keep it out of the brief.
   2. Write every pending choice in one brief: the goal, the user's decisions and other fixed constraints, questions still waiting for the user's answer, the paths involved, and each choice with its options in neutral wording.
-  3. Codex, in Claude Code only: save the brief as a new file `opinion-<round>.md` under `.am/` (in the plan's folder when there is one; a new `.am/` folder also gets a `.gitignore` containing `*`) and, if `${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>` from the repository root with a 10-minute timeout. It prints Codex's answer to the brief; exit code 2 means Codex is not installed. Then send the brief to the am:second-opinion subagent. Its model and effort are pinned in its definition; do not override them.
+  3. Codex, in Claude Code only: save the brief as a new file `opinion-<round>.md` under `.am/` (in the plan's folder when there is one; a new `.am/` folder also gets a `.gitignore` containing `*` unless `git check-ignore -q .am` succeeds) and, if `${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>` from the repository root with a 10-minute timeout. It prints Codex's answer to the brief; exit code 2 means Codex is not installed. Then send the brief to the am:second-opinion subagent. Its model and effort are pinned in its definition; do not override them.
   4. With both answers, send each choice they split on back to both, for at most 2 more rounds: a new brief with the original brief's content for those choices plus both picks and reasons from the last round, labelled Claude and Codex. A choice still split after that goes to the user as a decision card (rules below) that gives both picks and reasons. If one reviewer fails, in any round, the other's answer stands.
   5. Apply the agreed picks, not yours. A user decision always wins over a pick.
   6. List each under "Defaults applied": choice - one-line reason (second opinion), written (second opinion, Codex agreed) when both agreed and naming a reviewer that failed, adding your own pick when it differed.
@@ -48,7 +48,7 @@ Target: $ARGUMENTS
 3. Runtime. Follow the project's runtime-check instructions (a "Runtime check" section in CLAUDE.md or AGENTS.md, or a file they point to). Do what you can yourself first: run the app or editor commands, read logs, capture the screen, run probes. For a bug fix, repeat the plan's reproduction and compare it with the result recorded before the fix. Hand the human only what you cannot do: at most 5 items, each "where / what to do / what they should see".
 4. Review. One reviewer (a subagent if available, otherwise a separate pass by you) compares the code diff with the plan (missing, extra, different) and looks for defects. Give the reviewer code files only; list asset and generated files (.prefab, .unity, .asset, .meta, .uasset, .umap, lock files) by name. Keep a finding only if it comes with a concrete failure scenario (inputs, then the wrong result).
 5. Verdict:
-   - BLOCK: gate `fail`, a confirmed defect, or a planned step missing without a reason.
+   - BLOCK: gate `fail`, a confirmed defect, a planned step missing without a reason, or a technical choice that must be settled or proved unworkable.
    - NOTE: everything else, including steps dropped with a reason in the Change log or by the user. Notes never block a commit.
    Fix small, safe, local problems right away and run the gate once more. If a failure comes from files outside this task, do not fix it; report it.
 6. With a slug, write `.am/<slug>/check.md` (20 lines or fewer): verdict, gate result, what you checked at runtime, the human checklist, notes.

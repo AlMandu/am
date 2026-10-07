@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load } from '../scripts/models.mjs';
+import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
@@ -21,15 +22,14 @@ const frontmatter = (text) => {
     return [line.slice(0, i), line.slice(i + 1).trim()];
   }));
 };
-const common = (text) => {
-  const m = /<!-- am:common:start -->([\s\S]*?)<!-- am:common:end -->/.exec(text);
-  assert.ok(m, 'common block markers');
-  return m[1];
-};
 
 test('every skill carries the same common rules block', () => {
   const blocks = Object.keys(LIMITS).map((n) => common(read(n)));
   for (const b of blocks.slice(1)) assert.equal(b, blocks[0]);
+});
+
+test('am skills refer to other skills by name, not with a slash prefix', () => {
+  for (const name of Object.keys(LIMITS)) assert.doesNotMatch(withoutCommon(read(name)), SLASH_NAME, name);
 });
 
 test('skills stay within their line limits and name themselves after their folder', () => {

@@ -1,2 +1,3 @@
+# am-orchestrator is Claude Code only; this keeps Codex from invoking the run skill on its own if the plugin is installed there.
 policy:
   allow_implicit_invocation: false

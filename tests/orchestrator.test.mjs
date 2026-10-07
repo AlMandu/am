@@ -7,7 +7,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, enforceRequired, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, recordHeld, snapshot, STAGE_DEFAULTS, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 
@@ -15,8 +15,6 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const ORCH = path.join(here, '..', 'orchestrator', 'scripts', 'orchestrator.mjs');
 const FAKE = path.join(here, 'fake-claude.mjs');
 const PLUGIN = process.env.AM_PLUGIN_ROOT || path.join(here, '..', 'plugin');
-// 구현 단계가 부르는 명령: am 0.1.4 이상(am:do 있음)은 /am:do, 그 전은 /am:plan
-const IMPL = existsSync(path.join(PLUGIN, 'skills', 'do', 'SKILL.md')) ? '/am:do' : '/am:plan';
 
 const task = (id, slug, dependsOn = [], extra = {}) => ({ id, slug, group: 'g', title: `${id} 제목`, goal: '목표', designRefs: ['1장'], files: ['src/**'], dependsOn, acceptance: ['게이트 통과'], size: 'S', risk: [], ...extra });
 const planOf = (tasks, decisions = []) => ({ version: 1, summary: '요약', decisions, tasks, coverage: [{ section: '1장', tasks: tasks.map((t) => t.id) }], uncovered: [] });
@@ -33,9 +31,29 @@ const [M1, M2] = unused('model', ['sonnet', 'haiku', 'fable', 'opus']);
 const [E1, E2] = unused('effort', ['low', 'max', 'medium', 'high', 'xhigh']);
 const E3 = ['low', 'max', 'medium', 'high', 'xhigh'].find((v) => v !== E1 && v !== E2); // only has to differ from E1 and E2
 
+const tmpDirs = [];
+after(() => {
+  let first;
+  for (const dir of tmpDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    } catch (err) {
+      first ??= err;
+    }
+  }
+  if (first) throw first;
+});
+
+/** A new folder under the OS temp folder, removed after the last test of this file. */
+function tmp(prefix) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
+  tmpDirs.push(dir);
+  return dir;
+}
+
 /** 임시 저장소 하나: 게이트(BROKEN 파일이 있으면 실패), 설계 문서, 오케스트레이터 설정. */
 function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn = false, slow = false, localOnly = false } = {}) {
-  const repo = mkdtempSync(path.join(os.tmpdir(), 'orch-'));
+  const repo = tmp('orch-');
   const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' });
   g('init', '-q', '-b', 'main');
   g('config', 'user.email', 'test@example.com');
@@ -62,7 +80,7 @@ function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures, churn 
   writeFileSync(path.join(repo, 'docs', 'design.md'), '# 설계\n## 1장\n내용\n');
   g('add', '-A');
   g('commit', '-q', '-m', 'init');
-  const aux = mkdtempSync(path.join(os.tmpdir(), 'orch-aux-'));
+  const aux = tmp('orch-aux-');
   const files = (fixtures || [plan]).map((p, i) => {
     const f = path.join(aux, `tasks-${i}.json`);
     writeFileSync(f, typeof p === 'string' ? p : JSON.stringify(p));
@@ -259,6 +277,11 @@ test('claudeArgs: 단계별 권한과 이어 가기', () => {
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git restore \*\)/, '커밋 세션은 빌드 산출물을 되돌릴 수 있다');
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git commit \*\)/);
   assert.match(commit[commit.indexOf('--disallowedTools') + 1], /Bash\(git push \*\)/);
+  for (const stage of ['implement', 'check', 'fix', 'commit']) {
+    const a = claudeArgs(cfg, stage, { prompt: 'x' });
+    const no = a[a.indexOf('--disallowedTools') + 1].split(',');
+    assert.ok(no.includes('Bash(git push)') && no.includes('Bash(git push *)'), `${stage} 는 인자 없는 git push 도 막는다`);
+  }
 });
 
 test('claudeArgs: 계획 묶음 세션은 am 의 codex-opinion.mjs 하나만 더 실행할 수 있다', () => {
@@ -331,7 +354,7 @@ test('정상 흐름: 세 작업을 순서대로 계획 → 구현 → 점검 →
   const r = prepared();
   assert.ok(existsSync(path.join(r.runDir(), 'tasks.md')) && existsSync(path.join(r.runDir(), 'design.md')));
   const dry = r.orch('run', '--dry-run');
-  assert.match(dry.out, new RegExp(`T01[\\s\\S]*T02[\\s\\S]*T03[\\s\\S]*${IMPL} t01-a[\\s\\S]*/am:check t01-a[\\s\\S]*/am:commit task T01 t01-a`));
+  assert.match(dry.out, new RegExp(`T01[\\s\\S]*T02[\\s\\S]*T03[\\s\\S]*/am:do t01-a[\\s\\S]*/am:check t01-a[\\s\\S]*/am:commit task T01 t01-a`));
   const run = r.orch('run');
   assert.equal(run.code, 0, run.out);
   assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
@@ -340,7 +363,7 @@ test('정상 흐름: 세 작업을 순서대로 계획 → 구현 → 점검 →
   assert.equal(r.g('status', '--porcelain').trim(), '', '.am 과 .orchestrator 는 git 에 안 잡힌다');
   assert.ok(r.calls().every((c) => c.cwd === realpathSync(r.repo)), '예상 파일이 모두 겹치면(src/**) 하나씩, 이 저장소에서 돈다');
   const prompts = r.calls().map((c) => c.prompt).filter((p) => p.startsWith('/am:'));
-  assert.deepEqual(prompts.slice(0, 4), ['/am:plan Plan task T01 described in .am/t01-a/brief.md (slug t01-a)', `${IMPL} t01-a`, '/am:check t01-a', '/am:commit task T01 t01-a']);
+  assert.deepEqual(prompts.slice(0, 4), ['/am:plan Plan task T01 described in .am/t01-a/brief.md (slug t01-a)', `/am:do t01-a`, '/am:check t01-a', '/am:commit task T01 t01-a']);
   const brief = readFileSync(path.join(r.repo, '.am', 't02-b', 'brief.md'), 'utf8');
   assert.match(brief, /T01 T01 제목: for what was actually built read \.am\/t01-a\/plan\.md/);
   assert.match(brief, /## Out of scope[\s\S]*T03 T03 제목/);
@@ -439,7 +462,7 @@ test('claude 가 오류로 끝나면 상태를 남기고 멈췄다가, 다시 �
   const again = r.orch('run');
   assert.equal(again.code, 0, again.out);
   assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
-  const systems = r.calls().filter((c) => c.prompt === `${IMPL} t02-b`).map((c) => readFileSync(path.join(r.repo, c.argv[c.argv.indexOf('--append-system-prompt-file') + 1]), 'utf8'));
+  const systems = r.calls().filter((c) => c.prompt === `/am:do t02-b`).map((c) => readFileSync(path.join(r.repo, c.argv[c.argv.indexOf('--append-system-prompt-file') + 1]), 'utf8'));
   assert.ok(!/earlier attempt/.test(systems[0]) && /earlier attempt/.test(systems[1]), '두 번째 시도에는 남은 변경을 먼저 보라고 알려 준다');
 });
 
@@ -491,7 +514,7 @@ test('설정이 단계의 모델이나 effort 를 바꾸면 그 단계의 스킬
   const calls = r.calls();
   // 바꾸지 않은 단계는 슬래시 호출 그대로, 기본값으로(스킬 머리말과 같은 값이라 어느 쪽이 쓰여도 같다)
   assert.deepEqual(flags(calls.find((c) => c.prompt.startsWith('/am:plan Plan task T01'))), DEF('plan'));
-  assert.deepEqual(flags(calls.find((c) => c.prompt === `${IMPL} t01-a`)), DEF('implement'));
+  assert.deepEqual(flags(calls.find((c) => c.prompt === `/am:do t01-a`)), DEF('implement'));
   // 바꾼 단계는 머리말을 뗀 SKILL.md 를 넘기므로 플래그만 남는다
   assert.deepEqual(flags(calls.find((c) => /T01\/skill-check\.md exactly/.test(c.prompt))), [DEF('check')[0], E1]);
   assert.deepEqual(flags(calls.find((c) => /T01\/skill-commit\.md exactly/.test(c.prompt))), [M1, DEF('commit')[1]]);
@@ -616,7 +639,8 @@ test('보고서와 status 는 지금 돌고 있는 단계를 보여 주고, 예�
   assert.ok(!notes.includes('.meta'));
 });
 
-test('Ctrl+C: 돌고 있던 세션도 함께 끝내고, 다시 실행하면 끊긴 단계부터 이어 간다', async () => {
+// Windows 에서 child.kill('SIGINT') 는 신호 처리기를 거치지 않고 바로 끝내므로(종료 코드 null) 검사할 수 없다.
+test('Ctrl+C: 돌고 있던 세션도 함께 끝내고, 다시 실행하면 끊긴 단계부터 이어 간다', { skip: process.platform === 'win32' }, async () => {
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
   const proc = r.start('run');
   const pidFile = path.join(r.repo, '.orchestrator', 'fake-slow.pid');
@@ -724,7 +748,7 @@ test('지시문: 빌드 부작용은 세션이 git restore 로 되돌리고, 점
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { volatilePaths: ['settings.asset'] } });
   assert.equal(r.orch('run').code, 0);
   const sys = (prefix) => readFileSync(path.join(r.repo, r.calls().find((c) => c.prompt.startsWith(prefix)).argv.at(-1)), 'utf8');
-  const impl = sys(`${IMPL} t01-a`);
+  const impl = sys(`/am:do t01-a`);
   assert.match(impl, /Build side effects:[\s\S]*restore them before you finish with: git restore -- <paths>\. git checkout and commands that stash changes are refused/);
   assert.match(impl, /settings\.asset\. Changes that show up in them after a build are build output: restore them with git restore/);
   const check = sys('/am:check');
@@ -732,7 +756,7 @@ test('지시문: 빌드 부작용은 세션이 git restore 로 되돌리고, 점
   assert.match(check, /must stay out of the commit\. Restore them before you finish with: git restore -- <paths>/);
 });
 
-test('am 0.1.4 이상: 구현은 am:do 로 부르고, 묻는 자리는 am:auto 와 같은 규칙으로 처리한다', { skip: IMPL !== '/am:do' }, () => {
+test('구현은 am:do 로 부르고, 묻는 자리는 am:auto 와 같은 규칙으로 처리한다', () => {
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { autoDecide: ['t01-a'] } });
   const d = r.orch('doctor');
   assert.match(d.out, /\/am:plan, \/am:check, \/am:commit, \/am:do 사용 가능/);
@@ -755,9 +779,9 @@ test('am 0.1.4 이상: 구현은 am:do 로 부르고, 묻는 자리는 am:auto �
   assert.match(report, /## 사용자 대신 정한 것 \(자동 결정\)\n\n- T01: 첫 화면은 목록으로 한다 - 지금 화면과 가장 비슷함 \(자동 결정\)/);
 });
 
-test('am 0.1.3 이하(am:do 없음): 구현은 예전처럼 am:plan <slug> 로 부른다', () => {
-  // am:do 가 없는 플러그인 사본을 만든다
-  const old = mkdtempSync(path.join(os.tmpdir(), 'orch-oldam-'));
+test('doctor: am 이 오래돼 필요한 스킬이 없으면 업데이트를 안내하고, am 폴더가 아니면 찾지 못했다고 한다', () => {
+  // am:do 가 없는 오래된 플러그인 사본을 만든다
+  const old = tmp('orch-oldam-');
   for (const name of ['plan', 'check', 'commit']) {
     mkdirSync(path.join(old, 'skills', name), { recursive: true });
     writeFileSync(path.join(old, 'skills', name, 'SKILL.md'), readFileSync(path.join(PLUGIN, 'skills', name, 'SKILL.md')));
@@ -769,16 +793,17 @@ test('am 0.1.3 이하(am:do 없음): 구현은 예전처럼 am:plan <slug> 로 �
   const r = makeRepo({ plan: planOf([task('T01', 't01-a')]), config: { amPluginRoot: old } });
   r.orch.env = { FAKE_PLUGIN_ROOT: old };
   const d = r.orch('doctor');
-  assert.equal(d.code, 0, d.out);
-  assert.match(d.out, /am 0\.1\.2 플러그인 폴더: .*\(am:do 없음: 구현은 예전 방식대로 am:plan <slug> 로 부릅니다\)/);
-  assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
-  const run = r.orch('run');
-  assert.equal(run.code, 0, run.out);
-  assert.match(run.out, /구현 스킬 am:plan/);
-  const call = r.calls().find((c) => c.prompt === '/am:plan t01-a');
-  assert.ok(call);
-  assert.match(readFileSync(path.join(r.repo, call.argv.at(-1)), 'utf8'), /by the rules at the top of that file[\s\S]*follow rules 1 to 4 and skip rule 5/);
-  assert.match(readFileSync(path.join(r.runDir(), 'report.md'), 'utf8'), /## 사용자 대신 정한 것 \(자동 결정\)\n\n없음/);
+  assert.equal(d.code, 2, d.out);
+  assert.match(d.out, /am 이 오래돼 am:do 이 없습니다\. am 을 업데이트하세요 \(am 0\.1\.2: /);
+  assert.doesNotMatch(d.out, /찾지 못했습니다/);
+  // am 폴더가 아닌 곳
+  const none = tmp('orch-noam-');
+  const n = makeRepo({ plan: planOf([task('T01', 't01-a')]), config: { amPluginRoot: none } });
+  n.orch.env = { FAKE_PLUGIN_ROOT: none };
+  const nd = n.orch('doctor');
+  assert.equal(nd.code, 2, nd.out);
+  assert.match(nd.out, /am 플러그인 폴더\(hooks\/gate\.mjs, skills\/\*\/SKILL\.md\)를 찾지 못했습니다/);
+  assert.doesNotMatch(nd.out, /오래돼/);
 });
 
 test('스냅샷은 같은 초 안에 같은 크기로 다시 쓰인 파일도 놓치지 않는다', async () => {
@@ -850,6 +875,20 @@ test('status --json: 막힌 작업은 단계·사유·이어 가는 방법과 �
   assert.match(st.errors.join('\n'), /"size" must be S or M/);
 });
 
+test('answer 뒤 "너무 크다"던 작업을 나누지 못하면 계획 단계에서 막히고, 안내는 계획부터 다시를 가리킨다', () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { plan: { 't01-a': ['NEEDS_DECISION'] }, answer: { 't01-a': ['TOO_BIG'] } } });
+  assert.equal(r.orch('run').code, 1);
+  assert.equal(r.statusOf().T01, 'needs-decision');
+  r.orch('answer', 'T01', 'x');
+  const s = r.state().tasks.T01;
+  assert.deepEqual([s.status, s.blockedAt], ['blocked', 'plan']);
+  assert.match(s.reason, /split\.json/);
+  const st = statusJson(r);
+  assert.deepEqual(st.blocked.map((b) => [b.id, b.stage]), [['T01', 'plan']]);
+  assert.match(st.blocked[0].hint, /retry T01 --from plan/);
+  assert.match(readFileSync(path.join(r.repo, st.run.report), 'utf8'), /이어 가기: .*--from plan/);
+});
+
 test('스킬의 절차(status --json 의 next 만 보고 다음 명령을 정함)대로 몰면 질문에 답해 가며 끝까지 간다', () => {
   // orchestrator/skills/run/SKILL.md 의 4단계를 그대로 옮긴 운전자. 사용자의 답은 미리 정해 둔 것으로 대신한다.
   const plan = planOf([task('T01', 't01-a'), task('T02', 't02-b', ['T01']), task('T03', 't03-c')], [{ id: 'D1', what: '첫 화면을 무엇으로 할까', whyNow: '화면 구성이 달라짐', options: [{ label: '목록', effect: '목록이 먼저' }, { label: '상세', effect: '상세가 먼저' }], recommended: '목록', undo: 'easy', blocks: ['T03'], answer: null }]);
@@ -882,7 +921,8 @@ test('스킬의 절차(status --json 의 next 만 보고 다음 명령을 정함
   assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
 });
 
-test('잠금: 실행 중에는 다른 명령이 끼어들지 못하고, status 는 무엇이 돌고 있는지 알려 준다', async () => {
+// Windows 에서는 끝에서 보내는 SIGINT 를 검사할 수 없다(위 Ctrl+C 테스트와 같은 이유).
+test('잠금: 실행 중에는 다른 명령이 끼어들지 못하고, status 는 무엇이 돌고 있는지 알려 준다', { skip: process.platform === 'win32' }, async () => {
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
   const proc = r.start('run');
   const pidFile = path.join(r.repo, '.orchestrator', 'fake-slow.pid');
@@ -909,6 +949,26 @@ test('잠금: 실행 중에는 다른 명령이 끼어들지 못하고, status �
   assert.equal(r.g('status', '--porcelain').trim(), '', '잠금 파일은 git 에 잡히지 않는다');
 });
 
+test('잠금: dry-run 을 구현한 것은 run 뿐이라, 다른 명령에 --dry-run 을 붙여도 잠금을 건너뛰지 않는다', () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]) });
+  const lock = path.join(r.repo, '.orchestrator', 'lock.json');
+  // 이 테스트 프로세스가 살아 있으므로 잠금의 주인이 살아 있는 것으로 보인다
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, command: 'run', startedAt: 'x' }));
+  try {
+    for (const args of [['split', 'x', '--dry-run'], ['retry', 'T01', '--dry-run']]) {
+      const second = r.orch(...args);
+      assert.equal(second.code, 2, `${args.join(' ')}\n${second.out}`);
+      assert.match(second.out, /이미 돌고 있는 명령이 있습니다: run \(pid \d+/);
+    }
+    assert.equal(r.orch('run', '--dry-run').code, 0, '읽기만 하는 run --dry-run 은 된다');
+    const st = statusJson(r);
+    assert.equal(st.next, 'wait');
+    assert.equal(st.running.command, 'run');
+  } finally {
+    rmSync(lock, { force: true });
+  }
+});
+
 // ------------------------------------------------------------------ 동시 진행
 
 test('동시 진행: 서로 무관한 작업은 별도 작업 공간에서 함께 돌고, 끝나는 대로 실행 브랜치에 한 줄로 합친다', () => {
@@ -925,8 +985,8 @@ test('동시 진행: 서로 무관한 작업은 별도 작업 공간에서 함�
   assert.match(run.out, /\[T03\] 실행 브랜치의 새 커밋 위로 옮김: 게이트를 다시 돌림/, '먼저 합쳐진 T01 위로 옮겨 게이트를 다시 돌린다');
   const cwdOf = (prompt) => r.calls().find((c) => c.prompt === prompt).cwd;
   assert.equal(cwdOf('/am:plan Plan task T03 described in .am/t03-c/brief.md (slug t03-c)'), realpathSync(r.repo), '계획은 이 저장소에서');
-  assert.match(cwdOf(`${IMPL} t01-a`), /\/\.orchestrator\/wt\/[^/]+\/T01$/);
-  assert.match(cwdOf(`${IMPL} t03-c`), /\/\.orchestrator\/wt\/[^/]+\/T03$/);
+  assert.match(cwdOf(`/am:do t01-a`), /[\\/]\.orchestrator[\\/]wt[\\/][^\\/]+[\\/]T01$/);
+  assert.match(cwdOf(`/am:do t03-c`), /[\\/]\.orchestrator[\\/]wt[\\/][^\\/]+[\\/]T03$/);
   const hashes = r.g('log', '--format=%h', 'main..HEAD');
   assert.ok(hashes.includes(r.state().tasks.T03.commits[0].split(' ')[0]), '옮긴 뒤의 커밋 해시를 기록한다');
   assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1, '작업 공간이 남지 않는다');
@@ -970,7 +1030,7 @@ test('합칠 때 충돌하면 변경을 patch 로 남기고, 실행 브랜치의
   assert.equal(s.attempts.integrate, 1);
   assert.match(s.notes.join('\n'), /먼저 합쳐진 작업과 충돌했습니다: 변경을 \.orchestrator\/runs\/[^ ]+\/T03\/integrate-1\.patch 에 남기고/);
   assert.match(readFileSync(path.join(r.runDir(), 'T03', 'integrate-1.patch'), 'utf8'), /\+from t03-c/);
-  const impls = r.calls().filter((c) => c.prompt === `${IMPL} t03-c`);
+  const impls = r.calls().filter((c) => c.prompt === `/am:do t03-c`);
   assert.equal(impls.length, 2, '구현을 한 번 더 한다');
   const sys = impls[1].argv[impls[1].argv.indexOf('--append-system-prompt-file') + 1];
   assert.match(readFileSync(path.resolve(impls[1].cwd, sys), 'utf8'), /could not be combined with work that other tasks committed[\s\S]*integrate-1\.patch/);
@@ -996,12 +1056,13 @@ test('별도 작업 공간에서 막히면 새 작업은 시작하지 않고 그
   const again = r.orch('run');
   assert.equal(again.code, 0, again.out);
   assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
-  const impls = r.calls().filter((c) => c.prompt === `${IMPL} t03-c`);
+  const impls = r.calls().filter((c) => c.prompt === `/am:do t03-c`);
   assert.equal(impls[1].cwd, impls[0].cwd, '같은 작업 공간에서 이어 간다');
   assert.equal(r.g('worktree', 'list').trim().split('\n').length, 1);
 });
 
-test('함께 도는 동안 status 는 작업마다 단계와 작업 공간을 보여 주고, Ctrl+C 는 세션을 모두 끝낸다', async () => {
+// Windows 에서 child.kill('SIGINT') 는 신호 처리기를 거치지 않고 바로 끝내므로(종료 코드 null) 검사할 수 없다.
+test('함께 도는 동안 status 는 작업마다 단계와 작업 공간을 보여 주고, Ctrl+C 는 세션을 모두 끝낸다', { skip: process.platform === 'win32' }, async () => {
   const r = prepared({ plan: planOf([own('T01', 't01-a'), own('T03', 't03-c')]), scenario: { implement: { 't01-a': ['SLOW', 'DONE'], 't03-c': ['SLOW', 'DONE'] } } });
   const proc = r.start('run');
   const pidFile = (slug) => path.join(r.repo, '.orchestrator', `fake-slow-${slug}.pid`);
@@ -1038,7 +1099,7 @@ test('함께 도는 동안 status 는 작업마다 단계와 작업 공간을 �
 test('doctor 는 설정 파일이 없으면 만들고, am 플러그인을 곁에서 찾는다(같은 저장소, 같은 마켓플레이스 설치)', () => {
   const amVersion = JSON.parse(readFileSync(path.join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8')).version;
   const bare = () => {
-    const repo = mkdtempSync(path.join(os.tmpdir(), 'orch-bare-'));
+    const repo = tmp('orch-bare-');
     const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' });
     g('init', '-q', '-b', 'main');
     g('config', 'user.email', 'test@example.com');
@@ -1048,7 +1109,7 @@ test('doctor 는 설정 파일이 없으면 만들고, am 플러그인을 곁에
     g('commit', '-q', '-m', 'init');
     return { repo, g };
   };
-  const env = { ...process.env, CLAUDE_CONFIG_DIR: mkdtempSync(path.join(os.tmpdir(), 'orch-nocache-')), AM_GATE: '' };
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: tmp('orch-nocache-'), AM_GATE: '' };
   const doctor = (script, repo) => {
     const d = spawnSync(process.execPath, [script, 'doctor', '--skip-probe', '--repo', repo], { encoding: 'utf8', env });
     return `${d.stdout}${d.stderr}`;
@@ -1063,13 +1124,13 @@ test('doctor 는 설정 파일이 없으면 만들고, am 플러그인을 곁에
   assert.equal(a.g('status', '--porcelain').trim(), '', '.orchestrator 는 git 에 잡히지 않는다');
   if (!process.env.AM_PLUGIN_ROOT) assert.ok(out.includes(`am ${amVersion} 플러그인 폴더: ${path.resolve(here, '..', 'plugin')}`), out);
   // 2) 같은 마켓플레이스에서 설치된 배치: <캐시>/<마켓>/am-orchestrator/<버전>/scripts 와 <캐시>/<마켓>/am/<버전>
-  const cache = mkdtempSync(path.join(os.tmpdir(), 'orch-cache-'));
+  const cache = tmp('orch-cache-');
   const script = path.join(cache, 'am-workflow', 'am-orchestrator', '0.1.0', 'scripts', 'orchestrator.mjs');
   mkdirSync(path.dirname(script), { recursive: true });
   writeFileSync(script, readFileSync(ORCH));
   for (const v of ['0.1.6', '0.1.10', '0.1.9']) {
     const dir = path.join(cache, 'am-workflow', 'am', v);
-    for (const f of ['hooks/gate.mjs', 'skills/plan/SKILL.md', 'skills/check/SKILL.md', 'skills/commit/SKILL.md']) {
+    for (const f of ['hooks/gate.mjs', 'skills/plan/SKILL.md', 'skills/check/SKILL.md', 'skills/commit/SKILL.md', 'skills/do/SKILL.md']) {
       mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
       writeFileSync(path.join(dir, f), readFileSync(path.join(PLUGIN, f)));
     }
@@ -1150,7 +1211,7 @@ test('volatilePaths: 세션 안의 빌드가 다시 쓴 파일도 게이트가 �
   assert.equal(r.calls().filter((c) => c.prompt.startsWith('/am:check')).length, 2, '가려내기는 원래 돌리던 게이트로 하므로 세션이 늘지 않는다');
   const sys = (prefix) => readFileSync(path.join(r.repo, r.calls().find((c) => c.prompt.startsWith(prefix)).argv.at(-1)), 'utf8');
   assert.match(sys('/am:check'), /Build tools rewrite these files on every build: settings\.asset\. Changes in them that the plan does not call for are build output/);
-  assert.match(sys(`${IMPL} t01-a`), /Build tools rewrite these files on every build: settings\.asset/);
+  assert.match(sys(`/am:do t01-a`), /Build tools rewrite these files on every build: settings\.asset/);
   assert.match(sys('/am:commit'), /A file that becomes modified only after your first git commit is the gate's doing/);
   assert.match(readFileSync(path.join(r.runDir(), 'report.md'), 'utf8'), /settings\.asset \(\d+번\)\n/);
 });

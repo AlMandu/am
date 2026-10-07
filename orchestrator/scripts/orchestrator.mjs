@@ -3,7 +3,7 @@
 // 큰 설계 문서를 작은 작업으로 쪼개고, 작업마다 am 플러그인의 plan → 구현 → check → commit 흐름을
 // `claude -p` 로 돌린다. 서로 무관한 작업은 별도 작업 공간(git worktree)에서 동시에. 의존성 없음, Node 18 이상.
 //
-// - am 저장소(shanash/am)는 "배치 러너 없음"이 규칙이므로 이 스크립트는 am 바깥에 둔다.
+// - am 플러그인(plugin/)은 배치 러너를 두지 않는 규칙이라 이 스크립트는 같은 저장소의 별도 플러그인에 둔다.
 // - am 의 스킬 본문과 게이트(gate.mjs)는 복사하지 않고, 설치된 플러그인의 것을 그대로 쓴다.
 // - 모델에게 보내는 글은 영어(am 스킬 본문과 같은 규칙), 사람이 보는 출력은 한국어다.
 
@@ -17,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const WIN = process.platform === 'win32';
 const ORCH_DIR = '.orchestrator';
 const AM_DIR = '.am';
-const BASE_SKILLS = ['plan', 'check', 'commit']; // 모든 am 버전에 있는 스킬
+const BASE_SKILLS = ['plan', 'check', 'commit', 'do']; // 오케스트레이터가 부르는 am 스킬(구현은 am:do)
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 // ------------------------------------------------------------------ 기본 설정
@@ -32,11 +32,11 @@ export function defaults() {
   // stash 는 변경을 숨기는 형태만 막는다. `git stash list`·`show` 는 점검 세션이 "숨겨 둔 변경이 없는지" 볼 때 쓰는데,
   // 통째로 막으면 그 명령과 한 줄로 묶인 게이트 실행까지 함께 거부된다.
   const stashWrites = ['push', 'save', 'pop', 'apply', 'drop', 'clear', 'create', 'store', 'branch'].flatMap((c) => [`Bash(git stash ${c})`, `Bash(git stash ${c} *)`]);
-  const noHistory = ['Bash(git commit *)', 'Bash(git push *)', 'Bash(git reset *)', 'Bash(git checkout *)', 'Bash(git switch *)', 'Bash(git stash)', 'Bash(git stash -*)', ...stashWrites];
+  const noHistory = ['Bash(git commit *)', 'Bash(git push)', 'Bash(git push *)', 'Bash(git reset *)', 'Bash(git checkout *)', 'Bash(git switch *)', 'Bash(git stash)', 'Bash(git stash -*)', ...stashWrites];
   const work = { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
   return {
     claudeCommand: ['claude'], // 실행 파일과 앞에 붙일 인자
-    amPluginRoot: '', // am 의 plugin/ 폴더. 비우면 doctor 가 찾은 값 → 플러그인 캐시 순으로 찾는다
+    amPluginRoot: '', // am 의 plugin/ 폴더. 비우면 doctor 가 기록한 값 → 이 플러그인 곁 → 플러그인 캐시 순으로 찾는다
     pluginDir: '', // 적으면 모든 호출에 --plugin-dir 로 넘긴다(플러그인을 설치하지 않고 로컬 경로로 쓸 때)
     skillMode: 'auto', // auto | slash(/am:plan 호출) | inline(SKILL.md 를 읽어 지시문으로 전달)
     branch: 'orch/{run}', // 실행용 브랜치. '' 이면 현재 브랜치에서 진행
@@ -61,7 +61,7 @@ export function defaults() {
       plan: { mode: 'dontAsk', allow: sh([...read, `Edit(/${AM_DIR}/**)`, `Edit(${AM_DIR}/**)`, ...gitRead]), deny: noHuman },
       implement: work,
       check: work,
-      commit: { mode: 'dontAsk', allow: sh([...read, ...gitRead, 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)']), deny: sh([...noHuman, 'Bash(git push *)']) },
+      commit: { mode: 'dontAsk', allow: sh([...read, ...gitRead, 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)']), deny: sh([...noHuman, 'Bash(git push)', 'Bash(git push *)']) },
     },
   };
 }
@@ -251,6 +251,8 @@ function git(repo, args, { allowFail = false, env } = {}) {
   return { code: r.status, out: (r.stdout || '').trimEnd(), err: (r.stderr || '').trim(), signal: r.signal };
 }
 const head = (repo) => git(repo, ['rev-parse', 'HEAD']).out.trim();
+/** base 뒤에 생긴 커밋을 오래된 것부터 "짧은해시 제목" 으로. */
+const commitsSince = (dir, base) => git(dir, ['log', '--reverse', '--format=%h %s', `${base}..HEAD`]).out.split('\n').filter(Boolean);
 
 /** 작업 트리의 변경 목록(git status). 이름 바꾸기는 새 경로만 본다. */
 function statusEntries(repo) {
@@ -269,6 +271,8 @@ const isVolatile = (ctx, p) => ctx.volatile.some((re) => re.test(p));
 const sha = (buf) => createHash('sha1').update(buf).digest('hex');
 /** 사람이나 작업이 만든 변경. volatilePaths 에 적힌 파일은 뺀다. */
 const dirtyFiles = (ctx) => statusEntries(ctx.repo).filter((e) => !isVolatile(ctx, e.path)).map((e) => `${e.code} ${e.path}`);
+/** 오류 문구에 붙이는 목록 미리보기: 앞 10개를 줄마다 하나씩. */
+const firstTen = (list) => list.slice(0, 10).join('\n');
 /** 남은 변경 전부. volatilePaths 중 추적되지 않는 것(빌드 산출물)만 뺀다. */
 const leftovers = (ctx) => statusEntries(ctx.repo).filter((e) => !(e.code === '??' && isVolatile(ctx, e.path))).map((e) => `${e.code} ${e.path}`);
 /** 내용이 바뀐 volatilePaths 파일. */
@@ -358,7 +362,7 @@ function findPluginInCache() {
     const manifest = path.join(dir, '.claude-plugin', 'plugin.json');
     if (existsSync(manifest) && existsSync(path.join(dir, 'hooks', 'gate.mjs'))) {
       try {
-        if (readJson(manifest).name === 'am') hits.push({ dir, at: statSync(manifest).mtimeMs });
+        if (isAmPlugin(dir)) hits.push({ dir, at: statSync(manifest).mtimeMs });
       } catch {
         /* 읽지 못하는 매니페스트는 건너뜀 */
       }
@@ -398,10 +402,6 @@ function findSiblingAm() {
 }
 
 const hasSkill = (root, name) => Boolean(root) && existsSync(path.join(root, 'skills', name, 'SKILL.md'));
-/** 오케스트레이터가 부르는 am 스킬. am 0.1.4 부터 구현은 am:do 가 맡고 am:plan <slug> 는 더 이상 구현하지 않는다. */
-const neededSkills = (root) => [...BASE_SKILLS, ...(hasSkill(root, 'do') ? ['do'] : [])];
-/** 구현 단계에서 부를 스킬: am:do 가 있으면 그것, 없으면(0.1.3 이하) 예전처럼 am:plan <slug>. */
-const implementSkill = (ctx) => (hasSkill(ctx.pluginRoot, 'do') || ctx.env?.skills?.includes('do') ? 'do' : 'plan');
 function amVersion(root) {
   try {
     return readJson(path.join(root, '.claude-plugin', 'plugin.json')).version || '?';
@@ -588,7 +588,7 @@ function callMode(ctx, phase, skill) {
 }
 /** 사람에게 보여 줄 스킬 호출 방식. 설정 때문에 inline 으로 부르는 단계가 있으면 함께 적는다. */
 function modeLabel(ctx) {
-  const inline = ['plan', 'implement', 'check', 'commit'].filter((p) => callMode(ctx, p, p === 'implement' ? implementSkill(ctx) : p) !== ctx.mode);
+  const inline = ['plan', 'implement', 'check', 'commit'].filter((p) => callMode(ctx, p, p === 'implement' ? 'do' : p) !== ctx.mode);
   return inline.length ? `${ctx.mode}(${inline.join('·')} 는 설정이 모델·effort 를 바꿔 inline)` : ctx.mode;
 }
 
@@ -708,7 +708,7 @@ const SYSTEM = {
   split: (ctx, design, out) => `You are the task splitter of am-orchestrator, an unattended batch run. No human is present in this session; never wait for input.
 
 Input: the design document at ${design}. Output: one JSON file at ${out}. Do not create or change any other file.
-What this session can do: read anything in the repository; write only under ${ORCH_DIR}/ and only with the Write or Edit tool; run only read-only git commands (status, diff, log, ls-files). The permission rules refuse everything else, including writing files through Bash. Work from the repository root and do not cd into subdirectories.
+What this session can do: read anything in the repository; write only under ${ORCH_DIR}/ and only with the Write or Edit tool; run only read-only git commands (status, diff, log, ls-files, check-ignore, rev-parse). The permission rules refuse everything else, including writing files through Bash. Work from the repository root and do not cd into subdirectories.
 
 Goal: turn the design document into the smallest set of tasks such that a fresh agent session can plan, implement, verify and commit each task on its own with the am workflow: one short plan document (at most ${ctx.cfg.taskLimits.maxPlanLines} lines), then the implementation, then the project's build/test gate, then one commit.
 
@@ -752,7 +752,7 @@ This is task ${t.id} of a larger design. Its slug is ${t.slug}; use exactly this
 - Plan this task only. The rest of the design is other tasks' work; mention it under Risks only if this task cannot be verified without it.
 - Always write ${AM_DIR}/${t.slug}/plan.md, even when the change looks small. Skip the stop that offers to do a small change directly.
 - Do not implement in this session. Do not create or change any file outside ${AM_DIR}/${t.slug}/.
-- What this session can do: read anything in the repository; create or change files only under ${AM_DIR}/${t.slug}/ and only with the Write or Edit tool (the folder already exists, do not create it); run only read-only git commands (status, diff, log, ls-files) and the Codex second-opinion command of the skill's rules, with its brief saved as ${AM_DIR}/${t.slug}/opinion-<round>.md (never over brief.md). The permission rules refuse everything else, including writing files through Bash. A refusal is never a reason to leave the plan unsaved: save it with the Write tool at ${AM_DIR}/${t.slug}/plan.md.
+- What this session can do: read anything in the repository; create or change files only under ${AM_DIR}/${t.slug}/ and only with the Write or Edit tool (the folder already exists, do not create it); run only read-only git commands (status, diff, log, ls-files, check-ignore, rev-parse) and the Codex second-opinion command of the skill's rules, with its brief saved as ${AM_DIR}/${t.slug}/opinion-<round>.md (never over brief.md). The permission rules refuse everything else, including writing files through Bash. A refusal is never a reason to leave the plan unsaved: save it with the Write tool at ${AM_DIR}/${t.slug}/plan.md.
 - Work from the repository root and do not cd into subdirectories: a command that combines cd with git is refused. To look around, use the Read, Grep and Glob tools rather than shell pipelines: read hook scripts (for example .githooks/pre-commit) and tool sources with the Read tool. Running project tools (node, make and the like) is refused in this session; that Codex second-opinion command is the only exception.
 - Commit rules: this task is committed on its own, the commit runs the repository's commit hooks, and the session that commits cannot edit files. Find out what the hooks and the project's rules (CLAUDE.md, AGENTS.md, contract documents such as a MODULE.md next to the code) require together with a code change, for example a contract or history line, a changelog entry, or line references that move, and make each of those a step of the plan with its own check, even when the brief's file list does not mention the file.
 - Decisions: the answers under "Decisions already made" in the brief are final. For any other question about what the user sees or what is in scope, take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says (through its second opinion where it has one), with at most 1 more round after the reviewers' first answers in this session because the session has a time limit; never wait for the user on them, except a choice its two reviewers still split on after that round. Leave a decision open only when the plan cannot avoid one of the following and neither the brief nor the design document settles it: deleting user data or files that existed before this run, changing a saved-data format or migrating data, changing anything outside this repository, an action that the user's or the project's instructions say needs confirmation, or a technical choice its two reviewers still split on. For an open decision write the decision card in plan.md under Decisions, marked OPEN, and repeat the card in your final reply.
@@ -762,8 +762,8 @@ This is task ${t.id} of a larger design. Its slug is ${t.slug}; use exactly this
 
   implement: (ctx, t, again) => `${UNATTENDED}
 
-This is task ${t.id}, slug ${t.slug}. Implement ${AM_DIR}/${t.slug}/plan.md ${implementSkill(ctx) === 'do' ? 'with the steps of the am:do skill' : 'by the rules at the top of that file'}.
-- The orchestrator runs the am:check skill and the am:commit skill in separate sessions after you finish. So do everything except that hand-off: ${implementSkill(ctx) === 'do' ? 'run the agent runtime checks you can do here (the last step of the am:do skill), but do not use the am:check skill' : 'follow rules 1 to 4 and skip rule 5'}.
+This is task ${t.id}, slug ${t.slug}. Implement ${AM_DIR}/${t.slug}/plan.md with the steps of the am:do skill.
+- The orchestrator runs the am:check skill and the am:commit skill in separate sessions after you finish. So do everything except that hand-off: run the agent runtime checks you can do here (the last step of the am:do skill), but do not use the am:check skill.
 - Do not commit, push, stash, reset or switch branches.
 - Stay inside this task. Do not start other parts of the design document.
 - Build side effects: when a build, a test run or an editor tool that you ran rewrites tracked files that are not part of this task (for example regenerated scenes or settings whose real content did not change), restore them before you finish with: git restore -- <paths>. git checkout and commands that stash changes are refused in this session; git restore is allowed.
@@ -1244,7 +1244,7 @@ async function integrateNow(ctx, t) {
     if (!gatePasses(ctx.cfg, g)) return redoTask(ctx, t, `실행 브랜치의 새 커밋 위로 옮긴 뒤 게이트 ${g.status}${g.reason ? ` (${g.reason})` : ''}`);
   }
   // 이 작업의 커밋은 작업 공간의 기준 커밋(옮겼으면 옮긴 위치) 뒤의 것: 합치기를 다시 해도(중단 뒤) 같은 목록이 나온다
-  const commits = git(dir, ['log', '--reverse', '--format=%h %s', `${s.wtBase}..HEAD`]).out.split('\n').filter(Boolean);
+  const commits = commitsSince(dir, s.wtBase);
   await fastForward(root, head(dir));
   copyAm(dir, root, t.slug);
   Object.assign(s, { status: 'done', commits, worktree: undefined, wtBase: undefined, needsGate: undefined, redoPatch: undefined, commitBase: undefined, reason: undefined, blockedAt: undefined, updatedAt: now() });
@@ -1349,7 +1349,7 @@ async function runTask(ctx, t) {
   if (s.status === 'pending') {
     discard(ctx, dir, volatileDirty(ctx), '이전 빌드가 다시 쓴 파일'); // 작업 시작 시점에 남아 있는 volatile 변경은 지난 빌드의 흔적이다
     const stray = dirtyFiles(ctx);
-    if (stray.length) fail(`${t.id} 를 시작하려면 작업 트리가 깨끗해야 합니다. 커밋하거나 치운 뒤 다시 실행하세요.\n${stray.slice(0, 10).join('\n')}`);
+    if (stray.length) fail(`${t.id} 를 시작하려면 작업 트리가 깨끗해야 합니다. 커밋하거나 치운 뒤 다시 실행하세요.\n${firstTen(stray)}`);
     writeBrief(ctx, t);
     begin('plan');
     bump('plan');
@@ -1391,11 +1391,11 @@ async function runTask(ctx, t) {
     ({ repo } = ctx);
   }
 
-  // 2) 구현: 새 세션에서 am:plan <slug> 로 계획을 이어 구현한다
+  // 2) 구현: 새 세션에서 am:do <slug> 로 구현한다
   if (s.status === 'planned') {
     begin('implement');
     const again = bump('implement');
-    const r = noteDenied('implement', await step(ctx, 'implement', { dir, system: SYSTEM.implement(ctx, t, again), prompt: skillPrompt(ctx, implementSkill(ctx), t.slug, dir, 'implement') }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
+    const r = noteDenied('implement', await step(ctx, 'implement', { dir, system: SYSTEM.implement(ctx, t, again), prompt: skillPrompt(ctx, 'do', t.slug, dir, 'implement') }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
     s.sessions.implement = r.sessionId;
     if (r.mark !== 'DONE') {
       writeText(path.join(dir, 'blocked.md'), r.text);
@@ -1420,7 +1420,7 @@ async function runTask(ctx, t) {
         if (checkText) writeText(path.join(dir, `check-${s.attempts.check}.md`), checkText);
         const verdict = c.mark || verdictFromFile(checkText);
         const gate = cfg.orchestratorGate ? await gateAndSettle(ctx, s, dir) : null;
-        const gateOk = !gate || gate.status === 'pass' || (gate.status === 'unconfigured' && !cfg.requireGate);
+        const gateOk = !gate || gatePasses(cfg, gate);
         Object.assign(s, { verdict: verdict || '?', gate: gate ? gate.status : '(생략)' });
         saveState(ctx);
         log(ctx, `    판정 ${s.verdict}, 게이트 ${s.gate}`);
@@ -1449,13 +1449,12 @@ async function runTask(ctx, t) {
         s.commitBase = head(repo); // 이 뒤에 생긴 커밋만 이 작업의 커밋으로 센다
         saveState(ctx);
       }
-      const gateFine = (g) => gatePasses(cfg, g);
       const finished = ctx.isolated ? 'committed' : 'done'; // 별도 작업 공간의 커밋은 실행 브랜치에 합친 뒤에 완료
       if (cfg.orchestratorGate && unsettledVolatile(ctx, s).length) {
         // 점검을 거치지 않고 커밋 단계로 들어온 경우(retry --from commit 등): 커밋 전에 volatile 파일을 게이트로 가려낸다
         log(ctx, '    volatilePaths 파일이 바뀌어 있음: 게이트로 빌드 산출 변화인지 확인');
         const g = await gateAndSettle(ctx, s, dir);
-        if (!gateFine(g)) return block(`커밋 전 게이트 ${g.status}: ${g.reason}`);
+        if (!gatePasses(cfg, g)) return block(`커밋 전 게이트 ${g.status}: ${g.reason}`);
       }
       if (!leftovers(ctx).length && s.commits?.length) {
         // 커밋은 이미 끝났고 남은 변경도 없다(막혔던 작업을 다시 돌린 경우)
@@ -1464,17 +1463,16 @@ async function runTask(ctx, t) {
         return finished;
       }
       const marks = ['COMMITTED', 'BLOCKED', 'NOTHING'];
-      const newCommits = () => git(repo, ['log', '--reverse', '--format=%h %s', `${s.commitBase}..HEAD`]).out.split('\n').filter(Boolean);
       const snap = snapshot(repo); // 커밋 직전의 작업 트리
       let r = noteDenied('commit', await step(ctx, 'commit', { dir, system: SYSTEM.commit(ctx, t), prompt: skillPrompt(ctx, 'commit', `task ${t.id} ${t.slug}`, dir) }, 'ORCH_STATUS', marks));
       s.sessions.commit = r.sessionId;
-      let made = newCommits();
+      let made = commitsSince(repo, s.commitBase);
       let deniedLast = r.denials;
       if (!made.length && r.denials && r.sessionId) {
         // 게이트가 아니라 권한 규칙에 걸려 커밋을 못 한 경우: 명령 모양을 알려 주고 같은 세션에서 한 번만 다시 시킨다
         log(ctx, '    커밋 명령이 권한 규칙에 걸림: 단순한 명령으로 다시 요청');
         r = noteDenied('commit(재시도)', await step(ctx, 'commit', { dir, prompt: COMMIT_RETRY, resume: r.sessionId }, 'ORCH_STATUS', marks));
-        made = newCommits();
+        made = commitsSince(repo, s.commitBase);
         deniedLast = r.denials;
       }
       if (!made.length && !deniedLast && r.mark !== 'NOTHING' && leftovers(ctx).length) {
@@ -1553,12 +1551,7 @@ function readLock(repo) {
   } catch {
     return null;
   }
-  try {
-    process.kill(lock.pid, 0);
-    return lock;
-  } catch (err) {
-    return err.code === 'EPERM' ? lock : null; // EPERM: 프로세스는 있지만 신호를 보낼 권한이 없음
-  }
+  return pidAlive(lock?.pid) ? lock : null;
 }
 
 function acquireLock(repo, command) {
@@ -1883,7 +1876,7 @@ async function cmdDoctor(repo, opt) {
   if (version) ok(`claude ${version}`);
   else no(`claude 를 실행하지 못했습니다 (${v.spawnError || v.stderr.trim() || `종료 코드 ${v.code}`}). config.json 의 claudeCommand 를 확인하세요.`);
 
-  const env = { checkedAt: now(), claudeVersion: version, slash: false, pluginRoot: ctx.cfg.amPluginRoot || '' };
+  const env = { slash: false, pluginRoot: ctx.cfg.amPluginRoot || '' };
   let commands = null; // 비대화형 세션에 실려 온 슬래시 명령(시험 호출을 했을 때만)
   if (version && !opt['skip-probe']) {
     // 세션 시작 정보(system/init)로 am 플러그인과 스킬이 비대화형 실행에 실려 오는지 보고, 답이 실제로 오는지(로그인)도 본다
@@ -1934,7 +1927,7 @@ async function cmdDoctor(repo, opt) {
   }
   if (!env.pluginRoot) env.pluginRoot = findSiblingAm() || findPluginInCache();
   const root = env.pluginRoot;
-  const needed = neededSkills(root);
+  const needed = BASE_SKILLS;
   env.skills = needed;
   if (commands) {
     const missing = needed.map((n) => `am:${n}`).filter((c) => !commands.includes(c));
@@ -1942,7 +1935,9 @@ async function cmdDoctor(repo, opt) {
     if (env.slash) ok(`비대화형 실행에서 ${needed.map((n) => `/am:${n}`).join(', ')} 사용 가능`);
     else warn(`비대화형 실행에 없는 스킬: ${missing.join(', ')} → SKILL.md 를 직접 읽어 넘기는 방식(inline)으로 동작합니다`);
   }
-  if (root && existsSync(path.join(root, 'hooks', 'gate.mjs')) && BASE_SKILLS.every((n) => hasSkill(root, n))) ok(`am ${amVersion(root)} 플러그인 폴더: ${root}${hasSkill(root, 'do') ? '' : ' (am:do 없음: 구현은 예전 방식대로 am:plan <slug> 로 부릅니다)'}`);
+  const absent = BASE_SKILLS.filter((n) => !hasSkill(root, n));
+  if (root && existsSync(path.join(root, 'hooks', 'gate.mjs')) && !absent.length) ok(`am ${amVersion(root)} 플러그인 폴더: ${root}`);
+  else if (root && existsSync(path.join(root, 'hooks', 'gate.mjs'))) no(`am 이 오래돼 ${absent.map((n) => `am:${n}`).join(', ')} 이 없습니다. am 을 업데이트하세요 (am ${amVersion(root)}: ${root})`);
   else no(`am 플러그인 폴더(hooks/gate.mjs, skills/*/SKILL.md)를 찾지 못했습니다${root ? `: ${root}` : ''}. config.json 의 amPluginRoot 에 am 저장소의 plugin/ 경로를 적으세요.`);
 
   if (String(process.env.AM_GATE || '').trim().toLowerCase() === 'off') no('환경 변수 AM_GATE=off 가 설정돼 있습니다. 게이트가 꺼진 채로는 무인 실행을 하지 않습니다.');
@@ -2002,7 +1997,7 @@ async function cmdDoctor(repo, opt) {
 /**
  * 별도 작업 공간에서도 게이트가 되는지 본다. git 에서 제외된 의존 폴더나 빌드 캐시(Unity 의 Library·.csproj 등)가 없어 실패하는 프로젝트가 있다.
  * 이 저장소에서 종료 코드 0 이던 명령이 모두 0 이어야 통과(게이트는 비차단 명령의 실패를 통과로 보므로 따로 본다).
- * 제한 시간은 max(2분, 이 저장소 게이트 시간의 3배): 캐시 없이 처음부터 빌드하느라 훨씬 오래 걸리면 동시 진행이 오히려 느리다.
+ * 제한 시간은 max(2분, 이 저장소 게이트 시간의 3배)(최대 timeoutMin.gate): 캐시 없이 처음부터 빌드하느라 훨씬 오래 걸리면 동시 진행이 오히려 느리다.
  */
 async function probeWorktree(ctx, mainReport) {
   const dir = path.join(ctx.root, WORKTREES, '_doctor');
@@ -2093,7 +2088,7 @@ function statusData(repo, opt) {
   const base = baseContext(repo);
   const par = parallelOf(base);
   // 별도 작업 공간 확인이 없거나 낡았으면(stale) run 은 하나씩 돈다. next 는 바꾸지 않는다: 진행 중인 실행이 있을 때 doctor 로 돌려보내면 스킬이 새 실행을 만든다
-  const data = { ready: Boolean(base.env) && base.env.ok !== false, amVersion: base.pluginRoot ? amVersion(base.pluginRoot) : null, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: liveSessions({ clean: false }).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
+  const data = { ready: Boolean(base.env) && base.env.ok !== false, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: liveSessions({ clean: false }).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
   const current = path.join(repo, ORCH_DIR, 'current');
   const runId = opt.run || (existsSync(current) ? readText(current).trim() : '');
   let ctx = null;
@@ -2195,7 +2190,7 @@ async function cmdAnswer(repo, id, answer, opt) {
     say(`${id}: 계획이 완성됐습니다. \`run\` 으로 이어 가세요.`);
   } else if (r.mark === 'TOO_BIG') {
     splitTask(ctx, t, (reason) => {
-      Object.assign(s, { status: 'blocked', reason });
+      Object.assign(s, { status: 'blocked', reason, blockedAt: 'plan', updatedAt: now() });
       say(reason);
       return 'blocked';
     });
@@ -2251,7 +2246,7 @@ function cmdDone(repo, id, opt) {
     const w = inWorktree(ctx, path.join(repo, s.worktree));
     discard(w, taskDir(ctx, t), volatileDirty(w), '빌드 도구가 다시 쓴 파일(volatilePaths)');
     const dirtyW = dirtyFiles(w);
-    if (dirtyW.length) fail(`별도 작업 공간 ${s.worktree} 에 커밋하지 않은 변경이 남아 있습니다. 그 폴더에서 커밋하거나 치운 뒤 다시 실행하세요.\n${dirtyW.slice(0, 10).join('\n')}`);
+    if (dirtyW.length) fail(`별도 작업 공간 ${s.worktree} 에 커밋하지 않은 변경이 남아 있습니다. 그 폴더에서 커밋하거나 치운 뒤 다시 실행하세요.\n${firstTen(dirtyW)}`);
     if (head(w.repo) !== s.wtBase) {
       Object.assign(s, { status: 'committed', reason: undefined, blockedAt: undefined, commitBase: undefined, updatedAt: now() });
       s.notes.push('사람이 별도 작업 공간에서 직접 완료 처리함');
@@ -2265,9 +2260,9 @@ function cmdDone(repo, id, opt) {
   }
   discard(ctx, taskDir(ctx, t), volatileDirty(ctx), '빌드 도구가 다시 쓴 파일(volatilePaths)');
   const dirty = dirtyFiles(ctx);
-  if (dirty.length) fail(`커밋하지 않은 변경이 남아 있습니다. 커밋하거나 치운 뒤 다시 실행하세요.\n${dirty.slice(0, 10).join('\n')}`);
+  if (dirty.length) fail(`커밋하지 않은 변경이 남아 있습니다. 커밋하거나 치운 뒤 다시 실행하세요.\n${firstTen(dirty)}`);
   const base = s.commitBase || s.baseSha;
-  const made = base ? git(repo, ['log', '--reverse', '--format=%h %s', `${base}..HEAD`]).out.split('\n').filter(Boolean) : [];
+  const made = base ? commitsSince(repo, base) : [];
   Object.assign(s, { status: 'done', commits: [...new Set([...(s.commits || []), ...made])], commitBase: undefined, reason: undefined, blockedAt: undefined, updatedAt: now() });
   s.notes.push('사람이 직접 완료 처리함');
   saveState(ctx);
@@ -2296,7 +2291,7 @@ function dryRun(ctx) {
   const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>`, amRoot: ctx.pluginRoot })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
   say(`\n첫 작업 ${t.id} 에서 실행할 명령 (inline 방식이면 프롬프트가 SKILL.md 를 채운 파일을 가리킵니다)`);
   show('plan', `/am:plan Plan task ${t.id} described in ${AM_DIR}/${t.slug}/brief.md (slug ${t.slug})`);
-  show('implement', `/am:${implementSkill(ctx)} ${t.slug}`);
+  show('implement', `/am:do ${t.slug}`);
   show('check', `/am:check ${t.slug}`);
   show('commit', `/am:commit task ${t.id} ${t.slug}`);
 }
@@ -2323,7 +2318,7 @@ async function cmdRun(repo, opt) {
       const exists = git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], { allowFail: true }).code === 0;
       git(repo, exists ? ['checkout', name] : ['checkout', '-b', name]);
     }
-    Object.assign(state, { branch: name, startBranch: current });
+    state.branch = name;
     saveState(ctx);
   } else if (current !== state.branch) fail(`현재 브랜치(${current})가 이 실행의 브랜치(${state.branch})와 다릅니다. \`git checkout ${state.branch}\` 뒤에 다시 실행하세요.`);
 
@@ -2337,7 +2332,7 @@ async function cmdRun(repo, opt) {
   // 함께 돌릴 수는 작업을 고를 때마다 제한을 다시 읽어 정한다.
   const par = opt.only ? { max: 1, reason: '' } : parallelism(cfg, ctx.env, worktreeKey(ctx.root, cfg));
   const shown = opt.only ? par : parallelOf(ctx);
-  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${modeLabel(ctx)}  구현 스킬 am:${implementSkill(ctx)}  동시 진행 ${parLabel(shown)}`);
+  say(`실행 ${ctx.runId}  브랜치 ${state.branch}  am ${amVersion(ctx.pluginRoot)}  스킬 호출 방식 ${modeLabel(ctx)}  구현 스킬 am:do  동시 진행 ${parLabel(shown)}`);
   if (shown.reason) say(`  하나씩 진행하는 이유: ${shown.reason}`);
   const limit = Number(opt['max-tasks']) || Infinity;
   const active = new Map(); // 돌고 있는 작업 ID → 끝나면 { t, result, error } 를 내는 약속(reject 하지 않음)
@@ -2363,7 +2358,7 @@ async function cmdRun(repo, opt) {
       if (!t) fail(`작업이 없습니다: ${opt.only}`);
       const s = state.tasks[t.id].status;
       if (active.size || ['done', 'blocked', 'needs-decision', 'split'].includes(s)) return [];
-      if (!t.dependsOn.every((d) => state.tasks[d]?.status === 'done') || (s === 'pending' && openDecisions(ctx.plan, t).length)) fail(`${t.id} 는 아직 시작할 수 없습니다(의존 작업 또는 결정 대기).`);
+      if (!canStart(ctx.plan, state, t)) fail(`${t.id} 는 아직 시작할 수 없습니다(의존 작업 또는 결정 대기).`);
       return [t];
     }
     return startable(ctx.plan, state, [...active.keys()], Math.min(par.max, sessionLimit(), limit - finished), { exclusive: dirtyFiles(ctx).length > 0 });
@@ -2463,7 +2458,8 @@ async function main(argv) {
   const [cmd, a, ...rest] = pos;
   const repo = path.resolve(opt.repo || process.cwd());
   // 상태를 바꾸는 명령은 한 번에 하나만: 실행 중에 다른 명령이 끼어들지 못하게 잠근다
-  if (['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done'].includes(cmd) && !opt['dry-run']) {
+  // dry-run 을 구현한 것은 run 뿐이라 그것만 잠금 없이 돈다(다른 명령은 --dry-run 을 붙여도 실제로 실행된다)
+  if (['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done'].includes(cmd) && !(cmd === 'run' && opt['dry-run'])) {
     baseContext(repo);
     acquireLock(repo, cmd);
   }

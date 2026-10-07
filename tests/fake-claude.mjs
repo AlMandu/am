@@ -2,7 +2,8 @@
 // 테스트용 가짜 claude. 모델 대신 프롬프트 모양을 보고, 각 단계가 남겨야 할 파일과 커밋을 만든다.
 // 시나리오(FAKE_SCENARIO 가 가리키는 JSON)로 단계별 결과를 순서대로 지정할 수 있다:
 //   { "plan": { "<slug>": ["NEEDS_DECISION", "READY"] }, "check": { "<slug>": ["BLOCK", "NOTE"] },
-//     "implement": { "<slug>": ["CRASH", "DONE"] }, "breakGate": ["<slug>"], "split": ["<fixture>", ...] }
+//     "implement": { "<slug>": ["CRASH", "DONE"] }, "breakGate": ["<slug>"], "split": ["<fixture>", ...],
+//     "answer": { "<slug>": ["TOO_BIG"] } }
 // 동시 진행: 단계가 끝날 때마다 "<단계>:<slug>" 표시를 남기고, "waitFor": { "implement:t01-a": "plan:t03-c" } 처럼
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
 // 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
@@ -125,7 +126,8 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
 } else if ((m = /^The user answered the open decisions in \.am\/([a-z0-9-]+)\/answers\.md/.exec(prompt))) {
   const answers = readFileSync(path.join(cwd, `.am/${m[1]}/answers.md`), 'utf8');
   appendFileSync(path.join(cwd, `.am/${m[1]}/plan.md`), `## Decisions (answered)\n${answers}\n`);
-  text = 'Recorded.\nORCH_STATUS: READY';
+  const outcome = pick('answer', m[1], 'READY');
+  text = `Recorded.\nORCH_STATUS: ${outcome}`;
 } else if ((m = /^\/am:(?:do|plan) ([a-z0-9-]+)$/.exec(prompt))) {
   const slug = m[1];
   await waitFor('implement', slug);
@@ -205,11 +207,8 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
 } else if ((m = /^The commit for this task did not go through\. Read (\S+) for what the commit session reported/.exec(prompt))) {
   if (!flag('--resume')) throw new Error('the fix must resume the implement session');
   if (!readFileSync(path.resolve(cwd, m[1]), 'utf8').includes('R1 MODULE.md')) throw new Error('hook output was not handed over');
-  if (scenario.rejectFix === 'BLOCKED') text = 'cannot fix\nORCH_STATUS: BLOCKED';
-  else {
-    appendFileSync(path.join(cwd, 'MODULE.md'), '- history: fixed after the hook rejected the commit\n');
-    text = 'Added the history line.\nORCH_STATUS: DONE';
-  }
+  appendFileSync(path.join(cwd, 'MODULE.md'), '- history: fixed after the hook rejected the commit\n');
+  text = 'Added the history line.\nORCH_STATUS: DONE';
 } else if (/^Some of your commands were refused by the permission rules/.test(prompt)) {
   if (!flag('--resume')) throw new Error('commit retry must resume the commit session');
   const outcome = scenario.commitRetry || 'COMMITTED';

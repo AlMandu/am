@@ -1,16 +1,30 @@
 // Run: node --test tests/handover.test.mjs
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { decide, readPlan } from '../plugin/hooks/handover.mjs';
+import { decide, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
 
 const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
 const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';
 
+const bases = [];
+after(() => {
+  let first;
+  for (const base of bases) {
+    try {
+      rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+    } catch (err) {
+      first ??= err;
+    }
+  }
+  if (first) throw first;
+});
+
 function setup() {
   const base = mkdtempSync(path.join(tmpdir(), 'am-handover-'));
+  bases.push(base);
   const repo = path.join(base, 'repo');
   mkdirSync(path.join(repo, '.git'), { recursive: true });
   return { repo, stateDir: path.join(base, 'state') };
@@ -27,7 +41,7 @@ function plan(repo, slug, text, mtime) {
 function hook(env, tool, file, { session = 's1', installed = true, calls } = {}) {
   const raw = JSON.stringify({ session_id: session, cwd: env.repo, tool_name: tool, tool_input: { file_path: file } });
   const r = decide(raw, { stateDir: env.stateDir, installed: () => (calls && calls.push(1), installed) });
-  assert.equal(r.code, 0);
+  assert.deepEqual(Object.keys(r), ['stdout']);
   if (!r.stdout) return null;
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
@@ -48,6 +62,13 @@ test('reads the scale line in both languages, done marks and the hand-over line'
   assert.equal(readPlan('- 목표: am-orchestrator 의 토큰을 줄인다\n').handedOver, false);
   assert.equal(readPlan('- 20261007-1412 빌드 로그\n').handedOver, false);
   assert.equal(readPlan('- went to the am-orchestrator run skill, run.id fix-2, start branch main\n').handedOver, true);
+});
+
+test('withinOneRun is true only for at most 1 implementation run and 1 commit', () => {
+  for (const scale of [[1, 1], [0, 1], [1, 0]]) assert.ok(withinOneRun(scale), String(scale));
+  for (const scale of [[2, 1], [1, 2], null]) assert.ok(!withinOneRun(scale), String(scale));
+  assert.ok(withinOneRun(readPlan(SMALL).scale));
+  assert.ok(!withinOneRun(readPlan(LARGE).scale));
 });
 
 test('denies an edit while this session\'s large plan is neither handed over nor started', () => {

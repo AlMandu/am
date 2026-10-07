@@ -1,6 +1,6 @@
 ---
 name: commit
-description: "이번 작업의 변경만 논리 단위로 커밋합니다(커밋 게이트 통과 후). 사용자가 커밋·저장·마무리를 요청하거나 am:commit 을 실행할 때 씁니다. 인자 맨 앞에 push 를 붙이면 커밋 뒤 push 까지 하고, 그 밖에는 push 하지 않습니다."
+description: "이번 작업의 변경만 논리 단위로 커밋합니다(커밋 게이트 통과 후). 사용자가 커밋·저장·마무리를 요청하거나 am:commit 을 실행할 때 씁니다. 인자 맨 앞에 push 를 붙이거나 대화에서 커밋 뒤 push 를 요청하면 push 까지 하고, 그 밖에는 push 하지 않습니다."
 argument-hint: "[push] [메모]"
 model: opus
 effort: medium
@@ -18,7 +18,7 @@ Notes: $ARGUMENTS
 - Every other technical choice is settled by a second opinion, not by your own recommendation. A technical choice is a design or implementation decision with two or more workable options that differ in structure, behavior or cost; where only one option is sensible, just take it.
   1. Settle your own pick first and keep it out of the brief.
   2. Write every pending choice in one brief: the goal, the user's decisions and other fixed constraints, questions still waiting for the user's answer, the paths involved, and each choice with its options in neutral wording.
-  3. Codex, in Claude Code only: save the brief as a new file `opinion-<round>.md` under `.am/` (in the plan's folder when there is one; a new `.am/` folder also gets a `.gitignore` containing `*`) and, if `${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>` from the repository root with a 10-minute timeout. It prints Codex's answer to the brief; exit code 2 means Codex is not installed. Then send the brief to the am:second-opinion subagent. Its model and effort are pinned in its definition; do not override them.
+  3. Codex, in Claude Code only: save the brief as a new file `opinion-<round>.md` under `.am/` (in the plan's folder when there is one; a new `.am/` folder also gets a `.gitignore` containing `*` unless `git check-ignore -q .am` succeeds) and, if `${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>` from the repository root with a 10-minute timeout. It prints Codex's answer to the brief; exit code 2 means Codex is not installed. Then send the brief to the am:second-opinion subagent. Its model and effort are pinned in its definition; do not override them.
   4. With both answers, send each choice they split on back to both, for at most 2 more rounds: a new brief with the original brief's content for those choices plus both picks and reasons from the last round, labelled Claude and Codex. A choice still split after that goes to the user as a decision card (rules below) that gives both picks and reasons. If one reviewer fails, in any round, the other's answer stands.
   5. Apply the agreed picks, not yours. A user decision always wins over a pick.
   6. List each under "Defaults applied": choice - one-line reason (second opinion), written (second opinion, Codex agreed) when both agreed and naming a reviewer that failed, adding your own pick when it differed.
@@ -38,7 +38,7 @@ Notes: $ARGUMENTS
 ## Steps
 1. Commit only if the user asked for a commit in this conversation; running this skill counts. If you picked this skill on your own, propose the commit and stop.
    Push mode: the first word of Notes is `push` (the rest are notes), or the user explicitly asked in this conversation to push after committing. If you cannot tell whether a leading "push" is the keyword or part of a note, ask.
-2. Collect `git status --porcelain`. Leave out `.am/` and ignored files. Exclude anything that looks secret (.env, credentials, keys, *.pem) and say so. If `.am/<slug>/check.md` for this task says BLOCK, stop and explain why.
+2. Collect `git status --porcelain`. Leave out `.am/` and ignored files. Exclude anything that looks secret (.env, credentials, keys, *.pem) and say so. The task's folder: a slug named in Notes whose `.am/<slug>/` exists, otherwise the slug used in this conversation. With neither, list the folders under `.am/` that hold a check.md and ask which one; never guess. With no such folder, say that no check result was read and go on. If the task's check.md says BLOCK, stop and explain why.
 3. Commit only this task's files. Leave other changes in place and report how many were left; ask only when you cannot tell whether a file belongs to the task. Split into several commits only when the changes are independent of each other, because the gate builds the whole working tree, not each commit.
 4. Messages: follow the repository's style (`git log -10 --format=%s`) and any commit rules in the user's or project's instructions. Otherwise use Conventional Commits, `type(scope): summary`, with the summary in the user's language.
 5. Run `git add <files>` and `git commit` without asking again. The commit gate runs before each commit:

@@ -12,10 +12,11 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync }
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findOnPath, killTree } from '../hooks/gate.mjs';
 
 const WIN = process.platform === 'win32';
 // Must stay below the 10-minute limit of the Bash tool that runs this script.
-export const TIMEOUT_MS = 540000;
+const TIMEOUT_MS = 540000;
 export const MAX_BRIEF_BYTES = 200000;
 const VERSION_TIMEOUT_MS = 30000;
 const TAIL_CHARS = 1500;
@@ -71,19 +72,7 @@ export function buildPrompt(agentText, brief) {
 
 /** The codex executable on PATH. On Windows a .cmd shim has to go through cmd.exe. */
 export function findCodex(env) {
-  const dirs = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
-  const names = WIN ? ['codex.exe', 'codex.cmd', 'codex.bat'] : ['codex'];
-  for (const dir of dirs) {
-    for (const name of names) {
-      const file = path.join(dir, name);
-      try {
-        if (statSync(file).isFile()) return { file, shell: /\.(cmd|bat)$/i.test(name) };
-      } catch {
-        /* not in this folder */
-      }
-    }
-  }
-  return null;
+  return findOnPath('codex', env, WIN ? ['.exe', '.cmd', '.bat'] : ['']);
 }
 
 const quote = (arg) => (/^[A-Za-z0-9_\-./:=\\{}]+$/.test(arg) ? arg : `"${arg}"`);
@@ -91,19 +80,6 @@ const quote = (arg) => (/^[A-Za-z0-9_\-./:=\\{}]+$/.test(arg) ? arg : `"${arg}"`
 function start(codex, args, opts) {
   if (!codex.shell) return spawn(codex.file, args, opts);
   return spawn([codex.file, ...args].map(quote).join(' '), { ...opts, shell: true });
-}
-
-function killTree(child) {
-  if (child.pid === undefined) return;
-  if (WIN) {
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill('SIGKILL'));
-    return;
-  }
-  try {
-    process.kill(-child.pid, 'SIGKILL');
-  } catch {
-    child.kill('SIGKILL');
-  }
 }
 
 /** Runs codex with the prompt on stdin and a hard timeout. Never rejects. */

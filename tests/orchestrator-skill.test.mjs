@@ -1,12 +1,14 @@
 // Run: node --test tests/orchestrator-skill.test.mjs
 // The am-orchestrator plugin (orchestrator/): its manifest, its one skill, and the parts of the am plugin its script relies on.
 // Also the other direction: what am:auto relies on when it hands a large task to the run skill.
+// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { load } from '../scripts/models.mjs';
+import { load, STAGE_SKILLS } from '../scripts/models.mjs';
+import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
@@ -16,11 +18,19 @@ const amSkill = (name) => read('plugin', 'skills', name, 'SKILL.md');
 // Model and effort of the run skill and the split stage, from models.json at the repository root.
 const MODELS = load().orchestrator;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const common = (text) => {
-  const m = /<!-- am:common:start -->([\s\S]*?)<!-- am:common:end -->/.exec(text);
-  assert.ok(m, 'common block markers');
-  return m[1];
-};
+// The object status --json prints as run; am:auto and the stage runner read its fields.
+const RUN = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
+
+/** What a hand-over reads from status --json and the commands and next values it names exist in the script and the skill. */
+function readsStatusLikeAuto(text) {
+  assert.ok(RUN, 'status --json builds run');
+  const fields = [...new Set([...text.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(fields, ['branch', 'id', 'report']);
+  for (const f of fields) assert.match(RUN[1], new RegExp(`\\b${f}:`), `run.${f}`);
+  for (const field of ['costUsd', 'autoDecided']) assert.ok(text.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
+  for (const c of ['split', 'decide']) assert.ok(text.includes(`\`${c}\``) && new RegExp(`^\\| \`${c}[ \`]`, 'm').test(SKILL), c);
+  for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(text.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
+}
 
 test('the marketplace lists both plugins and each source holds a manifest with that name', () => {
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
@@ -38,13 +48,18 @@ test('the run skill follows the am skill rules: same common block, size limit, u
   assert.equal(common(SKILL), common(amSkill('plan')));
   const lines = SKILL.split('\n').length;
   assert.ok(lines <= 120, `${lines} lines > 120`);
+  // Claude Code ignores a misspelled key without an error.
+  const fm = /^---\n([\s\S]*?)\n---\n/.exec(SKILL);
+  assert.ok(fm, 'run skill frontmatter');
+  const keys = fm[1].split('\n').map((line) => line.slice(0, line.indexOf(':')));
+  assert.deepEqual(keys.sort(), ['name', 'description', 'argument-hint', 'disable-model-invocation', 'model', 'effort'].sort(), 'run skill frontmatter keys');
   assert.match(SKILL, /^---\nname: run\n/);
   assert.match(SKILL, /\ndescription: "[^"]{40,}"\n/);
   assert.match(SKILL, /\ndisable-model-invocation: true\n/);
   // The model and effort of the session that drives the run. A misspelled key is ignored without an error.
   assert.match(SKILL, new RegExp(`\\nmodel: ${esc(MODELS.run.model)}\\neffort: ${esc(MODELS.run.effort)}\\n---\\n`));
   assert.match(read('orchestrator', 'skills', 'run', 'agents', 'openai.yaml'), /allow_implicit_invocation: false/);
-  assert.ok(!/(^|[^\w.])\/am[:-]/m.test(SKILL.replace(/<!-- am:common:start -->[\s\S]*?<!-- am:common:end -->/, '')), 'refer to skills by name, not with a slash prefix');
+  assert.ok(!SLASH_NAME.test(withoutCommon(SKILL)), 'refer to skills by name, not with a slash prefix');
 });
 
 test('the skill and the script agree on commands and on every "next" value', () => {
@@ -54,24 +69,25 @@ test('the skill and the script agree on commands and on every "next" value', () 
   const doc = / \* next: ([a-z| -]+)\n/.exec(SCRIPT);
   assert.ok(doc, 'the script documents its next values');
   const values = doc[1].split('|').map((v) => v.trim());
-  assert.deepEqual(values, ['doctor', 'split', 'wait', 'fix-tasks', 'decide', 'answer', 'blocked', 'run', 'done', 'stuck']);
-  for (const v of values) {
-    assert.ok(SCRIPT.includes(`'${v}'`), `script never returns "${v}"`);
-    assert.ok(SKILL.includes(`\`${v}\``), `skill does not say what to do on "${v}"`);
-  }
+  // The values the code sets: the initial `next: '…'` and every `data.next = …`, which must be one string or a ternary of two.
+  const assigned = [...SCRIPT.matchAll(/\bdata\.next = ('[a-z-]+'|[\w.]+ \? '[a-z-]+' : '[a-z-]+');/g)];
+  assert.equal(assigned.length, SCRIPT.match(/\bdata\.next\s*=/g)?.length, 'a new form of data.next assignment: collect its values here');
+  const code = [...SCRIPT.matchAll(/\bnext: '([a-z-]+)'/g)].map((m) => m[1]).concat(assigned.flatMap((m) => [...m[1].matchAll(/'([a-z-]+)'/g)].map((s) => s[1])));
+  assert.ok(code.length, 'the script sets next values');
+  assert.deepEqual([...new Set(code)].sort(), [...values].sort(), 'the documented next values and the ones the script sets');
+  for (const v of values) assert.ok(SKILL.includes(`\`${v}\``), `skill does not say what to do on "${v}"`);
   // The fields the skill tells the session to read exist in the status output.
   for (const field of ['next', 'decisions', 'needsDecision', 'blocked', 'errors', 'running', 'autoDecided', 'costUsd']) {
     assert.ok(SKILL.includes(`\`${field}`) && new RegExp(`\\b${field}\\b`).test(SCRIPT), field);
   }
   for (const field of ['run.tasks', 'run.report', 'blocked[].reason', 'blocked[].logs', 'blocked[].hint', 'needsDecision[].file']) assert.ok(SKILL.includes(`\`${field}\``), field);
   assert.match(SKILL, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/orchestrator\.mjs" <command>/);
-  assert.ok(existsSync(path.join(REPO, 'orchestrator', 'scripts', 'orchestrator.mjs')));
 });
 
 test('the am plugin still offers what the orchestrator script relies on', () => {
   // Skills it starts, by name and with the slug or request as the argument.
   for (const name of ['plan', 'do', 'check', 'commit']) assert.match(amSkill(name), /\$ARGUMENTS/, name);
-  assert.ok(SCRIPT.includes("skillPrompt(ctx, 'plan',") && SCRIPT.includes("skillPrompt(ctx, 'check',") && SCRIPT.includes("skillPrompt(ctx, 'commit',") && SCRIPT.includes('hasSkill(ctx.pluginRoot, \'do\')'));
+  assert.ok(SCRIPT.includes("skillPrompt(ctx, 'plan',") && SCRIPT.includes("skillPrompt(ctx, 'check',") && SCRIPT.includes("skillPrompt(ctx, 'commit',") && SCRIPT.includes("skillPrompt(ctx, 'do',"));
   // Files the skills write and the script reads.
   assert.match(amSkill('plan'), /`\.am\/<slug>\/plan\.md`/);
   assert.match(amSkill('check'), /`\.am\/<slug>\/check\.md`/);
@@ -88,7 +104,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(SCRIPT, /'--run', '--json', '--cwd'/);
   // The model and effort of each stage: the script passes them as flags and the skill that stage runs names the same values,
   // so a slash call and an inline call (frontmatter stripped) run alike whichever of the two Claude Code prefers.
-  for (const [stage, skill] of Object.entries({ plan: 'plan', implement: 'do', check: 'check', commit: 'commit' })) {
+  for (const [stage, skill] of Object.entries(STAGE_SKILLS)) {
     const row = new RegExp(`\\n  ${stage}: \\{ model: '([^']+)', effort: '([^']+)' \\},`).exec(SCRIPT);
     assert.ok(row, `STAGE_DEFAULTS.${stage}`);
     assert.match(amSkill(skill), new RegExp(`\\nmodel: ${esc(row[1])}\\neffort: ${esc(row[2])}\\n---\\n`), `${stage} and am:${skill}`);
@@ -113,7 +129,6 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
   assert.equal(market.plugins.find((p) => p.source === './orchestrator')?.name, 'am-orchestrator');
   assert.match(auto, /In Claude Code only, also run `claude plugin list --json`: if an `am-orchestrator@` entry has `enabled: true` and `<installPath>\/skills\/run\/SKILL\.md` exists/);
-  assert.ok(existsSync(path.join(REPO, 'orchestrator', 'skills', 'run', 'SKILL.md')));
   // am:auto reads the file rather than invoking the skill, so neither the plugin root placeholder nor $ARGUMENTS is replaced.
   assert.match(SKILL, /If the placeholder was not replaced, the plugin root is the folder two levels above this SKILL\.md\./);
   assert.match(SKILL, /^1\. Request\. [^\n]*A path to an existing file: a new run with that document\./m);
@@ -135,21 +150,14 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   assert.match(auto, /The run skill asks in its Prepare step \(no `am-gate\.json`, uncommitted changes you did not make, a gate that fails before the run\)/);
   assert.match(SKILL, /Never push or merge\./);
   assert.match(auto, /Its rule never to merge or push covers its own flow only/);
-  // What am:auto reads from `status --json` and the commands and next values it names.
-  const run = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
-  assert.ok(run, 'status --json builds run');
-  const runFields = [...auto.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(runFields)].sort(), ['branch', 'id', 'report']);
-  for (const f of runFields) assert.match(run[1], new RegExp(`\\b${f}:`), `run.${f}`);
+  // What am:auto and the stage runner read from `status --json` and the commands and next values they name: one helper for both.
+  readsStatusLikeAuto(auto);
   assert.match(auto, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`/);
-  for (const field of ['costUsd', 'autoDecided']) assert.ok(auto.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
-  for (const c of ['split', 'decide']) assert.ok(auto.includes(`\`${c}\``) && new RegExp(`^\\| \`${c}[ \`]`, 'm').test(SKILL), c);
-  for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(auto.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
   // The scale line and the size of one implementation run, which matches the script's task size.
   assert.match(auto, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
   const limits = /taskLimits: \{ maxFiles: (\d+), maxPlanLines: (\d+) \}/.exec(SCRIPT);
   assert.ok(limits, 'default task size');
-  assert.match(auto, new RegExp(`about ${limits[1]} files and a plan of at most ${limits[2]} lines`));
+  assert.match(auto, new RegExp(`about ${limits[1]} files and work that a faithful plan of at most ${limits[2]} lines can cover`));
 });
 
 test('the am stage runner hands a large plan to the run skill only through what is pinned here', async () => {
@@ -164,14 +172,57 @@ test('the am stage runner hands a large plan to the run skill only through what 
   assert.equal(instructions('handover', 'x').prompt, '/am-orchestrator:run .am/x/plan.md');
   assert.equal(instructions('handover', 'x', { resume: true }).prompt, '/am-orchestrator:run');
   assert.match(SKILL, /^1\. Request\. Empty: continue the run in progress from step 4;[^\n]*A path to an existing file: a new run with that document\./m);
-  assert.ok(existsSync(path.join(REPO, 'orchestrator', 'scripts', 'orchestrator.mjs')));
   assert.ok(permissions('handover', { orchRoot: '/o' }).allow.includes('Bash(node "/o/scripts/orchestrator.mjs" *)'));
   // What the session reads and the questions it decides or stops on.
   const system = instructions('handover', 'x').system;
-  const run = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
-  for (const f of new Set([...system.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]))) assert.match(run[1], new RegExp(`\\b${f}:`), `run.${f}`);
-  for (const field of ['costUsd', 'autoDecided']) assert.ok(system.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
-  for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(system.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
-  assert.match(SKILL, /Never push or merge\./);
+  readsStatusLikeAuto(system);
   assert.match(system, /Its rule never to merge or push covers its own flow only/);
+});
+
+test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {
+  const { MARKS, lastMark, checkVerdict } = await import('../plugin/scripts/stage.mjs');
+  const { lastMarker, verdictFromFile } = await import('../orchestrator/scripts/orchestrator.mjs');
+  const values = MARKS.do;
+  const marks = [
+    ['AM_STAGE: DONE', 'DONE'],
+    ['AM_STAGE: DONE\nlater **AM_STAGE: BLOCKED**', 'BLOCKED'],
+    ['am_stage: **done**', 'DONE'],
+    ['AM_STAGE: COMMITTED', null],
+    ['AM_STAGE: DONEX', null],
+    ['no marker', null],
+  ];
+  for (const [text, expected] of marks) {
+    assert.equal(lastMark(text, values), expected, `stage runner: ${text}`);
+    assert.equal(lastMarker(text, 'AM_STAGE', values), expected, `orchestrator: ${text}`);
+  }
+  // Only cases both answer alike. An unlabelled check.md with an upper-case BLOCK or NOTE differs on purpose: the orchestrator
+  // gives null and reads the session's ORCH_VERDICT mark first, the stage runner only compares a file before and after
+  // compaction and takes the first word. tests/stage.test.mjs covers that.
+  const verdicts = [
+    ['Verdict: NOTE\n', 'NOTE'],
+    ['No BLOCK finding.\nVerdict: NOTE\n', 'NOTE'],
+    ['# 점검\n- 판정: **BLOCK** (게이트 실패)\n', 'BLOCK'],
+    ['## 결론\n> 결론: note\n', 'NOTE'],
+    ['게이트 통과\n', null],
+    ['a block would need a failing gate\n', null],
+  ];
+  for (const [text, expected] of verdicts) {
+    assert.equal(checkVerdict(text), expected, `stage runner: ${text}`);
+    assert.equal(verdictFromFile(text), expected, `orchestrator: ${text}`);
+  }
+});
+
+test('stages that never push deny both git push rules in both runners', async () => {
+  const { permissions } = await import('../plugin/scripts/stage.mjs');
+  const { defaults } = await import('../orchestrator/scripts/orchestrator.mjs');
+  const denies = (p, where) => {
+    for (const rule of ['Bash(git push)', 'Bash(git push *)']) {
+      assert.ok(p.deny.includes(rule), `${where} does not deny ${rule}`);
+      assert.ok(!p.allow.includes(rule), `${where} allows ${rule}`);
+    }
+  };
+  for (const stage of ['do', 'check', 'commit']) denies(permissions(stage), `stage runner ${stage}`);
+  // The fix stage uses the implement set.
+  const orch = defaults().permissions;
+  for (const stage of ['implement', 'check', 'commit']) denies(orch[stage], `orchestrator ${stage}`);
 });

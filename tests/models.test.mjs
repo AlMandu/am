@@ -32,8 +32,8 @@ test('every file carries the values of models.json', () => {
   assert.deepEqual(check(), []);
 });
 
-test('the orchestrator stages that run an am skill take that skill\'s values', () => {
-  // Same map as the stage test in tests/orchestrator-skill.test.mjs.
+test('the orchestrator stage-to-skill mapping is complete', () => {
+  // The one literal of this map in the tests.
   assert.deepEqual(STAGE_SKILLS, { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' });
 });
 

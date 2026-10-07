@@ -10,20 +10,20 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { findRepoRoot, readStdin } from './gate.mjs';
+import { denyOutput, findRepoRoot, readStdin } from './gate.mjs';
 
-export const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-export const STATE_DIR = path.join(tmpdir(), 'am-handover');
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const STATE_DIR = path.join(tmpdir(), 'am-handover');
 const PLAN = /^\.am\/[^/]+\/plan\.md$/;
 const SCALE = /(?:Scale:\s*(\d+)\s+implementation runs?,\s*(\d+)\s+commits?|규모:\s*구현\s*(\d+)\s*회,\s*커밋\s*(\d+)\s*개)/i;
 const DONE = /^\s*\d+\.\s.*\((?:done|완료)\)/im; // the am:do skill's mark on a step's first line
 const HANDED = /^(?=.*(?:orchestrator|오케스트레이터)).*(?:\b\d{8}-\d{4}\b|\brun\.?\s?id\b)/im; // am:auto logs the hand-over with the run ID (default YYYYMMDD-HHMM)
 
-const ALLOW = { code: 0, stdout: '', stderr: '' };
+const ALLOW = { stdout: '' };
 const slash = (p) => p.split(path.sep).join('/');
 
 function deny(reason) {
-  return { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n', stderr: '' };
+  return { stdout: denyOutput(reason) };
 }
 
 /** What the plan says: {scale: [runs, commits] | null, started, handedOver}. */
@@ -31,6 +31,11 @@ export function readPlan(text) {
   const m = SCALE.exec(text);
   const scale = m ? [Number(m[1] ?? m[3]), Number(m[2] ?? m[4])] : null;
   return { scale, started: DONE.test(text), handedOver: HANDED.test(text) };
+}
+
+/** True when the plan's Scale is at most 1 implementation run and 1 commit. */
+export function withinOneRun(scale) {
+  return scale && scale[0] <= 1 && scale[1] <= 1;
 }
 
 /** The install path of an enabled am-orchestrator with its run skill, from `claude plugin list --json`, or null. Any failure counts as not installed. */
@@ -48,7 +53,7 @@ export function findOrchestrator() {
 }
 
 /** True when an enabled am-orchestrator with its run skill is installed. */
-export const orchestratorInstalled = () => Boolean(findOrchestrator());
+const orchestratorInstalled = () => Boolean(findOrchestrator());
 
 function loadState(file) {
   try {
@@ -74,7 +79,7 @@ function newestPlan(root) {
 }
 
 /**
- * PreToolUse decision for one hook payload. Returns {code, stdout, stderr}; always exit 0,
+ * PreToolUse decision for one hook payload. Returns {stdout}; the caller always exits 0,
  * stdout empty or one JSON object (same contract as the commit gate).
  */
 export function decide(raw, { stateDir = STATE_DIR, installed = orchestratorInstalled } = {}) {
@@ -132,7 +137,7 @@ export function decide(raw, { stateDir = STATE_DIR, installed = orchestratorInst
   if (!plan) return ALLOW;
   const info = readPlan(readFileSync(plan, 'utf8'));
   if (info.handedOver || info.started) return ALLOW;
-  if (info.scale && info.scale[0] <= 1 && info.scale[1] <= 1) return ALLOW;
+  if (withinOneRun(info.scale)) return ALLOW;
   if (typeof state.installed !== 'boolean') {
     state.installed = installed();
     save();
