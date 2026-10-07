@@ -1,6 +1,6 @@
 ---
 name: auto
-description: "요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. 화면·범위 질문은 추천안으로 정해 마지막 답에서 결론 바로 다음에 알리고, 되돌리기 어려운 일에서만 멈춥니다. 큰 작업은 am-orchestrator 가 설치돼 있으면 그쪽에 넘깁니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
+description: "요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. 화면·범위 질문은 추천안으로 정해 마지막 답에서 결론 바로 다음에 알리고, 되돌리기 어려운 일에서만 멈춥니다. Claude Code 에서는 단계마다 새 세션을 띄워 진행만 맡고, 큰 작업은 am-orchestrator 가 설치돼 있으면 그쪽에 넘깁니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 hooks: { PreToolUse: [ { matcher: "Read|Edit|Write|MultiEdit|NotebookEdit", hooks: [ { type: command, command: "node -e \"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/handover.mjs')).then((m) => m.main()).catch(() => {})\"", timeout: 60 } ] } ] }
@@ -38,11 +38,10 @@ Request: $ARGUMENTS
 <!-- am:common:end -->
 
 ## Running without stops
-This skill runs the am:plan, am:do, am:check and am:commit skills in one session, or hands a large task to the am-orchestrator run skill (step 4). Running it is the user's request for all of them, including the commits. Inside this skill the rules below replace the asking rules above; do not wait for the user between phases.
+This skill runs the am:plan, am:do, am:check and am:commit skills, each in a fresh session (Claude Code, below) or all in this one, or hands a large task to the am-orchestrator run skill (step 4). Running it is the user's request for all of them, including the commits. Inside this skill the rules below replace the asking rules above; do not wait for the user between phases.
 - A question about what the user sees or what is in scope, wherever a skill would ask it (the am:plan skill steps 1 and 8, the am:do skill step 2, a plan that turns out wrong in the am:do skill step 4): take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark `(auto-decided)` translated into the plan's language (`(자동 결정)` in a Korean plan), and continue. Technical choices still go through the second opinion (rules above).
-- A small change (the am:plan skill step 3): write a short plan.md anyway.
+- A small change (the am:plan skill step 3): write a short plan.md anyway. A file you cannot tell belongs to this task (the am:commit skill step 3): leave it out of the commit and report it.
 - Done marks that do not match the files (the am:do skill step 3): redo a done step whose change is missing; run the Check of an unmarked step that already looks done and mark it if it passes. Log either under Change log and list it in the final reply with what you decided for the user.
-- A file you cannot tell belongs to this task (the am:commit skill step 3): leave it out of the commit and report it.
 - Skip the intermediate replies of those skills; what they would report goes into the final reply.
 - The run skill (step 4): its `decide` questions are scope or screen questions; decide them as above unless one falls under a stop below, and pass each answer with `decide`. Keep its one-line progress notes. Its rule never to merge or push covers its own flow only; step 4 merges after it.
 
@@ -55,6 +54,15 @@ Besides the failures where those skills stop on their own (a step's Check you ca
 - The request is empty or the push keyword is unclear (step 1), a skill file cannot be read (step 2 or 4), or the check is still BLOCK after the retry (step 5).
 In the first five cases, ask with a decision card (rules above); after the answer, record it in plan.md and continue from where you stopped. Whenever you stop after step 2, leave the files as they are; if plan.md exists, record the reason and any open question in it.
 
+## Stage sessions (Claude Code)
+In Claude Code, when `${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs` exists, steps 3 to 6 each run in a fresh session that follows them and the rules above on its own; this session only drives and changes no file outside `.am/`, and step 2 reads no file. A new request: pick a short kebab-case slug not under `.am/`, write the request word for word to `.am/<slug>/request.md`, start with the plan stage. To resume: ask an OPEN card left in plan.md first (as for `NEEDS_DECISION`), run the plan stage again if the plan has no Steps yet, add a missing Scale line (step 3), then start with the do stage, or with commit when every step is done and committed. For each stage run `node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" <stage> <slug>` (`plan`, `do`, `check` or `commit`; add `--push` in push mode) from the repository root in the background, wait for its notice, and act on `status` in the JSON line it prints:
+- `READY` (plan): the do stage. `DONE` (do): check. `NOTE` (check): commit. `COMMITTED` or `NOTHING` (commit): step 7.
+- `HANDED` (the do stage as a hand-over): the run is done and merged, and pushed in push mode; skip check and commit, and take step 7's hand-over items from its `reply` file.
+- `BLOCK` (check): run the do stage with `--fix`, then check once more; still `BLOCK` stops (step 5).
+- `NEEDS_DECISION`: the stage left an OPEN card in plan.md, a stop above: ask it, replace the card with the answer marked as the user's decision, and run the same stage again with the same flags.
+- `BLOCKED` or `failed`: stop with its `reason` and `reply` file. `unavailable`: no session can start here; read the files of step 2 and do the remaining steps in this session, and say so in the final reply.
+For step 7 read plan.md, check.md and the `reply` files; it also gives the cost, the sum of `costUsd`.
+
 ## Steps
 1. Request: if the first word is `push`, push mode is on and the rest is the request; if you cannot tell whether it is the keyword or part of the request, ask before anything else. If the request is empty, ask what to do and stop. If the whole request is a slug whose `.am/<slug>/plan.md` exists, resume that plan; otherwise it is a new request.
 2. Read the four skill files `${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md` for plan, do, check and commit; if the placeholder was not replaced, `skills/<name>/SKILL.md` under the plugin root, the folder two levels above this SKILL.md. If any of them cannot be read, change no file and stop. Follow their Steps in this session.
@@ -66,13 +74,6 @@ In the first five cases, ask with a decision card (rules above); after the answe
    Hand-over: if the run skill could not be read, stop. A new hand-over first notes `run.id` from `status --json` (none if `run` is null), then follows the run skill's Steps with the path of this plan.md as its request; once `split` has made the run (`run.id` present and not the noted one; otherwise stop and report), log in one Change log line that it went to the am-orchestrator run skill, with `run.id` and the current branch as the start branch. If the log already has that line, check that `status --json` shows the same `run.id` (if not, stop and report), then follow the run skill from its step 4. When `next` is `done`: unless `run.branch` is the start branch, check out the start branch and run `git merge --ff-only <run.branch>` and `git branch -d <run.branch>`; log the merge, and in push mode push the start branch by the am:commit skill's push rules (its step 6). A resumed hand-over whose merge is logged only pushes. Skip steps 5 and 6: the run checks and commits each task.
 5. Check: follow the am:check skill's Steps for this slug. If the verdict is BLOCK, fix the causes that lie inside this task and follow them once more. If it is still BLOCK, do not commit; stop.
 6. Commit: follow the am:commit skill's Steps with no notes, in push mode only if step 1 set it. If the gate could not run (status `error`, or `node` missing, in the check or at the commit), commit but do not push, and say why.
-7. Reply in this order:
-   - the conclusion in one line;
-   - what you decided for the user, under a heading in the user's language: each auto-decided choice and each choice where the second opinion overruled your own pick, in plain words, or none;
-   - what changes for the user, and any deviation from the plan;
-   - the check verdict and the human checklist;
-   - each commit's hash and message, and what was left uncommitted;
-   - in push mode where it was pushed or why not, otherwise that nothing was pushed;
-   - the next step.
+7. Reply in this order: the conclusion in one line; what you decided for the user, under a heading in the user's language (each auto-decided choice and each choice where the second opinion overruled your own pick, in plain words, or none); what changes for the user, and any deviation from the plan; the check verdict and the human checklist; each commit's hash and message, and what was left uncommitted; in push mode where it was pushed or why not, otherwise that nothing was pushed; the next step.
    After a hand-over, the check and commit items become: tasks done of all and the branch they are on, the cost from `costUsd`, the human checklist of the report at `run.report` (shortened, with its path), and the run's `autoDecided` lines join what you decided.
    If you stopped, reply instead with why, what is done so far (after a hand-over, also which branch holds which commits and which one is checked out), and how to continue: answer the question, or fix the cause and run this skill again with the slug (`push <slug>` in push mode).

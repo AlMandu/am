@@ -33,18 +33,22 @@ export function readPlan(text) {
   return { scale, started: DONE.test(text), handedOver: HANDED.test(text) };
 }
 
-/** True when `claude plugin list --json` shows an enabled am-orchestrator with its run skill. Any failure counts as not installed. */
-export function orchestratorInstalled() {
+/** The install path of an enabled am-orchestrator with its run skill, from `claude plugin list --json`, or null. Any failure counts as not installed. */
+export function findOrchestrator() {
   try {
     // One command string through the shell, so Windows finds claude.cmd as well as claude.exe.
     const r = spawnSync('claude plugin list --json', { encoding: 'utf8', timeout: 30000, shell: true, windowsHide: true });
-    if (r.status !== 0) return false;
+    if (r.status !== 0) return null;
     const list = JSON.parse(r.stdout);
-    return Array.isArray(list) && list.some((p) => String(p.id).startsWith('am-orchestrator@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'skills', 'run', 'SKILL.md')));
+    const hit = Array.isArray(list) && list.find((p) => String(p.id).startsWith('am-orchestrator@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'skills', 'run', 'SKILL.md')));
+    return hit ? hit.installPath : null;
   } catch {
-    return false;
+    return null;
   }
 }
+
+/** True when an enabled am-orchestrator with its run skill is installed. */
+export const orchestratorInstalled = () => Boolean(findOrchestrator());
 
 function loadState(file) {
   try {

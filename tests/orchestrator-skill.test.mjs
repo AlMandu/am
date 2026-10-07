@@ -151,3 +151,27 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   assert.ok(limits, 'default task size');
   assert.match(auto, new RegExp(`about ${limits[1]} files and a plan of at most ${limits[2]} lines`));
 });
+
+test('the am stage runner hands a large plan to the run skill only through what is pinned here', async () => {
+  const { instructions, permissions } = await import('../plugin/scripts/stage.mjs');
+  const hook = read('plugin', 'hooks', 'handover.mjs');
+  // Finding the run skill: the same plugin id and skill path as am:auto.
+  assert.match(hook, /startsWith\('am-orchestrator@'\) && p\.enabled === true/);
+  assert.match(hook, /path\.join\(p\.installPath, 'skills', 'run', 'SKILL\.md'\)/);
+  // The skill is called by slash: the plugin and skill names, a new run with the plan's path, an empty request to continue.
+  assert.equal(JSON.parse(read('orchestrator', '.claude-plugin', 'plugin.json')).name, 'am-orchestrator');
+  assert.match(SKILL, /^name: run$/m);
+  assert.equal(instructions('handover', 'x').prompt, '/am-orchestrator:run .am/x/plan.md');
+  assert.equal(instructions('handover', 'x', { resume: true }).prompt, '/am-orchestrator:run');
+  assert.match(SKILL, /^1\. Request\. Empty: continue the run in progress from step 4;[^\n]*A path to an existing file: a new run with that document\./m);
+  assert.ok(existsSync(path.join(REPO, 'orchestrator', 'scripts', 'orchestrator.mjs')));
+  assert.ok(permissions('handover', { orchRoot: '/o' }).allow.includes('Bash(node "/o/scripts/orchestrator.mjs" *)'));
+  // What the session reads and the questions it decides or stops on.
+  const system = instructions('handover', 'x').system;
+  const run = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
+  for (const f of new Set([...system.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]))) assert.match(run[1], new RegExp(`\\b${f}:`), `run.${f}`);
+  for (const field of ['costUsd', 'autoDecided']) assert.ok(system.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
+  for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(system.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
+  assert.match(SKILL, /Never push or merge\./);
+  assert.match(system, /Its rule never to merge or push covers its own flow only/);
+});

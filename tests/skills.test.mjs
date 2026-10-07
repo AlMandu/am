@@ -72,6 +72,19 @@ test('am:auto declares the hand-over hook, and only am:auto', () => {
   assert.match(read('auto'), /this skill's hook denies file edits outside `\.am\/`/);
 });
 
+test('am:auto drives the stage runner and handles every status it prints', async () => {
+  const auto = read('auto');
+  const { MARKS, STAGES } = await import('../plugin/scripts/stage.mjs');
+  assert.ok(auto.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" <stage> <slug>`'));
+  assert.match(auto, /## Stage sessions \(Claude Code\)\nIn Claude Code, when `\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/stage\.mjs` exists/);
+  for (const s of STAGES) assert.ok(auto.includes(`\`${s}\``), `stage ${s}`);
+  for (const f of ['--push', '--fix']) assert.ok(auto.includes(`\`${f}\``), f);
+  // The plan stage reads the request from this file (cmd.exe cannot pass every request as an argument).
+  assert.ok(auto.includes('`.am/<slug>/request.md`'));
+  for (const status of [...new Set(Object.values(MARKS).flat()), 'failed', 'unavailable']) assert.ok(auto.includes(`\`${status}\``), `status ${status}`);
+  for (const field of ['status', 'reason', 'reply', 'costUsd']) assert.ok(auto.includes(`\`${field}\``), field);
+});
+
 test('the second-opinion agent stays pinned and read-only, and the common rules send choices to it', () => {
   const fm = frontmatter(readFileSync(AGENT, 'utf8'));
   // Claude Code ignores a misspelled key without an error, which would silently unpin the agent.
