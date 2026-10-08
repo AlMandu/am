@@ -305,7 +305,7 @@ am 스킬 본문은 그대로 쓰고, 세션마다 덧붙이는 지시문으로 
 - am 스킬(plan, do, check, commit, auto) 본문과 `agents/second-opinion.md`, `hooks/gate.mjs` 를 읽고 그 인터페이스(`/am:plan`, `/am:do <slug>`, `.am/<slug>/plan.md`·`check.md`, `gate.mjs --run --json --cwd`)에 맞췄습니다. `tests/orchestrator-skill.test.mjs` 가 이 접점을 지킵니다.
 - `am:auto` 는 오케스트레이터가 부르지 않습니다(반대로 Claude Code 의 `am:auto` 는 큰 작업을 run 스킬에 넘기고, 끝나면 합칩니다). 오케스트레이터는 단계마다 세션을 따로 띄워 권한을 달리 주고, 단계 사이에 게이트와 작업 트리를 직접 확인합니다.
 - Claude Code 2.1.289 로 확인한 것: `claude plugin validate` 가 마켓플레이스와 두 플러그인을 통과시킵니다. 세션 시작 정보에 `am-orchestrator:run` 과 am 의 스킬이 실려 옵니다. 오케스트레이터가 단계별로 만드는 명령줄(권한 규칙, `--append-system-prompt-file`, `--plugin-dir`, `--resume`)을 CLI 가 받아들입니다. 로그인하지 않은 환경이라 모델 호출 직전까지만 봤습니다.
-- 가짜 `claude` 로 흐름 전체를 테스트했습니다(`node --test tests/orchestrator.test.mjs`). 게이트와 스킬 파일은 이 저장소의 `plugin/` 것을 그대로 씁니다.
+- 가짜 `claude` 로 흐름 전체를 테스트했습니다(주제별 테스트 파일 9개가 동시에 돕니다. 목록은 아래 "파일" 절에, 한 번에 돌리는 명령은 `tests/orchestrator-helpers.mjs` 머리 주석에 있습니다). 게이트와 스킬 파일은 이 저장소의 `plugin/` 것을 그대로 씁니다.
 - 스킬 없이 스크립트만 쓴 이전 판으로 실제 저장소에서 두 번 실행했습니다(작업 28개, 48개). 그때 드러난 문제를 고친 것이 지금 판입니다.
 
 확인하지 못한 것
@@ -331,9 +331,20 @@ am 스킬 본문은 그대로 쓰고, 세션마다 덧붙이는 지시문으로 
 orchestrator/.claude-plugin/plugin.json   플러그인 매니페스트
 orchestrator/skills/run/SKILL.md          오케스트레이터를 모는 스킬
 orchestrator/scripts/orchestrator.mjs     본체
-tests/orchestrator.test.mjs               흐름 테스트(약 1분)
 tests/orchestrator-skill.test.mjs         스킬·매니페스트·am 과의 접점 테스트
 tests/fake-claude.mjs                     테스트용 가짜 claude
+tests/orchestrator-helpers.mjs            흐름 테스트의 공통 도우미(전체 실행 명령은 머리 주석)
+
+흐름 테스트 (가짜 claude 로 돈다. 9개 파일을 함께 돌려 약 35초, 24코어 PC 에서 잰 값)
+tests/orchestrator.test.mjs               순수 함수, 기본 흐름
+tests/orchestrator-plan.test.mjs          계획 단계: 너무 큰 작업 나누기, 결정, 계획 저장
+tests/orchestrator-commit.test.mjs        커밋 단계: 안전장치, 권한 규칙, 커밋 훅 거부
+tests/orchestrator-drive.test.mjs         status --json, 잠금, 스킬을 부르는 방식
+tests/orchestrator-doctor.test.mjs        doctor, 게이트 설정, 시작 조건, 세션 지시문
+tests/orchestrator-parallel.test.mjs      별도 작업 공간에서의 동시 진행
+tests/orchestrator-volatile.test.mjs      volatilePaths, 커밋 세션의 빌드 산출물 되돌림
+tests/orchestrator-rewrite.test.mjs       설정 없이 빌드가 다시 쓴 파일, git add -N
+tests/orchestrator-sessions.test.mjs      PC 전체의 동시 세션 제한, 같은 초 스냅샷
 
 대상 저장소에 생기는 것 (모두 git 제외)
 .orchestrator/config.json            설정

@@ -7,6 +7,7 @@
 // 동시 진행: 단계가 끝날 때마다 "<단계>:<slug>" 표시를 남기고, "waitFor": { "implement:t01-a": "plan:t03-c" } 처럼
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
 // 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
+// 원래 저장소 경로는 FAKE_MAIN_REPO(테스트의 makeRepo 가 넣는다)로 받고, 없을 때만 git rev-parse --git-common-dir 로 찾는다.
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -20,7 +21,7 @@ if (argv.includes('--version')) {
 const flag = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);
 const cwd = process.cwd();
 const scenario = process.env.FAKE_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_SCENARIO, 'utf8')) : {};
-const mainRepo = path.dirname(path.resolve(cwd, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd, encoding: 'utf8' }).trim()));
+const mainRepo = process.env.FAKE_MAIN_REPO || path.dirname(path.resolve(cwd, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd, encoding: 'utf8' }).trim()));
 const stateDir = path.join(mainRepo, '.orchestrator');
 mkdirSync(stateDir, { recursive: true });
 const counterFile = path.join(stateDir, 'fake-counters.json');
