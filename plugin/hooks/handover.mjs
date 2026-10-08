@@ -3,7 +3,7 @@
 // it runs only in sessions that invoked am:auto, for the rest of the session. It
 // blocks a file edit while this session's plan says the task is large (Scale above
 // 1 implementation run or 1 commit), the am-orchestrator run skill is installed,
-// and the plan was neither handed over nor started. Shell commands are not checked.
+// and the plan was neither handed over (a hand-over line in its Change log) nor started. Shell commands are not checked.
 // Entry: node -e "import(...handover.mjs).then((m) => m.main())". Node only.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -18,7 +18,11 @@ const PLAN = /^\.am\/[^/]+\/plan\.md$/;
 const SCALE = /(?:Scale:\s*(\d+)\s+implementation runs?,\s*(\d+)\s+commits?|규모:\s*구현\s*(\d+)\s*회,\s*커밋\s*(\d+)\s*개)/i;
 const DONE = /^\s*\d+\.\s.*\((?:done|완료)\)/im; // the am:do skill's mark on a step's first line
 const DONE_ALL = new RegExp(DONE.source, DONE.flags + 'g'); // a copy for counting: DONE itself stays without `g`, so its test() keeps no position
-const HANDED = /^(?=.*(?:orchestrator|오케스트레이터)).*(?:\b\d{8}-\d{4}\b|\brun\.?\s?id\b)/im; // am:auto logs the hand-over with the run ID (default YYYYMMDD-HHMM)
+const LOG_HEAD = /^(#{2,3})\s+(?:change\s?log|변경\s(?:기록|로그|이력))\s*$/i; // the plan's Change log section, older translated headings too
+const HANDED = /^\s*[-*]\s+(?:\d{4}-\d{2}-\d{2}:?\s+)?Hand-over: am-orchestrator run skill, run (\S+), start branch (\S+)/; // the line am:auto logs
+// Older hand-over lines: plugin, verb, start branch and run ID on one line, and no word of a stop.
+const OLD_HANDED = [/orchestrator|오케스트레이터/i, /넘김|넘겼|넘긴|went to|handed/i, /시작 브랜치|start branch/i, /\b\d{8}-\d{4}\b|(?:run\.id|run id|실행 ID):?\s+\S/i];
+const STOPPED = /BLOCKED|stopped|failed|멈춤|멈췄|막힘|막혀|실패/i;
 
 const ALLOW = { stdout: '' };
 const slash = (p) => p.split(path.sep).join('/');
@@ -31,8 +35,24 @@ function deny(reason) {
 export function readPlan(text) {
   const m = SCALE.exec(text);
   const scale = m ? [Number(m[1] ?? m[3]), Number(m[2] ?? m[4])] : null;
-  return { scale, started: DONE.test(text), handedOver: HANDED.test(text) };
+  return { scale, started: DONE.test(text), handedOver: changeLog(text).some(handedLine) };
 }
+
+/** The lines under the plan's Change log headings, each section ending at the next heading of the same or a higher level. */
+function changeLog(text) {
+  const lines = [];
+  let level = 0;
+  for (const line of String(text).split(/\r?\n/)) {
+    const head = /^(#{1,6})\s/.exec(line);
+    if (head && head[1].length <= level) level = 0;
+    const log = LOG_HEAD.exec(line);
+    if (log) level = log[1].length;
+    else if (level) lines.push(line);
+  }
+  return lines;
+}
+
+const handedLine = (line) => HANDED.test(line) || (OLD_HANDED.every((re) => re.test(line)) && !STOPPED.test(line));
 
 /** How many steps of the plan carry the am:do done mark. */
 export function countDone(text) {

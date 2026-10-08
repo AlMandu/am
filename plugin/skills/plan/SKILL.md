@@ -46,7 +46,7 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from
 4. Folder: `.am/<slug>/` at the repository root. The slug is short kebab-case English; reuse a slug already used in this conversation and never guess from recent folders. If `.am/` does not exist yet and `git check-ignore -q .am` fails, create `.am/.gitignore` containing `*`.
 5. Technical choices: before drafting, list the ones this plan depends on. If there are any, settle them through the second opinion (rules above), all in one brief.
 6. Risk review, only when the change touches saved data or save formats, server or network contracts, concurrency or async ordering, data migration, security, or deletion of user data: have one independent reviewer (a subagent if available, otherwise a separate pass by you) attack the draft from at most 3 relevant angles. Keep only CRITICAL or HIGH issues that come with a concrete failure scenario and fix the plan for them; list the rest under Risks. Do not ask the user about review findings.
-7. Write `.am/<slug>/plan.md` in the user's language: at most 150 lines, no full code listings, this skeleton with translated headings:
+7. Write `.am/<slug>/plan.md` in the user's language: at most 150 lines, no full code listings, this skeleton with translated headings, except `## Change log`, which stays in English (am:auto looks for its hand-over line there):
 
    ```markdown
    # <title>

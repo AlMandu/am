@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
+import { readPlan } from '../plugin/hooks/handover.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -183,6 +184,25 @@ test('doKind: hand over a large new plan only when the run skill is installed', 
   assert.deepEqual(doKind(handed.replace('1. a.', '1. a. (done)'), { orchestrator: orch }), { kind: 'do' });
   assert.deepEqual(doKind(handed, { orchestrator: orch, fix: true }), { kind: 'do' });
   assert.match(doKind('# p\n## Steps\n1. a\n', { orchestrator: orch }).error, /no Scale line/);
+  // A step that names the hand-over test file and run ID field is not a hand-over: a small plan stays with am:do.
+  const mention = SMALL.replace('1. a. Check: x\n', '1. a. Check: x\n2. `tests/orchestrator-skill.test.mjs`: pin that the am:auto hand-over line carries `run.id`. Check: y\n');
+  assert.deepEqual(doKind(`${mention}## Change log\n`, { orchestrator: orch }), { kind: 'do' });
+});
+
+test('am:auto and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
+  const LINE = /`(- Hand-over: [^`\n]+)`/;
+  const fromAuto = LINE.exec(AUTO);
+  const fromStage = LINE.exec(instructions('handover', 'demo').system);
+  assert.ok(fromAuto && fromStage, 'both name the hand-over line');
+  assert.equal(fromStage[1], fromAuto[1]);
+  const filled = fromAuto[1].replace('<run.id>', '20261008-0900').replace('<branch>', 'main');
+  assert.doesNotMatch(filled, /[<>]/);
+  assert.equal(readPlan(`${LARGE}## Change log\n${filled}\n`).handedOver, true);
+  assert.equal(readPlan(`${LARGE}## 변경 기록\n${filled} (5 tasks)\n`).handedOver, true);
+  for (const text of [AUTO, instructions('handover', 'demo').system]) {
+    assert.match(text, /in English whatever the plan's language/);
+    assert.match(text, /\(a stop reason[^)]*\) starts with `Hand-over:`/);
+  }
 });
 
 test('context size: estimate, files per stage, and which files to shorten', () => {
@@ -289,7 +309,7 @@ test('the do stage becomes a hand-over for a large plan, with push only in push 
   assert.equal(flag(calls[0], '--permission-mode'), 'dontAsk');
   assert.ok(flag(calls[0], '--allowedTools').includes('Bash(git push *)'));
   // A plan that records a hand-over, but no run skill: nothing is started.
-  const lost = makeRepo(t, { plan: `${LARGE}- am-orchestrator 로 넘김, run.id 20261007-1200\n` });
+  const lost = makeRepo(t, { plan: `${LARGE}## Change log\n- Hand-over: am-orchestrator run skill, run 20261007-1200, start branch main\n` });
   const r2 = await run(lost, ['do', 'demo']);
   assert.equal(r2.result.status, 'failed');
   assert.match(r2.result.reason, /not installed/);
@@ -579,7 +599,7 @@ test('events: a hand-over is marked for the state line', async (t) => {
   await run(planned, ['plan', 'demo']);
   assert.match(stateLine(events(planned).slice(0, -1), live), /^state: running \(plan, \d+ min\)$/);
   // A recorded hand-over without the run skill starts nothing and leaves no note.
-  const lost = makeRepo(t, { plan: `${LARGE}- am-orchestrator 로 넘김, run.id 20261007-1200\n` });
+  const lost = makeRepo(t, { plan: `${LARGE}## Change log\n- Hand-over: am-orchestrator run skill, run 20261007-1200, start branch main\n` });
   await run(lost, ['do', 'demo']);
   assert.deepEqual(evs(events(lost)), ['start', 'end']);
   assert.equal(events(lost)[1].status, 'failed');

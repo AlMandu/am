@@ -1,13 +1,18 @@
 // Run: node --test tests/handover.test.mjs
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { countDone, decide, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
 
 const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
 const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';
+const FIXED = '- Hand-over: am-orchestrator run skill, run 20261008-0900, start branch main\n';
+// A plan's own text that names the hand-over pieces outside a hand-over line (e.g. a step about the test files).
+const STEP_MENTION = '5. `tests/orchestrator-skill.test.mjs`: pin that the am:auto hand-over line carries `run.id`. Check: x\n';
+const STOP_LINE = '- BLOCKED (2026-10-08): the am-orchestrator run 20261008-1344 stopped; T03 is left in the tree.\n';
+const SUMMARY_MENTION = '# t\n## Summary\n- Goal: am-orchestrator 로 넘김, run.id 20261007-1412\n## Steps\n1. a. Check: x\n## Change log\n';
 
 const bases = [];
 after(() => {
@@ -58,10 +63,53 @@ test('reads the scale line in both languages, done marks and the hand-over line'
   // The template's own rule text mentions marking a step done; it is not a mark.
   assert.equal(readPlan('> Rules: 2) run each step\'s check and mark the step done\n').started, false);
   assert.equal(readPlan('## 변경 기록\n- am-orchestrator run 스킬로 넘김: run.id 20261007-1412, 시작 브랜치 main\n').handedOver, true);
-  assert.equal(readPlan('- 오케스트레이터에 넘김 (run 20261007-1412)\n').handedOver, true);
-  assert.equal(readPlan('- 목표: am-orchestrator 의 토큰을 줄인다\n').handedOver, false);
-  assert.equal(readPlan('- 20261007-1412 빌드 로그\n').handedOver, false);
-  assert.equal(readPlan('- went to the am-orchestrator run skill, run.id fix-2, start branch main\n').handedOver, true);
+  // An older line without a start branch is no longer read as a hand-over: a step or a stop can say as much.
+  assert.equal(readPlan('## Change log\n- 오케스트레이터에 넘김 (run 20261007-1412)\n').handedOver, false);
+  assert.equal(readPlan('## Change log\n- 목표: am-orchestrator 의 토큰을 줄인다\n').handedOver, false);
+  assert.equal(readPlan('## Change log\n- 20261007-1412 빌드 로그\n').handedOver, false);
+  assert.equal(readPlan('## Change log\n- went to the am-orchestrator run skill, run.id fix-2, start branch main\n').handedOver, true);
+});
+
+test('the fixed hand-over line counts only under a Change log heading', () => {
+  for (const head of ['## Change log', '## 변경 기록', '### Change log', '## Changelog', '## 변경 이력']) {
+    assert.equal(readPlan(`# t\n## Steps\n1. a\n${head}\n${FIXED}`).handedOver, true, head);
+  }
+  assert.equal(readPlan(`# t\n## Change log\n- 2026-10-08 ${FIXED.slice(2)}`).handedOver, true);
+  assert.equal(readPlan(`# t\n## Change log\n- 2026-10-08: ${FIXED.slice(2)}`).handedOver, true);
+  assert.equal(readPlan(`# t\n## Change log\n## Next\n${FIXED}`).handedOver, false);
+  assert.equal(readPlan(`# t\n## Steps\n${FIXED}## Change log\n`).handedOver, false);
+  assert.equal(readPlan(`# t\n## Change log\n### Notes\n${FIXED}`).handedOver, true); // a sub-heading stays in the section
+  assert.equal(readPlan(`# t\n### Change log\n## Next\n${FIXED}`).handedOver, false);
+});
+
+test('older hand-over lines of real plans count; a stop line does not', () => {
+  const old = [
+    '- am-orchestrator run 스킬로 넘김: run.id 20261007-1916, 시작 브랜치 main (작업 20개).',
+    '- 구현을 am-orchestrator 의 run 스킬에 넘김: 실행 ID 20261008-0731, 시작 브랜치 main (작업 5개).',
+    '- 구현을 am-orchestrator 의 run 스킬(오케스트레이터)에 넘겼다: run id 20261008-1344, 시작 브랜치 main. 작업 7개(T01~T07, 작업마다 커밋 1개)로 나뉘었고 서로 무관한 작업은 최대 3개까지 동시에 돈다.',
+  ];
+  const stop = '- 멈춤(2026-10-08): 다시 이어 간 구현 명령이 PC 메모리 부족으로 Claude Code 에 의해 또 중단됐다(명령 자체의 실패가 아님). 그 시점까지 T01(383b24f)과 T02(d06ebe4)가 브랜치 `orch/20261008-1344` 에 커밋됐고, T03 의 변경(오케스트레이터 스크립트와 테스트)은 작업 트리에 커밋되지 않은 채 있다. 사용자가 요청하면 같은 slug 로 이어 간다.';
+  for (const line of old) assert.equal(readPlan(`# t\n## 변경 기록\n${line}\n`).handedOver, true, line);
+  assert.equal(readPlan(`# t\n## Change log\n${stop}\n`).handedOver, false);
+  assert.equal(readPlan(`# t\n## Change log\n${old[2]}\n${stop}\n`).handedOver, true); // a later stop keeps the hand-over
+  assert.equal(readPlan(`# t\n## Change log\n${FIXED}${STOP_LINE}`).handedOver, true);
+});
+
+test('mentions of the hand-over outside a Change log hand-over line are not a hand-over', () => {
+  assert.equal(readPlan(`# t\n## Steps\n${STEP_MENTION}## Change log\n`).handedOver, false);
+  assert.equal(readPlan(`# t\n## Steps\n1. a. Check: x\n## Change log\n${STOP_LINE}`).handedOver, false);
+  assert.equal(readPlan(SUMMARY_MENTION).handedOver, false);
+  const env = setup();
+  plan(env.repo, 'big', LARGE.replace('## 요약\n', `## 요약\n- 목표: am-orchestrator 로 넘김, run.id 20261007-1412\n`));
+  assert.ok(hook(env, 'Edit', path.join(env.repo, 'a.js')));
+});
+
+test('am:plan keeps the Change log heading in English, where readPlan looks for the hand-over line', () => {
+  const skill = readFileSync(new URL('../plugin/skills/plan/SKILL.md', import.meta.url), 'utf8');
+  assert.match(skill, /translated headings, except `## Change log`, which stays in English/);
+  const head = /^\s*(## Change log)\s*$/m.exec(skill);
+  assert.ok(head, 'the skeleton has the heading');
+  assert.equal(readPlan(`# t\n${head[1]}\n${FIXED}`).handedOver, true);
 });
 
 test('countDone counts the done marks of both languages and leaves readPlan as it was', () => {

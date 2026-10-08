@@ -138,7 +138,7 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   assert.match(auto, /with the path of this plan\.md as its request/);
   // A failed split leaves `status --json` on an earlier run; only a changed run.id proves this split made the run.
   assert.match(auto, /A new hand-over first notes `run\.id` from `status --json` \(none if `run` is null\)/);
-  assert.match(auto, /once `split` has made the run \(`run\.id` present and not the noted one; otherwise stop and report\), log in one Change log line [^\n]*with `run\.id` and the current branch as the start branch\./);
+  assert.match(auto, /once `split` has made the run \(`run\.id` present and not the noted one; otherwise stop and report\), log exactly this one line in the Change log, [^\n]*with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run\.id>, start branch <branch>`/);
   assert.match(auto, /check that `status --json` shows the same `run\.id` \(if not, stop and report\), then follow the run skill from its step 4\./);
   // The step and the rule of the run skill that am:auto names.
   const prepare = /^2\. Prepare\.[\s\S]*?(?=^3\. )/m.exec(SKILL);
@@ -173,7 +173,7 @@ test('am:merge reads the run records and the lock only through what is pinned he
   assert.match(SCRIPT, /c\.split\(' '\)\[0\]/);
   assert.match(SCRIPT, /const lockFile = \(repo\) => path\.join\(repo, ORCH_DIR, 'lock\.json'\);/);
   // The hand-over line am:merge looks for carries the run's id.
-  assert.match(amSkill('auto'), /log in one Change log line that it went to the am-orchestrator run skill, with `run\.id`/);
+  assert.match(amSkill('auto'), /`- Hand-over: am-orchestrator run skill, run <run\.id>, start branch <branch>`/);
   assert.match(RUN[1], /\bid:/);
   for (const s of ['.orchestrator/runs/<run>/state.json', '`tasks.*.commits`', 'the first word of each entry is a hash', '.orchestrator/lock.json', 'a hand-over to am-orchestrator with a run ID']) assert.ok(merge.includes(s), s);
 });
