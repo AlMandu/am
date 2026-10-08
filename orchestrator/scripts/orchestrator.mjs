@@ -208,6 +208,26 @@ function killTree(child) {
 const activeChildren = new Set(); // 지금 돌고 있는 자식 프로세스(세션, 게이트). 중단 신호를 받으면 함께 끝낸다
 let onInterrupt = null; // 중단 신호를 받았을 때 상태를 정리하는 함수(run 이 등록)
 
+// 진행 소식: 실행 폴더의 progress.jsonl 에 한 줄씩(plugin/scripts/progress.mjs 와 같은 줄 형식). 잠금 전후 어디서든 쓰므로 모듈 상태로 둔다
+let progress = null; // { file, stage, started, ended }
+
+/** 소식 한 줄을 덧붙인다. 폴더를 만들지 않고 오류는 삼킨다: 소식 때문에 일이 멈추지 않게. */
+function event(fields) {
+  if (!progress) return;
+  if (fields.ev === 'end') progress.ended = true;
+  try {
+    appendFileSync(progress.file, `${JSON.stringify({ t: now(), ...fields })}\n`);
+  } catch {
+    /* 버린다 */
+  }
+}
+
+function startEvents(runDir, fields) {
+  progress = { file: path.join(runDir, 'progress.jsonl'), stage: fields.stage, started: Date.now(), ended: false };
+  event({ ev: 'start', pid: process.pid, ...fields });
+}
+const minsSince = () => Math.max(0, Math.floor((Date.now() - progress.started) / 60000));
+
 /** 명령 하나를 실행하고 출력을 모은다. args 가 null 이면 cmd 를 셸 명령으로 돌린다. 절대 reject 하지 않는다. */
 function exec(cmd, args, { cwd, timeoutMs, env }) {
   return new Promise((resolve) => {
@@ -549,7 +569,10 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   const [bin, ...pre] = ctx.cfg.claudeCommand;
   // 이 PC 의 세션 자리를 잡은 뒤 띄운다. 기다린 시간은 제한 시간과 소요 분에 넣지 않는다
   const who = ctx.tag || path.basename(dir).startsWith('_') ? '' : `${path.basename(dir)} `; // 함께 도는 작업이면 log 가 작업 ID 를 붙인다
-  const release = await takeSession({ repo: ctx.root || ctx.repo, phase, where: rel(ctx, dir) }, (n, max) => log(ctx, `    ${who}${phase}: 이 PC 에서 오케스트레이터 세션 ${n}개가 돌고 있어 자리가 날 때까지 기다립니다 (최대 ${max}개, 바꾸려면 \`sessions <N>\`)`));
+  const release = await takeSession({ repo: ctx.root || ctx.repo, phase, where: rel(ctx, dir) }, (n, max) => {
+    log(ctx, `    ${who}${phase}: 이 PC 에서 오케스트레이터 세션 ${n}개가 돌고 있어 자리가 날 때까지 기다립니다 (최대 ${max}개, 바꾸려면 \`sessions <N>\`)`);
+    event({ ev: 'note', stage: phase, text: `waiting for a free session slot (${n} in use, max ${max})` });
+  });
   const started = Date.now();
   let r;
   try {
@@ -577,6 +600,8 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   });
   const denials = denied.length;
   log(ctx, `    ${phase}: ${mins}분${denials ? `, 권한 거부 ${denials}건` : ''}`);
+  const task = path.basename(dir).startsWith('_') ? undefined : path.basename(dir);
+  event({ ev: 'note', stage: phase, task, min: Math.floor((Date.now() - started) / 60000), text: `${phase} session ended${denials ? `, ${denials} permission denials` : ''}` });
   return { text: String(parsed.result ?? ''), sessionId: parsed.session_id || null, denials, denied };
 }
 
@@ -1254,6 +1279,7 @@ async function integrateNow(ctx, t) {
   if (s.needsGate && ctx.cfg.orchestratorGate) {
     log(w, '    실행 브랜치의 새 커밋 위로 옮김: 게이트를 다시 돌림');
     const g = await gateAndSettle(w, s, taskDir(ctx, t));
+    event({ ev: 'note', task: t.id, stage: 'check', text: `gate ${g.status} after moving onto the run branch` });
     if (!gatePasses(ctx.cfg, g)) return redoTask(ctx, t, `실행 브랜치의 새 커밋 위로 옮긴 뒤 게이트 ${g.status}${g.reason ? ` (${g.reason})` : ''}`);
   }
   // 이 작업의 커밋은 작업 공간의 기준 커밋(옮겼으면 옮긴 위치) 뒤의 것: 합치기를 다시 해도(중단 뒤) 같은 목록이 나온다
@@ -1264,6 +1290,7 @@ async function integrateNow(ctx, t) {
   saveState(ctx); // 완료를 먼저 남기고 작업 공간을 지운다: 지우다 끊겨도 다시 구현하지 않는다(남은 폴더는 실행이 끝날 때 정리)
   removeWorktree(root, dir);
   log(w, `    ✓ 실행 브랜치에 합침: ${commits.join(' / ')}`);
+  event({ ev: 'step', task: t.id, status: 'done', text: 'merged into the run branch' });
   return 'done';
 }
 
@@ -1295,6 +1322,7 @@ function redoTask(ctx, t, why) {
     Object.assign(s, reset, { status: 'blocked', blockedAt: 'implement', reason: `${why}. 다시 구현해도 합치지 못했습니다. 버린 변경: ${rel(ctx, patch)}` });
     saveState(ctx);
     log(ctx, `    ✗ 막힘: ${why}`);
+    event({ ev: 'alert', task: t.id, stage: 'implement', status: 'blocked', text: 'task blocked: could not merge it into the run branch' });
     return 'blocked';
   }
   Object.assign(s, reset, { status: 'planned', redoPatch: rel(ctx, patch) });
@@ -1320,6 +1348,7 @@ function splitTask(ctx, t, block) {
   savePlan(ctx);
   saveState(ctx);
   log(ctx, `    → 더 작게 나눔: ${ctx.plan.splitHistory.at(-1).into.join(', ')}`);
+  event({ ev: 'step', task: t.id, status: 'split', text: `split into ${ctx.plan.splitHistory.at(-1).into.join(', ')}` });
   return 'split';
 }
 
@@ -1337,6 +1366,7 @@ async function runTask(ctx, t) {
     s.running = name;
     saveState(ctx);
     writeReport(ctx); // 보고서가 항상 지금 상태를 보여 주도록
+    event({ ev: 'step', task: t.id, stage: name, text: `${name} started` });
   };
   const set = (status, extra = {}) => {
     Object.assign(s, { status, updatedAt: now() }, extra);
@@ -1346,6 +1376,7 @@ async function runTask(ctx, t) {
   const block = (reason, extra = {}) => {
     set('blocked', { reason, blockedAt: stage, ...extra });
     log(ctx, `    ✗ 막힘: ${reason.split('\n')[0]}`);
+    event({ ev: 'alert', task: t.id, stage: s.blockedAt, status: 'blocked', text: `task blocked at ${s.blockedAt}` });
     return 'blocked';
   };
   const bump = (name) => {
@@ -1392,6 +1423,7 @@ async function runTask(ctx, t) {
       writeText(path.join(dir, 'decision.md'), r.text);
       set('needs-decision', { reason: '계획 중 사용자만 정할 수 있는 결정이 나옴' });
       log(ctx, `    ? 결정 필요: ${rel(ctx, path.join(dir, 'decision.md'))}`);
+      event({ ev: 'alert', task: t.id, stage: 'plan', status: 'needs-decision', text: 'task needs a decision' });
       return 'needs-decision';
     }
     if (r.mark !== 'READY') return block('계획 세션이 끝 표시(ORCH_STATUS)를 남기지 않았습니다.');
@@ -1439,6 +1471,7 @@ async function runTask(ctx, t) {
         Object.assign(s, { verdict: verdict || '?', gate: gate ? gate.status : '(생략)' });
         saveState(ctx);
         log(ctx, `    판정 ${s.verdict}, 게이트 ${s.gate}`);
+        event({ ev: 'note', task: t.id, stage: 'check', text: `verdict ${s.verdict}, gate ${gate ? s.gate : 'skipped'}` });
         if (!verdict) return block('점검 세션의 판정(BLOCK/NOTE)을 읽지 못했습니다.');
         if (verdict === 'NOTE' && gateOk) break;
         const why = `판정 ${verdict}, 게이트 ${s.gate}${gate?.reason ? ` (${gate.reason})` : ''}`;
@@ -1475,6 +1508,7 @@ async function runTask(ctx, t) {
         // 커밋은 이미 끝났고 남은 변경도 없다(막혔던 작업을 다시 돌린 경우)
         set(finished, { commitBase: undefined, reason: undefined, blockedAt: undefined });
         log(ctx, `    ✓ ${ctx.isolated ? '커밋함' : '완료'}: 남은 변경 없음 (${s.commits.join(' / ')})`);
+        event({ ev: 'step', task: t.id, stage: 'commit', status: finished, text: `task ${finished}, nothing left to commit` });
         return finished;
       }
       const marks = ['COMMITTED', 'BLOCKED', 'NOTHING'];
@@ -1547,6 +1581,7 @@ async function runTask(ctx, t) {
       }
       set(finished, { commits, commitBase: undefined, reason: undefined });
       log(ctx, `    ✓ ${ctx.isolated ? '커밋함' : '완료'}: ${made.join(' / ')}`);
+      event({ ev: 'step', task: t.id, stage: 'commit', status: finished, text: `task ${finished}: ${made.length} commit${made.length === 1 ? '' : 's'}` });
     }
     break;
   }
@@ -1570,12 +1605,22 @@ function readLock(repo) {
   return pidAlive(lock?.pid) ? lock : null;
 }
 
-function acquireLock(repo, command) {
+function acquireLock(repo, command, run) {
   const held = readLock(repo);
   if (held) fail(`이 저장소에서 이미 돌고 있는 명령이 있습니다: ${held.command} (pid ${held.pid}, ${held.startedAt} 시작). 끝난 뒤 다시 하세요. 진행 상황은 \`status\` 로 볼 수 있습니다.`);
   ensureIgnored(repo, ORCH_DIR);
-  writeJson(lockFile(repo), { pid: process.pid, command, startedAt: now() });
-  process.on('exit', () => {
+  writeJson(lockFile(repo), { pid: process.pid, command, startedAt: now(), ...(run ? { run } : {}) });
+  process.on('exit', (exitCode) => {
+    // 끝 소식을 남기지 못한 채 끝나면(오류, 중단) 잠금을 지우기 전에 남긴다
+    try {
+      if (progress && !progress.ended) {
+        const code = exitCode ?? process.exitCode ?? 0;
+        const status = code === 130 ? 'interrupted' : code !== 0 ? 'failed' : 'ended';
+        event({ ev: 'end', stage: progress.stage, status, text: `${progress.stage} ${status} (exit ${code})`, min: minsSince() });
+      }
+    } catch {
+      /* 잠금은 아래에서 늘 지운다 */
+    }
     try {
       if (readJson(lockFile(repo)).pid === process.pid) rmSync(lockFile(repo), { force: true });
     } catch {
@@ -2046,6 +2091,22 @@ function requireReady(ctx) {
   if (needRoot && !(ctx.pluginRoot && existsSync(path.join(ctx.pluginRoot, 'hooks', 'gate.mjs')))) fail('am 플러그인 폴더를 찾지 못했습니다. `doctor` 를 실행하거나 config.json 의 amPluginRoot 를 적으세요.');
 }
 
+/** 새 실행의 이름: 지금 시각(YYYYMMDD-HHMM). */
+function newRunId() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
+}
+
+/** `current` 에 적힌 실행 이름. 없거나 읽지 못하면 빈 문자열. */
+function currentRun(repo) {
+  try {
+    return readText(path.join(repo, ORCH_DIR, 'current')).trim();
+  } catch {
+    return '';
+  }
+}
+
 async function cmdSplit(repo, designArg, opt) {
   if (!designArg) fail('사용법: split <설계문서 경로>');
   const design = path.resolve(designArg);
@@ -2053,9 +2114,7 @@ async function cmdSplit(repo, designArg, opt) {
   const ctx = baseContext(repo);
   if (!ctx.env) fail('먼저 `doctor` 를 실행하세요.');
   ensureIgnored(repo, ORCH_DIR);
-  const d = new Date();
-  const p2 = (n) => String(n).padStart(2, '0');
-  ctx.runId = opt.run || `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
+  ctx.runId = opt.run || newRunId();
   ctx.runDir = path.join(repo, ORCH_DIR, 'runs', ctx.runId);
   ctx.planFile = path.join(ctx.runDir, 'tasks.json');
   ctx.stateFile = path.join(ctx.runDir, 'state.json');
@@ -2063,6 +2122,7 @@ async function cmdSplit(repo, designArg, opt) {
   mkdirSync(ctx.runDir, { recursive: true });
   const snapshot = path.join(ctx.runDir, 'design.md');
   copyFileSync(design, snapshot); // 작업을 뽑은 시점의 설계 문서를 고정해 둔다
+  startEvents(ctx.runDir, { stage: 'split', text: 'split started' });
   const designName = design.startsWith(repo + path.sep) ? slashes(path.relative(repo, design)) : slashes(design);
   const dir = path.join(ctx.runDir, '_split');
   const out = rel(ctx, ctx.planFile);
@@ -2094,6 +2154,7 @@ async function cmdSplit(repo, designArg, opt) {
   if ((ctx.plan.uncovered || []).length) say(`작업에 넣지 않은 설계 부분 ${ctx.plan.uncovered.length}곳이 있습니다(같은 문서의 "설계 문서 대비" 참고).`);
   if (open.length) say(`사용자가 정해야 하는 것 ${open.length}개: ${open.map((x) => x.id).join(', ')} → \`decide <ID> "<답>"\``);
   say('작업 목록이 괜찮으면: `run`  (순서와 실제 호출 명령만 보려면 `run --dry-run`)');
+  event({ ev: 'end', stage: 'split', status: 'done', text: `split into ${ctx.plan.tasks.length} tasks, ${open.length} open decisions`, min: minsSince() });
 }
 
 /**
@@ -2197,6 +2258,7 @@ async function cmdAnswer(repo, id, answer, opt) {
   const s = t && ctx.state.tasks[id];
   if (!t || !answer || s.status !== 'needs-decision') fail('사용법: answer <작업 ID> "<답>"  (상태가 "결정 필요"인 작업에만 씁니다)');
   if (!s.sessions.plan) fail('이어 갈 계획 세션이 없습니다. `retry` 로 계획부터 다시 하세요.');
+  startEvents(ctx.runDir, { stage: 'answer', task: id, text: 'answer started' });
   // 답은 파일로 넘긴다: 한글·따옴표가 명령줄을 거치지 않게
   appendFileSync(amPath(ctx, t, 'answers.md'), `\n## ${now()}\n${answer}\n`);
   const prompt = `The user answered the open decisions in ${AM_DIR}/${t.slug}/answers.md. Record the answers under Decisions in the plan, finish ${AM_DIR}/${t.slug}/plan.md, and do not implement. End with exactly one line: ORCH_STATUS: READY, ORCH_STATUS: NEEDS_DECISION or ORCH_STATUS: TOO_BIG`;
@@ -2208,14 +2270,17 @@ async function cmdAnswer(repo, id, answer, opt) {
     splitTask(ctx, t, (reason) => {
       Object.assign(s, { status: 'blocked', reason, blockedAt: 'plan', updatedAt: now() });
       say(reason);
+      event({ ev: 'alert', stage: 'plan', task: id, status: 'blocked', text: 'task blocked: could not split it' });
       return 'blocked';
     });
   } else {
     writeText(path.join(taskDir(ctx, t), 'decision.md'), r.text);
     say(`${id}: 아직 결정이 남았습니다. ${rel(ctx, path.join(taskDir(ctx, t), 'decision.md'))}`);
+    event({ ev: 'alert', stage: 'plan', task: id, status: 'needs-decision', text: 'task needs a decision' });
   }
   saveState(ctx);
   writeReport(ctx);
+  event({ ev: 'end', stage: 'answer', task: id, status: s.status, text: `answer ended: ${s.status}`, min: minsSince() }); // planned, split, blocked 또는 needs-decision
 }
 
 function cmdRetry(repo, id, opt) {
@@ -2319,6 +2384,8 @@ async function cmdRun(repo, opt) {
   if (errs.length) fail(`작업 목록에 형식 오류가 있습니다:\n- ${errs.join('\n- ')}`);
   if (opt['dry-run']) return dryRun(ctx);
   const { cfg, state } = ctx;
+  // 아래 검사에서 멈춰도 종료 처리가 끝 소식을 남기도록 먼저 시작을 알린다
+  startEvents(ctx.runDir, { stage: 'run', text: `run started: ${ctx.plan.tasks.length} tasks` });
   if (String(process.env.AM_GATE || '').trim().toLowerCase() === 'off') fail('환경 변수 AM_GATE=off 가 설정돼 있습니다. 게이트가 꺼진 채로는 무인 실행을 하지 않습니다.');
   const missing = missingRequired(ctx);
   if (missing.length) fail(`config.json 의 requiredGateCommands 에 적은 이름이 am-gate.json 에 없습니다: ${missing.join(', ')}`);
@@ -2360,6 +2427,7 @@ async function cmdRun(repo, opt) {
     const c = Object.assign(Object.create(ctx), { main: ctx, ...(par.max > 1 ? { tag: t.id } : {}) });
     c.workspace = (x) => chooseWorkspace(c, x, active);
     say(`\n▶ ${t.id} ${t.title}  [${STATUS_KO[state.tasks[t.id].status]}부터]`);
+    event({ ev: 'step', task: t.id, status: state.tasks[t.id].status, text: 'task started' });
     const job = (async () => {
       await null; // 같은 회차에 띄우는 작업이 모두 active 에 들어간 뒤 시작한다(작업 트리를 고를 때 서로를 보도록)
       const result = await runTask(c, t);
@@ -2429,9 +2497,11 @@ async function cmdRun(repo, opt) {
   writeReport(ctx);
   const count = (st) => ctx.plan.tasks.filter((t) => state.tasks[t.id].status === st).length;
   const total = ctx.plan.tasks.length;
+  const undecided = count('needs-decision') + ctx.plan.tasks.filter((t) => state.tasks[t.id].status === 'pending' && openDecisions(ctx.plan, t).length).length;
   say(`\n${stopped || (count('done') === total ? '모든 작업이 끝났습니다.' : '지금 진행할 수 있는 작업이 더 없습니다.')}`);
-  say(`완료 ${count('done')} / ${total}, 막힘 ${count('blocked')}, 결정 필요 ${count('needs-decision') + ctx.plan.tasks.filter((t) => state.tasks[t.id].status === 'pending' && openDecisions(ctx.plan, t).length).length}`);
+  say(`완료 ${count('done')} / ${total}, 막힘 ${count('blocked')}, 결정 필요 ${undecided}`);
   say(`보고서: ${rel(ctx, path.join(ctx.runDir, 'report.md'))}  (push 는 하지 않았습니다)`);
+  event({ ev: 'end', stage: 'run', status: count('done') === total ? 'done' : 'stopped', text: `done ${count('done')} of ${total}, blocked ${count('blocked')}, needs decision ${undecided}`, min: minsSince() });
   if (count('done') !== total) process.exitCode = 1;
 }
 
@@ -2477,7 +2547,9 @@ async function main(argv) {
   // dry-run 을 구현한 것은 run 뿐이라 그것만 잠금 없이 돈다(다른 명령은 --dry-run 을 붙여도 실제로 실행된다)
   if (['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done'].includes(cmd) && !(cmd === 'run' && opt['dry-run'])) {
     baseContext(repo);
-    acquireLock(repo, cmd);
+    // 잠금에 실행 이름을 담는다: split 은 새 이름을 여기서 정해 넘기고, doctor 는 실행과 상관없다
+    if (cmd === 'split') opt.run ||= newRunId();
+    acquireLock(repo, cmd, cmd === 'doctor' ? '' : opt.run || currentRun(repo));
   }
   switch (cmd) {
     case 'init':

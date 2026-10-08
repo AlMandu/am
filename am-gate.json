@@ -2,7 +2,7 @@
   "timeoutMs": 600000,
   "commands": [
     { "name": "tests", "run": "node --test tests/gate.test.mjs tests/skills.test.mjs tests/codex-opinion.test.mjs tests/models.test.mjs tests/handover.test.mjs tests/stage.test.mjs tests/progress.test.mjs" },
-    { "name": "orchestrator-tests", "run": "node --test tests/orchestrator-skill.test.mjs tests/orchestrator.test.mjs tests/orchestrator-plan.test.mjs tests/orchestrator-commit.test.mjs tests/orchestrator-drive.test.mjs tests/orchestrator-doctor.test.mjs tests/orchestrator-parallel.test.mjs tests/orchestrator-volatile.test.mjs tests/orchestrator-rewrite.test.mjs tests/orchestrator-sessions.test.mjs", "timeoutMs": 600000 },
+    { "name": "orchestrator-tests", "run": "node --test tests/orchestrator-skill.test.mjs tests/orchestrator.test.mjs tests/orchestrator-plan.test.mjs tests/orchestrator-commit.test.mjs tests/orchestrator-drive.test.mjs tests/orchestrator-doctor.test.mjs tests/orchestrator-parallel.test.mjs tests/orchestrator-volatile.test.mjs tests/orchestrator-rewrite.test.mjs tests/orchestrator-sessions.test.mjs tests/orchestrator-progress.test.mjs", "timeoutMs": 600000 },
     { "name": "validate-marketplace", "run": "claude plugin validate ." },
     { "name": "validate-am", "run": "claude plugin validate plugin" },
     { "name": "validate-orchestrator", "run": "claude plugin validate orchestrator" }
