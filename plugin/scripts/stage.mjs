@@ -14,6 +14,8 @@
 // Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
 // (originals kept as <name>.orig-<n>.md); `compacted` reports it. The request (request.md) is the user's own words: never
 // counted, never shortened. Nothing is shortened before the plan stage or a hand-over.
+// Each stage appends to .am/<slug>/progress.jsonl: `start` (pid, stage), a `note` for a compaction, a second ask or a
+// hand-over, and one `end` (status, min) on every way out; write errors are dropped (see progress.mjs).
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker. Exit codes: 0 result printed, 1 bad input.
@@ -26,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
 import { findOrchestrator, readPlan, withinOneRun } from '../hooks/handover.mjs';
+import { appendEvent } from './progress.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -273,6 +276,8 @@ export function cmdExeArgs(args) {
 }
 
 const active = new Set(); // running sessions, ended when this script is stopped
+// The end-event writers of running stages, called when this script is stopped. Each writes once and leaves the set.
+const finishers = new Set();
 
 /** Runs one command and collects its output. Never rejects. */
 function exec(cmd, args, { cwd, env, timeoutMs }) {
@@ -416,7 +421,7 @@ function originalName(slug, name, taken) {
  * is put back as well. Returns {compacted, costUsd}; `compacted` is
  * null (nothing to do), {files, before, after, originals}, or {files, failed}.
  */
-async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET } = {}) {
+async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, note = () => {} } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
   const texts = {};
@@ -444,6 +449,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   );
   const systemRel = `.am/${slug}/stage-compact.system.md`;
   writeFileSync(abs(systemRel), system);
+  note(`shortening ${files.join(', ')} before the stage`);
   const [bin, ...pre] = claude;
   const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model: COMPACT_MODEL })], { cwd, env, timeoutMs: timeoutMin.compact * 60000 });
   const parsed = parseResult(r.stdout);
@@ -481,7 +487,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout, now = Date.now } = {}) {
   const [stage, slug, ...flags] = argv;
   if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
     out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
@@ -494,13 +500,26 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const dir = path.join(cwd, '.am', slug);
   const planFile = path.join(dir, 'plan.md');
   const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null };
+  let finish = null; // set once the start event is written
   const done = (fields = {}) => {
-    out.write(`${JSON.stringify(Object.assign(result, fields))}\n`);
+    Object.assign(result, fields);
+    finish?.(result);
+    out.write(`${JSON.stringify(result)}\n`);
     return 0;
   };
   if (stage === 'plan' && !existsSync(path.join(dir, 'request.md'))) return done({ reason: `no .am/${slug}/request.md: write the request there first` });
   if (stage !== 'plan' && !existsSync(planFile)) return done({ reason: `no .am/${slug}/plan.md: run the plan stage first` });
   ensureIgnored(cwd);
+  const startedAt = now();
+  const event = (fields) => appendEvent(cwd, slug, fields, { now });
+  event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage });
+  finish = ({ status, reason }) => {
+    if (!finishers.has(finish)) return;
+    finishers.delete(finish);
+    const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
+    event({ ev: 'end', text: first || `${result.stage} stage ended`, stage: result.stage, status, min: Math.max(0, Math.floor((now() - startedAt) / 60000)) });
+  };
+  finishers.add(finish);
 
   let kind = stage;
   let opts = { push, fix };
@@ -514,10 +533,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     if (kind === 'handover' && !orchRoot) return done({ stage: kind, reason: 'the plan records a hand-over, but the am-orchestrator run skill is not installed or not enabled' });
   }
   result.stage = kind;
+  if (kind === 'handover') event({ ev: 'note', text: 'handed to the am-orchestrator run skill', stage: 'handover' });
   const [bin, ...pre] = claude;
   // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
-  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits });
+  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, note: (text) => event({ ev: 'note', text }) });
   result.compacted = compaction.compacted;
+  const c = compaction.compacted;
+  if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });
   result.costUsd = compaction.costUsd;
   const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
   const perm = permissions(kind, { push, amRoot, orchRoot, memDir });
@@ -558,6 +580,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     ? `The plan was not saved: .am/${slug}/plan.md does not exist. In this session only the Write and Edit tools can create files, and only under .am/${slug}/; Bash cannot write files here. Save the plan now with the Write tool at exactly .am/${slug}/plan.md. End with exactly one line: ${marks}`
     : !why && !mark ? `Reply with exactly one line and nothing else: ${marks}` : null;
   if (ask && result.sessionId) {
+    event({ ev: 'note', text: unsaved ? 'asking the session again to save plan.md' : 'asking the session again for its end line' });
     const again = await call(claudeArgs(perm, { prompt: ask, resume: result.sessionId, pluginDir }));
     why = problem(again);
     mark = why ? null : lastMark(again.parsed.result, MARKS[kind]);
@@ -582,14 +605,16 @@ const isMain = () => {
   }
 };
 
+/** What a stop signal does: write the end event of every running stage, take the stage sessions down, exit 1. */
+export function interrupt(sig, { exit = process.exit } = {}) {
+  for (const finish of [...finishers]) finish({ status: 'failed', reason: `stopped by ${sig}` });
+  for (const child of active) killTree(child);
+  exit(1);
+}
+
 if (isMain()) {
   // A session that is stopped ends this script; take the stage session down with it.
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(sig, () => {
-      for (const child of active) killTree(child);
-      process.exit(1);
-    });
-  }
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => interrupt(sig));
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });

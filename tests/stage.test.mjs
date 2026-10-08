@@ -6,13 +6,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt } from '../plugin/scripts/stage.mjs';
+import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
 
 // A fake claude: records its arguments in calls.jsonl and answers as fake.json in the working folder says.
-// fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes boom to stderr and exits 3), "write": { "path": "content" },
+// fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -24,7 +25,7 @@ if ((s.hang || []).includes(n)) setTimeout(() => {}, 60000);
 else {
 for (const [f, t] of Object.entries({ ...s.write, ...(s.writes || [])[n - 1] })) { mkdirSync(path.dirname(f), { recursive: true }); writeFileSync(f, t); }
 for (const f of (s.removes || [])[n - 1] || []) rmSync(f, { force: true });
-if (s.crash) { process.stderr.write('boom'); process.exit(3); }
+if (s.crash) { process.stderr.write(s.stderr || 'boom'); process.exit(3); }
 const replies = s.replies || ['done\\nAM_STAGE: READY'];
 const text = replies[Math.min(n, replies.length) - 1];
 process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
@@ -478,4 +479,153 @@ test('cmdExeArgs: only the --allowedTools value is filtered', () => {
   assert.throws(() => cmdExeArgs(['-p', 'say "hi", ok']), /cannot go through cmd\.exe/);
   assert.throws(() => cmdExeArgs(['--disallowedTools', 'Read,Bash(node "C:/a.mjs" *)']), /cannot go through cmd\.exe/);
   assert.throws(() => cmdExeArgs(['-p', '100%']), /cannot go through cmd\.exe/);
+});
+
+// ------------------------------------------------------------------ progress events
+
+/** The events of .am/<slug>/progress.jsonl, one per line; [] without the file. */
+function events(dir, slug = 'demo') {
+  const file = path.join(dir, '.am', slug, 'progress.jsonl');
+  return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+}
+const evs = (list) => list.map((e) => e.ev);
+const ends = (list) => list.filter((e) => e.ev === 'end');
+const PLANNED = { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } };
+const PLAN_RESULT = { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null };
+
+test('events: a stage writes start with its pid and one end with status and minutes', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  const { result } = await run(dir, ['plan', 'demo']);
+  assert.deepEqual({ ...result, reply: !!result.reply }, PLAN_RESULT);
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'end']);
+  assert.ok(Number.isInteger(list[0].pid) && list[0].pid > 0);
+  assert.equal(list[0].pid, process.pid);
+  assert.equal(list[0].stage, 'plan');
+  const { t: _t, min, ...end } = list[1];
+  assert.deepEqual(end, { ev: 'end', text: 'plan stage ended', stage: 'plan', status: 'READY' });
+  assert.ok(Number.isInteger(min) && min >= 0);
+  assert.equal(formatEvent({ ...list[1], min: 0 }), 'end: plan stage ended [stage=plan status=READY min=0]');
+});
+
+test('events: start comes before the orchestrator lookup, minutes follow the given clock', async (t) => {
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['AM_STAGE: DONE'] } });
+  let clock = Date.parse('2026-10-08T00:00:00Z');
+  let sawStart = false;
+  const orchestrator = () => {
+    sawStart = events(dir).some((e) => e.ev === 'start');
+    clock += 150000;
+    return null;
+  };
+  const { result } = await run(dir, ['do', 'demo'], { orchestrator, now: () => clock });
+  assert.equal(result.status, 'DONE');
+  assert.ok(sawStart);
+  const end = ends(events(dir));
+  assert.equal(end.length, 1);
+  assert.equal(end[0].min, 2);
+  assert.equal(end[0].stage, 'do');
+});
+
+test('events: a compaction leaves a note before and after it', async (t) => {
+  const dir = makeRepo(t, { plan: BIG, fake: { replies: ['Shortened.\nAM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  await run(dir, ['do', 'demo']);
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'note', 'note', 'end']);
+  assert.equal(list[1].text, 'shortening .am/demo/plan.md before the stage');
+  assert.equal(list[2].text, `shortened .am/demo/plan.md: about ${estimateTokens(BIG)} -> ${estimateTokens(SHORT)} tokens`);
+  const undone = makeRepo(t, { plan: BIG, fake: { replies: ['Shortened.', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  await run(undone, ['do', 'demo']);
+  const u = events(undone);
+  assert.deepEqual(evs(u), ['start', 'note', 'note', 'end']);
+  assert.match(u[2].text, /^shortening undone, files kept: the session ended without an AM_STAGE line$/);
+  assert.equal(plan(undone), BIG);
+});
+
+test('events: asking the session again leaves a note', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Implemented.', 'AM_STAGE: DONE'] } });
+  await run(dir, ['do', 'demo']);
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'note', 'end']);
+  assert.equal(list[1].text, 'asking the session again for its end line');
+  assert.equal(list[2].status, 'DONE');
+  const unsaved = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY', 'Saved.\nAM_STAGE: READY'], writes: [{}, { '.am/demo/plan.md': 'x' }] } });
+  await run(unsaved, ['plan', 'demo']);
+  assert.equal(events(unsaved)[1].text, 'asking the session again to save plan.md');
+});
+
+test('events: a hand-over is marked for the state line', async (t) => {
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  await run(dir, ['do', 'demo'], { orchestrator: () => '/orch' });
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'note', 'end']);
+  assert.equal(list.filter((e) => e.stage === 'handover' && e.ev === 'note').length, 1);
+  assert.equal(list[2].stage, 'handover');
+  const live = { alive: () => true, planText: '1. a (done)\n' };
+  const handed = stateLine(list.slice(0, -1), live);
+  assert.ok(handed.includes('(handover,'), handed);
+  assert.ok(!handed.includes('steps done'), handed);
+  const small = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  await run(small, ['do', 'demo']);
+  assert.match(stateLine(events(small).slice(0, -1), live), /, 1 steps done\)$/);
+  const planned = makeRepo(t, { fake: PLANNED });
+  await run(planned, ['plan', 'demo']);
+  assert.match(stateLine(events(planned).slice(0, -1), live), /^state: running \(plan, \d+ min\)$/);
+  // A recorded hand-over without the run skill starts nothing and leaves no note.
+  const lost = makeRepo(t, { plan: `${LARGE}- am-orchestrator 로 넘김, run.id 20261007-1200\n` });
+  await run(lost, ['do', 'demo']);
+  assert.deepEqual(evs(events(lost)), ['start', 'end']);
+  assert.equal(events(lost)[1].status, 'failed');
+});
+
+test('events: every way out after start writes exactly one end', async (t) => {
+  const cases = [
+    [makeRepo(t, { plan: SMALL }), ['check', 'demo'], (dir) => ({ claude: [path.join(dir, 'no-such-claude-binary')] }), (e) => assert.equal(e.status, 'unavailable')],
+    [makeRepo(t, { plan: SMALL, fake: { crash: true } }), ['check', 'demo'], () => ({}), (e) => assert.deepEqual([e.status, e.text], ['failed', 'unreadable output (exit 3): boom'])],
+    [makeRepo(t, { plan: SMALL, fake: { crash: true, stderr: 'y'.repeat(300) } }), ['check', 'demo'], () => ({}), (e) => assert.ok(e.status === 'failed' && e.text.length <= 200, e.text)],
+    [makeRepo(t, { plan: SMALL, fake: { hang: [1] } }), ['check', 'demo'], () => ({ timeoutMin: { check: 0.005 } }), (e) => assert.ok(e.status === 'failed' && e.text.startsWith('no end within'), e.text)],
+    [makeRepo(t, { plan: '# p\n## Steps\n1. a\n' }), ['do', 'demo'], () => ({ orchestrator: () => '/orch' }), (e) => assert.ok(e.status === 'failed' && e.text.includes('Scale line'), e.text)],
+  ];
+  for (const [dir, argv, opts, check] of cases) {
+    await run(dir, argv, opts(dir));
+    const list = events(dir);
+    assert.equal(list[0].ev, 'start', argv.join(' '));
+    assert.equal(ends(list).length, 1, argv.join(' '));
+    assert.equal(list.at(-1).ev, 'end');
+    check(list.at(-1));
+  }
+});
+
+test('events: nothing is written before start', async (t) => {
+  const dir = makeRepo(t);
+  await run(dir, ['do', 'demo']);
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'progress.jsonl')), 'no plan');
+  await run(dir, ['ship', 'demo']);
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'progress.jsonl')), 'bad arguments');
+  const noRequest = makeRepo(t, { request: null });
+  await run(noRequest, ['plan', 'demo']);
+  assert.ok(!existsSync(path.join(noRequest, '.am', 'demo', 'progress.jsonl')), 'no request');
+});
+
+test('events: a stop signal writes the end once, stops the session and exits 1', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const began = Date.now();
+  const running = run(dir, ['check', 'demo']);
+  while (!existsSync(path.join(dir, 'calls.jsonl')) && Date.now() - began < 10000) await new Promise((r) => setTimeout(r, 50));
+  let code = null;
+  interrupt('SIGTERM', { exit: (c) => (code = c) });
+  await running;
+  assert.equal(code, 1);
+  const end = ends(events(dir));
+  assert.equal(end.length, 1);
+  assert.equal(end[0].status, 'failed');
+  assert.equal(end[0].text, 'stopped by SIGTERM');
+  assert.ok(Date.now() - began < 30000, 'the hanging session was stopped');
+});
+
+test('events: a write error changes nothing for the stage', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  mkdirSync(path.join(dir, '.am', 'demo', 'progress.jsonl'));
+  const { code, result } = await run(dir, ['plan', 'demo']);
+  assert.equal(code, 0);
+  assert.deepEqual({ ...result, reply: !!result.reply }, PLAN_RESULT);
 });
