@@ -147,6 +147,10 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
 
 const MARK = (stage) => `End your final reply with exactly one line: ${MARKS[stage].map((m) => `AM_STAGE: ${m}`).join(' or ')}`;
 
+// The permission rules of most stages match one plain command only, so a chained command is refused whole.
+// Kept outside unattended(): that text is a copy of am:auto's rules and changes only together with them.
+const ONE_COMMAND = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
+
 /** The unattended rules of am:auto's "Running without stops" section, written for one stage session. */
 const unattended = (slug, stage, push) => `You are one stage of the am:auto skill, started in a fresh session by the am stage runner. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
 - Running am:auto is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
@@ -210,7 +214,7 @@ export function instructions(stage, slug, { push = false, fix = false, resume = 
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && (stage === 'plan' || stage === 'handover') ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}${note}${shortened}\n` };
+  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
 }
 
 /**

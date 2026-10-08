@@ -126,6 +126,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.equal(instructions('commit', 'demo', { push: true }).prompt, '/am:commit push');
   assert.equal(instructions('handover', 'demo').prompt, '/am-orchestrator:run .am/demo/plan.md');
   assert.equal(instructions('handover', 'demo', { resume: true }).prompt, '/am-orchestrator:run');
+  const oneCommand = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
   for (const s of [...STAGES, 'handover']) {
     const { system } = instructions(s, 'demo');
     // The same rules as am:auto's "Running without stops" (user decision: a copy written for stage sessions, kept in step by this test).
@@ -133,7 +134,12 @@ test('instructions: slash call of the stage skill, unattended rules written out 
     for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds']) assert.ok(system.includes(stop), `${s}: ${stop}`);
     assert.match(system, /marked OPEN[\s\S]*AM_STAGE: NEEDS_DECISION/, s);
     for (const m of MARKS[s]) assert.ok(system.includes(`AM_STAGE: ${m}`), `${s}: ${m}`);
+    // Every stage kind gets the one-command line, once: the permission rules of most stages match one plain command only.
+    assert.ok(system.includes(`\n${oneCommand}\n`), `${s}: one command per call`);
+    assert.equal(system.split(oneCommand).length, 2, `${s}: one command per call, once`);
   }
+  // The compaction session has no shell tool, so it does not get that line.
+  assert.ok(!compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]).system.includes(oneCommand));
   // The same mark rule in am:auto (with code marks there).
   assert.match(AUTO, /the mark `\(auto-decided\)` translated into the plan's language \(`\(자동 결정\)` in a Korean plan\)/);
   // The same stop list in am:auto. Two of its stops are left out on purpose: the run skill's Prepare questions
