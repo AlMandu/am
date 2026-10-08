@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.18 (2026-10-08)
+
+- Codex 2차 의견이 `gpt-6-astra` 모델을 `high` effort 로 쓴다. 지금까지는 사용자의 codex 설정 모델을 `medium` 으로 썼다. Astra 권한이 없는 계정에서는 Codex 2차 의견이 실패하고, 공통 규칙대로 Claude 2차 의견만으로 진행한다(멈추지 않지만 매번 Codex 호출 시간이 든다). Codex 에는 새 버전을 따라가는 별칭이 없어, 새 Astra 버전을 쓰려면 `models.json` 을 고치고 `node scripts/models.mjs` 를 돌려야 한다.
+- 2차 의견 서브에이전트(`am:second-opinion`)의 모델이 전체 ID `claude-opus-5-5` 에서 별칭 `opus` 로 바뀌어 메인 세션이 쓰는 Opus 버전을 따른다. 새 Opus 가 나오면 따로 고치지 않아도 그 버전을 쓰는 대신, 메인 세션과 같은 버전으로 돈다. effort 는 그대로 `high` 다.
+- `hooks.json` 은 바뀌지 않아 Codex 훅 재신뢰는 필요 없다.
+
 ## am-orchestrator 0.5.1 (2026-10-08)
 
 - `--dry-run` 을 붙인 `split`·`retry`·`done`·`answer` 처럼 상태를 바꾸는 명령도 이제 저장소 잠금을 거쳐, 다른 실행이 돌고 있으면 "이미 돌고 있는 명령이 있습니다"로 막힌다. 이 명령들은 dry-run 을 따로 구현하지 않아 지금까지 실제로 실행되면서 잠금만 건너뛰었다. 잠금 없이 도는 것은 `run --dry-run` 과, 원래 잠그지 않던 `status`·`sessions` 같은 명령뿐이다.

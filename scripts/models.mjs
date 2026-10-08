@@ -11,16 +11,15 @@ import { fileURLToPath } from 'node:url';
 export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'];
 const CODEX_EFFORT = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-// Skills take an alias: a skill whose model cannot be resolved has no fallback. The subagent takes a full ID: the
-// `opus` alias follows the main session's Opus version. The Codex model goes through `cmd /C` on Windows, so only a
-// token that needs no quotes is allowed; empty means the user's own codex config.
+// Skills and the subagent take an alias: a skill whose model cannot be resolved has no fallback, and the subagent's
+// `opus` follows the main session's Opus version, so a new Opus is picked up without an edit. The Codex model goes
+// through `cmd /C` on Windows, so only a token that needs no quotes is allowed; empty means the user's own codex config.
 const MODEL = {
   alias: [/^[a-z]+(\[1m\])?$/, '별칭(예: opus)'],
-  full: [/^claude-[a-z0-9.-]+$/, '전체 모델 ID(예: claude-opus-5-5)'],
   codex: [/^([A-Za-z0-9._:-]+)?$/, '빈 문자열(사용자의 codex 설정) 또는 따옴표 없이 쓰는 모델 이름'],
 };
 const ENTRIES = {
-  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', compactmem: 'alias', auto: 'alias', compact: 'alias', 'second-opinion': 'full', 'codex-opinion': 'codex' },
+  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', compactmem: 'alias', auto: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs uses the same map).

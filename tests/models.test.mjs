@@ -41,7 +41,7 @@ test('values that would be silently ignored or unsafe are refused', () => {
   const problems = (fn) => validate(edit(fn)).join('\n');
   assert.match(problems((m) => { m.am.plan = { model: 'opus', efort: 'high' }; }), /am\.plan: 빠진 키 effort, 모르는 키 efort/);
   assert.match(problems((m) => { m.am.plan.model = 'claude-opus-5-5'; }), /am\.plan\.model: 별칭/); // a skill takes an alias
-  assert.match(problems((m) => { m.am['second-opinion'].model = 'opus'; }), /am\.second-opinion\.model: 전체 모델 ID/);
+  assert.match(problems((m) => { m.am['second-opinion'].model = 'claude-opus-5-5'; }), /am\.second-opinion\.model: 별칭/); // follows the main session's Opus
   assert.match(problems((m) => { m.orchestrator.split.effort = 'huge'; }), /orchestrator\.split\.effort/);
   assert.match(problems((m) => { m.am['codex-opinion'].effort = 'max'; }), /am\.codex-opinion\.effort/); // Codex has no max
   assert.match(problems((m) => { m.am['codex-opinion'].model = 'gpt 5" & calc'; }), /am\.codex-opinion\.model/); // goes through cmd /C on Windows
@@ -59,7 +59,7 @@ test('apply writes a changed value into every place that carries it, and check i
     m.am.commit.effort = other(m.am.commit.effort, ['low', 'medium']);
     m.orchestrator.split.model = other(m.orchestrator.split.model, ['sonnet', 'haiku']);
     m.orchestrator.run.effort = other(m.orchestrator.run.effort, ['max', 'low']);
-    m.am['second-opinion'].model = other(m.am['second-opinion'].model, ['claude-sonnet-5-5', 'claude-haiku-4-5']);
+    m.am['second-opinion'].model = other(m.am['second-opinion'].model, ['sonnet', 'haiku']);
     const codex = m.am['codex-opinion'];
     m.am['codex-opinion'] = { model: other(codex.model, ['gpt-5.1-codex', 'o4-mini']), effort: other(codex.effort, ['medium', 'low']) };
   });

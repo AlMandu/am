@@ -97,8 +97,8 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:commit` | `opus` | `medium` |
 | `am:auto` | `opus` | `medium` |
 | 단계 사이 맥락 압축 세션(`am:auto`, Claude Code) | `opus` | `medium` |
-| 2차 의견 서브에이전트(`am:second-opinion`) | `claude-opus-5-5` | `high` |
-| Codex 2차 의견 | 사용자의 codex 설정 | `medium` |
+| 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
+| Codex 2차 의견 | `gpt-6-astra` | `high` |
 
 <!-- am:models:end -->
 
@@ -136,7 +136,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 - 방식: 작업 세션이 자기 안을 먼저 정해 두고, 미정인 선택을 한 번에 모아 목표·사용자 결정·아직 답을 받지 않은 질문·관련 경로·선택지만 적어 보냅니다. 자기 안은 적지 않습니다. 2차 의견은 대화 기록 없이 시작해 코드를 직접 읽고, 선택마다 고른 안·이유·위험을 돌려줍니다. 선택지에 없는 안을 고를 수도 있습니다.
 - 적용: 2차 의견이 고른 안을 적용합니다. 계획 문서의 "기본값 적용" 각 줄에 2차 의견이 골랐다는 표시가 붙고, 작업 세션의 안과 달랐으면 그 안도 함께 적힙니다. `am:plan` 과 `am:do` 는 답에서 달랐던 선택을 따로 알려 줍니다. 사용자 결정은 언제나 2차 의견보다 우선합니다.
 - 다시 여는 경우: 정한 선택은 나중에 받은 사용자 답과 부딪히거나, 요약에서 빠졌던 사실이 드러나거나, 해 보니 안 될 때(확인 실패, 검토 지적)만 다시 엽니다. 그때도 작업 세션이 직접 바꾸거나 사용자에게 기술 질문으로 넘기지 않고, 새 사실을 붙여 2차 의견에 다시 보낸 뒤 그 줄을 고칩니다.
-- 고정: 모델과 effort 는 위 "모델과 effort 기본값" 표의 값(모델은 별칭이 아닌 전체 ID), 도구는 읽기 전용(Read, Grep, Glob). `plugin/agents/second-opinion.md` 의 frontmatter 에 있고 테스트가 지킵니다. 실행 중 `/tasks` 를 열면 그 서브에이전트 줄에 모델과 effort 가 보입니다.
+- 고정: 모델과 effort 는 위 "모델과 effort 기본값" 표의 값(모델은 별칭 `opus` 라서 메인 세션이 쓰는 Opus 버전을 따라가고, 새 Opus 가 나오면 따로 고치지 않아도 그 버전을 씁니다), 도구는 읽기 전용(Read, Grep, Glob). `plugin/agents/second-opinion.md` 의 frontmatter 에 있고 테스트가 지킵니다. 실행 중 `/tasks` 를 열면 그 서브에이전트 줄에 모델과 effort 가 보입니다.
 - 비용: 호출 한 번이 위 표의 모델·effort 로 도는 별도 실행입니다. 그래서 선택을 모아 한 번에 보내고, `am:plan` 은 계획당 한 번을 기본으로 합니다.
 - 고정이 풀리는 경우: 환경 변수 `CLAUDE_CODE_EFFORT_LEVEL` 은 frontmatter 의 effort 보다 우선하고, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 은 서브에이전트의 model 을 무시합니다. 조직이 모델이나 effort 상한을 제한해 두었으면 그 제한을 따릅니다.
 - 쓸 수 없을 때(Codex, 서브에이전트 실행 실패): 예전처럼 작업 세션이 정하고, 그 줄에 2차 의견 없이 정했다는 표시를 남깁니다.

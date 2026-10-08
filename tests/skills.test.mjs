@@ -102,7 +102,7 @@ test('the second-opinion agent stays pinned and read-only, and the common rules 
   assert.deepEqual(Object.keys(fm).sort(), ['description', 'effort', 'model', 'name', 'tools']);
   assert.equal(fm.name, 'second-opinion');
   assert.equal(fm.model, MODELS['second-opinion'].model);
-  assert.match(fm.model, /^claude-/); // full ID: the `opus` alias follows the main session's Opus version
+  assert.match(fm.model, /^[a-z]+(\[1m\])?$/); // alias: follows the main session's Opus version, so a new Opus is picked up
   assert.equal(fm.effort, MODELS['second-opinion'].effort);
   assert.equal(fm.tools, 'Read, Grep, Glob');
   assert.match(fm.description, /^"[^"]{40,}"$/);
