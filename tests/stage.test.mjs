@@ -13,8 +13,8 @@ const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'
 
 // A fake claude: records its arguments in calls.jsonl and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes boom to stderr and exits 3), "write": { "path": "content" },
-//   "writes": [{ "path": "content written by the 1st call only" }, ...], "hang": [1] (calls that never end) }
-const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+//   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end) }
+const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const argv = process.argv.slice(2);
 appendFileSync('calls.jsonl', JSON.stringify(argv) + '\\n');
@@ -23,6 +23,7 @@ const n = readFileSync('calls.jsonl', 'utf8').trim().split('\\n').length;
 if ((s.hang || []).includes(n)) setTimeout(() => {}, 60000);
 else {
 for (const [f, t] of Object.entries({ ...s.write, ...(s.writes || [])[n - 1] })) { mkdirSync(path.dirname(f), { recursive: true }); writeFileSync(f, t); }
+for (const f of (s.removes || [])[n - 1] || []) rmSync(f, { force: true });
 if (s.crash) { process.stderr.write('boom'); process.exit(3); }
 const replies = s.replies || ['done\\nAM_STAGE: READY'];
 const text = replies[Math.min(n, replies.length) - 1];
@@ -91,6 +92,10 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.equal(compact.mode, 'dontAsk');
   assert.deepEqual(compact.allow, ['Read', 'Glob', 'Grep', 'Edit(/.am/**)', 'Edit(.am/**)']);
   assert.deepEqual(compact.deny, ['AskUserQuestion']);
+  // With the slug, the request is denied in both path forms: a deny rule wins over the .am/ allowance.
+  const guarded = permissions('compact', { slug: 'demo' });
+  assert.deepEqual(guarded.allow, compact.allow);
+  assert.deepEqual(guarded.deny, ['AskUserQuestion', 'Edit(/.am/demo/request.md)', 'Edit(.am/demo/request.md)']);
 });
 
 test('the compaction session: its own model and markers, a prompt cmd.exe can pass', () => {
@@ -104,7 +109,7 @@ test('the compaction session: its own model and markers, a prompt cmd.exe can pa
   const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
   assert.ok(!/["%]/.test(prompt), prompt);
   assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
-  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool']) assert.ok(system.includes(keep), keep);
+  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back']) assert.ok(system.includes(keep), keep);
 });
 
 test('instructions: slash call of the stage skill, unattended rules written out in every stage', () => {
@@ -170,7 +175,7 @@ test('context size: estimate, files per stage, and which files to shorten', () =
   assert.equal(estimateTokens('abcde'), 2, 'rounded up');
   assert.equal(estimateTokens('한국어 계획'), 6, 'one token per non-ASCII character, plus the space');
   assert.equal(estimateTokens(''), 0);
-  assert.deepEqual(contextFiles('plan'), ['request.md', 'plan.md']);
+  assert.deepEqual(contextFiles('plan'), [], 'nothing is shortened before the plan stage: not the request, not a plan a hand-over may pass on');
   assert.deepEqual(contextFiles('do'), ['plan.md']);
   assert.deepEqual(contextFiles('do', { fix: true }), ['plan.md', 'check.md']);
   assert.deepEqual(contextFiles('handover'), [], 'the orchestrator copies the handed plan.md whole');
@@ -181,8 +186,8 @@ test('context size: estimate, files per stage, and which files to shorten', () =
   assert.deepEqual(pickCompaction({ 'plan.md': 13000 }), { files: [], budget: 0 }, 'at the limit nothing is shortened');
   assert.deepEqual(pickCompaction({ 'plan.md': 12000, 'check.md': 1001 }), { files: ['plan.md'], budget: 7499 });
   // The largest first, until what is left as it is holds at most half the target (4,250).
-  assert.deepEqual(pickCompaction({ 'request.md': 6000, 'plan.md': 9000 }), { files: ['plan.md', 'request.md'], budget: 8500 });
-  assert.deepEqual(pickCompaction({ 'request.md': 3000, 'plan.md': 11000 }), { files: ['plan.md'], budget: 5500 });
+  assert.deepEqual(pickCompaction({ 'check.md': 6000, 'plan.md': 9000 }), { files: ['plan.md', 'check.md'], budget: 8500 });
+  assert.deepEqual(pickCompaction({ 'check.md': 3000, 'plan.md': 11000 }), { files: ['plan.md'], budget: 5500 });
 });
 
 test('reading the end: result object, marker line, claude arguments', () => {
@@ -304,11 +309,25 @@ test('a session over its time limit is stopped and reported', async (t) => {
   assert.match(result.reason, /no end within/);
 });
 
+test('limits given in part are filled from the defaults', async (t) => {
+  for (const timeoutMin of [{}, { compact: 1 }, { check: undefined }, { check: null }]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTE'] } });
+    const { result } = await run(dir, ['check', 'demo'], { timeoutMin });
+    assert.equal(result.status, 'NOTE', JSON.stringify(timeoutMin));
+  }
+  // The compaction session gets the filled limits too, not the caller's object.
+  const dir = makeRepo(t, { plan: BIG, fake: { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  const { result } = await run(dir, ['do', 'demo'], { timeoutMin: { do: 1 } });
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual(result.compacted.originals, ['.am/demo/plan.orig-1.md']);
+});
+
 // A Korean plan of about 15,700 estimated tokens, and the same plan shortened.
 const FILLER = '설명 문장입니다. '.repeat(2000);
 const SHORT = '# p\n## 요약\n- 규모: 구현 1회, 커밋 1개\n## 결정\n- 범위 (자동 결정)\n## 단계\n1. a. Check: x (완료)\n2. b. Check: y\n## 변경 기록\n';
 const BIG = SHORT.replace('## 결정', `- ${FILLER}\n## 결정`);
 const plan = (dir) => readFileSync(path.join(dir, '.am', 'demo', 'plan.md'), 'utf8');
+const request = (dir) => readFileSync(path.join(dir, '.am', 'demo', 'request.md'), 'utf8');
 
 test('task files above the limit are shortened in a session of their own before the stage, with the original kept', async (t) => {
   const dir = makeRepo(t, { plan: BIG, fake: { replies: ['Shortened.\nAM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
@@ -348,6 +367,12 @@ test('a compaction that breaks the plan, ends without its marker or runs over ti
     [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': `${SHORT}${FILLER}` }] }, /still about \d+ tokens, above 13000/],
     [{ replies: ['Shortened.', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] }, /without an AM_STAGE line/],
     [{ replies: ['AM_STAGE: BLOCKED', 'AM_STAGE: DONE'] }, /said BLOCKED/],
+    // A well shortened plan, but the request was touched too: the whole compaction is undone.
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT, '.am/demo/request.md': 'Fix it' }] }, /request\.md was changed/],
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT, '.am/demo/request.md': '' }] }, /request\.md was changed/],
+    [{ replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }], removes: [['.am/demo/request.md']] }, /request\.md was changed/],
+    // Whatever the failure was, a touched request is put back.
+    [{ replies: ['AM_STAGE: BLOCKED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/request.md': 'Fix it' }] }, /said BLOCKED/],
   ];
   for (const [fake, why] of cases) {
     const dir = makeRepo(t, { plan: BIG, fake });
@@ -356,15 +381,55 @@ test('a compaction that breaks the plan, ends without its marker or runs over ti
     assert.deepEqual(Object.keys(result.compacted), ['files', 'failed']);
     assert.match(result.compacted.failed, why);
     assert.equal(plan(dir), BIG, `original back: ${why}`);
+    assert.equal(request(dir), 'Fix the typo', `request as it was: ${why}`);
     assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'plan.orig-1.md')), `copy removed: ${why}`);
     assert.doesNotMatch(readFileSync(path.join(dir, '.am', 'demo', 'stage-do.system.md'), 'utf8'), /shortened/);
     assert.equal(calls.length, 2);
   }
   const slow = makeRepo(t, { plan: BIG, fake: { hang: [1], replies: ['', 'AM_STAGE: DONE'] } });
-  const { result } = await run(slow, ['do', 'demo'], { timeoutMin: { ...TIMEOUT_MIN, compact: 0.005 } });
+  const { result } = await run(slow, ['do', 'demo'], { timeoutMin: { compact: 0.005 } });
   assert.equal(result.status, 'DONE');
   assert.match(result.compacted.failed, /no end within/);
   assert.equal(plan(slow), BIG);
+});
+
+test('the plan stage starts no compaction session: neither a long request nor a large plan is shortened', async (t) => {
+  // A large plan.md is there when the plan stage runs again, after a question was answered.
+  for (const planText of [undefined, SMALL, BIG]) {
+    const dir = makeRepo(t, { plan: planText, request: FILLER, fake: { replies: ['Planned.\nAM_STAGE: READY'], write: planText ? {} : { '.am/demo/plan.md': SMALL } } });
+    assert.ok(estimateTokens(FILLER) > CONTEXT_LIMIT);
+    const { result, calls } = await run(dir, ['plan', 'demo']);
+    assert.equal(result.status, 'READY');
+    assert.equal(calls.length, 1);
+    assert.equal(flag(calls[0], '-p'), '/am:plan Read the request in .am/demo/request.md (slug demo)');
+    assert.equal(result.compacted, null);
+    assert.equal(request(dir), FILLER);
+    assert.equal(plan(dir), planText || SMALL, 'the plan is as the plan session left it');
+    for (const name of ['request.orig-1.md', 'plan.orig-1.md', 'stage-compact.system.md']) assert.ok(!existsSync(path.join(dir, '.am', 'demo', name)), name);
+  }
+});
+
+test('before a later stage a large plan is shortened with the request denied to the compaction session', async (t) => {
+  const dir = makeRepo(t, { plan: BIG, request: FILLER, fake: { replies: ['AM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  const { result, calls } = await run(dir, ['do', 'demo']);
+  assert.equal(result.status, 'DONE');
+  assert.equal(calls.length, 2);
+  assert.equal(flag(calls[0], '--disallowedTools'), 'AskUserQuestion,Edit(/.am/demo/request.md),Edit(.am/demo/request.md)');
+  assert.deepEqual(result.compacted, { files: ['.am/demo/plan.md'], before: estimateTokens(BIG), after: estimateTokens(SHORT), originals: ['.am/demo/plan.orig-1.md'] });
+  assert.equal(plan(dir), SHORT);
+  assert.equal(request(dir), FILLER);
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'request.orig-1.md')));
+  // The system prompt of the compaction session names plan.md only as a file to shorten.
+  assert.doesNotMatch(readFileSync(path.join(dir, '.am', 'demo', 'stage-compact.system.md'), 'utf8'), /^- \.am\/demo\/request\.md: about/m);
+});
+
+test('a request file the compaction session created is removed again', async (t) => {
+  const dir = makeRepo(t, { plan: BIG, request: null, fake: { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT, '.am/demo/request.md': 'new' }] } });
+  const { result } = await run(dir, ['do', 'demo']);
+  assert.equal(result.status, 'DONE');
+  assert.match(result.compacted.failed, /request\.md was changed/);
+  assert.equal(plan(dir), BIG);
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'request.md')));
 });
 
 test('within the limit no compaction session runs', async (t) => {
@@ -380,6 +445,16 @@ test('compactionProblem: check.md keeps its verdict', () => {
   assert.match(compactionProblem('check.md', 'Verdict: BLOCK\n', 'Verdict: NOTE\n'), /verdict BLOCK -> NOTE/);
   assert.match(compactionProblem('plan.md', 'x', ''), /deleted or emptied/);
   assert.match(compactionProblem('plan.md', '- OPEN card\n', '- card\n'), /OPEN marks 1 -> 0/);
+});
+
+test('compactionProblem: a heading of any level must stay', () => {
+  const before = '# p\n## 결정\n### 기본값 적용\n- a\n#### 세부\n- b\n';
+  assert.equal(compactionProblem('plan.md', before, before.replace('- a\n', '')), null);
+  assert.match(compactionProblem('plan.md', before, before.replace('# p\n', '')), /heading lost: # p/);
+  assert.match(compactionProblem('plan.md', before, before.replace('### 기본값 적용\n', '')), /heading lost: ### 기본값 적용/);
+  assert.match(compactionProblem('plan.md', before, before.replace('#### 세부\n', '')), /heading lost: #### 세부/);
+  // A changed level is a lost heading too.
+  assert.match(compactionProblem('plan.md', before, before.replace('### 기본값 적용', '## 기본값 적용')), /heading lost: ### 기본값 적용/);
 });
 
 test('compactionProblem: a verdict label wins over an earlier opposite word', () => {
