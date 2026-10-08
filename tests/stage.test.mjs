@@ -82,6 +82,13 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.ok(commit.allow.includes('Bash(git commit *)') && commit.deny.includes('Bash(git push *)') && !commit.allow.includes('Bash(git push *)'));
   const pushed = permissions('commit', { push: true });
   assert.ok(pushed.allow.includes('Bash(git push *)') && !pushed.deny.includes('Bash(git push *)'));
+  // With the slug, the commit stage may also write that task's commit record, and no other file.
+  assert.ok(!commit.allow.some((r) => r.startsWith('Edit')));
+  const recorded = permissions('commit', { slug: 'demo' });
+  assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)']);
+  assert.deepEqual(recorded.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
+  assert.deepEqual(recorded.deny, commit.deny);
+  assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says; that is the only file this session can write/);
   const hand = permissions('handover', { orchRoot: '/orch' });
   assert.ok(hand.allow.includes('Bash(node "/orch/scripts/orchestrator.mjs" *)') && hand.allow.includes('Bash(git merge --ff-only *)') && hand.allow.includes('Edit(/.orchestrator/**)'));
   assert.ok(!hand.allow.includes('Bash') && hand.deny.includes('Bash(git push *)'));

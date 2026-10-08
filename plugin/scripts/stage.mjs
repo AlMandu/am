@@ -133,7 +133,8 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
       // Reads the memory folder outside the repository; writes only the proposal under .am/. A deny rule wins over any allowance, so memory is never changed here.
       return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)']), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
     case 'commit':
-      return { mode: 'dontAsk', allow: sh([...read, ...gitRead, 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
+      // The only file it may write is the task's commit record, which the am:merge skill reads.
+      return { mode: 'dontAsk', allow: sh([...read, ...gitRead, ...(slug ? [`Edit(/.am/${slug}/commits.md)`, `Edit(.am/${slug}/commits.md)`] : []), 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'compact':
       // Shortens task files under .am/ before a stage; nothing else. The request is denied, which wins over the allowance.
       return { mode: 'dontAsk', allow: [...read, ...edit('.am')], deny: [...noHuman, ...(slug ? [`Edit(/.am/${slug}/request.md)`, `Edit(.am/${slug}/request.md)`] : [])] };
@@ -202,6 +203,7 @@ const STAGE_RULES = {
 - ${MARK('compactmem')}`,
   commit: (slug, { push }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
+- After each commit, record it in .am/${slug}/commits.md as the skill says; that is the only file this session can write.
 - If the gate could not run (status \`error\`, or \`node\` missing), commit but do not push, and say why.
 - If a hook rejects the commit, do not bypass it and do not retry another way; copy what it printed into your reply.
 - Run each git command on its own from the repository root: no cd, no pipes, no chains, no heredoc; use several -m flags for several paragraphs.
@@ -601,7 +603,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });
   result.costUsd = compaction.costUsd;
   const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
-  const perm = permissions(kind, { push, amRoot, orchRoot, memDir });
+  const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug });
   const { prompt, system } = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
   const pluginDir = pluginDirFor(amRoot, env);
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;

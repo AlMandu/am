@@ -161,6 +161,23 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   assert.match(auto, new RegExp(`about ${limits[1]} files and work that a faithful plan of at most ${limits[2]} lines can cover`));
 });
 
+test('am:merge reads the run records and the lock only through what is pinned here', () => {
+  const merge = amSkill('merge');
+  // Where the run's tasks and their commits live, and what one commit entry starts with.
+  assert.match(SCRIPT, /const ORCH_DIR = '\.orchestrator';/);
+  assert.match(SCRIPT, /ctx\.runDir = path\.join\(orch, 'runs', ctx\.runId\);/);
+  assert.match(SCRIPT, /ctx\.stateFile = path\.join\(ctx\.runDir, 'state\.json'\);/);
+  assert.match(SCRIPT, /tasks: \{\}/);
+  assert.match(SCRIPT, /const newTaskState = \(\) => \(\{[^\n]*commits: \[\] \}\);/);
+  assert.match(SCRIPT, /const commitsSince = [^\n]*'--format=%h %s'/);
+  assert.match(SCRIPT, /c\.split\(' '\)\[0\]/);
+  assert.match(SCRIPT, /const lockFile = \(repo\) => path\.join\(repo, ORCH_DIR, 'lock\.json'\);/);
+  // The hand-over line am:merge looks for carries the run's id.
+  assert.match(amSkill('auto'), /log in one Change log line that it went to the am-orchestrator run skill, with `run\.id`/);
+  assert.match(RUN[1], /\bid:/);
+  for (const s of ['.orchestrator/runs/<run>/state.json', '`tasks.*.commits`', 'the first word of each entry is a hash', '.orchestrator/lock.json', 'a hand-over to am-orchestrator with a run ID']) assert.ok(merge.includes(s), s);
+});
+
 test('the am stage runner hands a large plan to the run skill only through what is pinned here', async () => {
   const { instructions, permissions } = await import('../plugin/scripts/stage.mjs');
   const hook = read('plugin', 'hooks', 'handover.mjs');

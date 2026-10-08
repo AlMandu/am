@@ -44,6 +44,7 @@ Notes: $ARGUMENTS
 5. Run `git add <files>` and `git commit` without asking again. The commit gate runs before each commit:
    - If it blocks, report the failing command and the tail of its output, do not bypass it, and stop.
    - If `am-gate.json` exists at the repository root but no "am gate: pass" line came back, tell the user in one line that the gate hook did not run (in Codex, trust the hook from the hooks list; check that `node` is installed).
+   - After each commit, when the task has a folder and your instructions do not say you are running inside am-orchestrator, append `<full hash> <subject>` as one line to `.am/<slug>/commits.md` with the Write or Edit tool (create it if missing; no shell redirection). The am:merge skill reads it.
 6. Push only in push mode, and only if no commit was blocked or failed. With nothing to commit, push mode still pushes the existing local commits.
    - First list the commits that will go out (`git log --oneline @{u}..HEAD`; without an upstream, the commits not on any remote branch) and say if any were not made in this run.
    - Run `git push` to the branch's upstream; without one, `git push -u origin <branch>`. With no remote or a detached HEAD, do not push and say why.
