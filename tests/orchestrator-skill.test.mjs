@@ -226,3 +226,77 @@ test('stages that never push deny both git push rules in both runners', async ()
   const orch = defaults().permissions;
   for (const stage of ['implement', 'check', 'commit']) denies(orch[stage], `orchestrator ${stage}`);
 });
+
+test('the progress command takes no lock, is in the usage text, and its section imports nothing from am and reads no environment', () => {
+  assert.ok(SCRIPT.includes("case 'progress':"));
+  // The commands that take the lock: progress must run next to them.
+  const locking = /\[([^\]]*)\]\.includes\(cmd\)/.exec(SCRIPT);
+  assert.ok(locking, 'the list of locking commands');
+  assert.deepEqual([...locking[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]), ['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done']);
+  const usage = /const USAGE = `([\s\S]*?)`;/.exec(SCRIPT);
+  assert.ok(usage && usage[1].split('\n').some((line) => line.trim().startsWith('progress ')), 'usage has a progress line');
+  // The orchestrator is installed without am: only Node's own modules, and no import at run time.
+  const imports = [...SCRIPT.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.equal(imports.length, SCRIPT.match(/^import /gm).length, 'an import of another form: check its target here');
+  for (const target of imports) assert.ok(target.startsWith('node:'), target);
+  assert.ok(!/\bimport\(/.test(SCRIPT));
+  const section = /\n\/\/ -+ 진행 소식 기다리기\n([\s\S]*?)\n\/\/ -+ 진입점\n/.exec(SCRIPT);
+  assert.ok(section, 'the progress section');
+  assert.ok(!section[1].includes('process.env'));
+});
+
+test('the same event lines give the same output from the am wait command and the orchestrator one', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const { DEFAULTS, wait } = await import('../plugin/scripts/progress.mjs');
+  const { PROGRESS_DEFAULTS, waitProgress } = await import('../orchestrator/scripts/orchestrator.mjs');
+  assert.deepEqual(PROGRESS_DEFAULTS, DEFAULTS);
+  const T0 = Date.parse('2026-10-08T00:00:00.000Z');
+  const LIVE = 4242;
+  const alive = (pid) => pid === LIVE;
+  const line = (fields) => `${JSON.stringify({ t: new Date(T0).toISOString(), ...fields })}\n`;
+  const start = line({ ev: 'start', text: 'run started', pid: LIVE, stage: 'run' });
+  const cases = {
+    'a live start, a step and a note': start + line({ ev: 'step', text: 'T01 plan started', task: 'T01', stage: 'plan' }) + line({ ev: 'note', text: 'plan session ended' }),
+    'an alert': start + line({ ev: 'alert', text: 'T01 blocked', task: 'T01', status: 'blocked' }),
+    'ends with an end': start + line({ ev: 'step', text: 'T01 done', status: 'done' }) + line({ ev: 'end', text: 'done 1 of 1', status: 'done', min: 3 }),
+    'a start with a dead pid': line({ ev: 'start', text: 'run started', pid: 1, stage: 'run' }),
+    'a start without a pid': line({ ev: 'start', text: 'run started', stage: 'run' }),
+    'lines that are no events and an unfinished last line': `not json\n[1]\n${start}{"ev":"other","text":"x"}\r\n${line({ ev: 'alert', text: '막힘  é' })}{"t":"x","ev":"alert","te`,
+    'a do stage that was handed over': line({ ev: 'start', text: 'do stage started', pid: LIVE, stage: 'do' }) + line({ ev: 'note', text: 'handed over', stage: 'handover' }),
+    'no file': null,
+  };
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-same-'));
+  try {
+    for (const [name, bytes] of Object.entries(cases)) {
+      const dir = fs.mkdtempSync(path.join(base, 'c-'));
+      const am = path.join(dir, '.am', 'x');
+      const orch = path.join(dir, '.orchestrator', 'runs', 'x');
+      if (bytes !== null) {
+        for (const folder of [am, orch]) {
+          fs.mkdirSync(folder, { recursive: true });
+          fs.writeFileSync(path.join(folder, 'progress.jsonl'), bytes);
+        }
+      }
+      const cursorOf = (folder) => (fs.existsSync(path.join(folder, 'progress.terminal.cursor')) ? fs.readFileSync(path.join(folder, 'progress.terminal.cursor'), 'utf8') : null);
+      // One wait on a virtual clock that only sleep moves: what it printed, and how long it took.
+      const one = async (fn) => {
+        let t = T0;
+        const writes = [];
+        const code = await fn({ now: () => t, sleep: async (ms) => void (t += ms), alive, out: { write: (s) => writes.push(s) } });
+        return { code, out: writes.join(''), took: t - T0 };
+      };
+      // The second round starts from the moved cursors.
+      for (const round of [1, 2]) {
+        const a = await one((o) => wait({ events: path.join(am, 'progress.jsonl'), cursor: path.join(am, 'progress.terminal.cursor'), plan: path.join(am, 'plan.md') }, o));
+        const b = await one((o) => waitProgress(dir, { run: 'x', ...o }));
+        assert.match(a.out, /(^|\n)state: (ended|running \(.+, \d+ min\))\n$/, `${name}, round ${round}`);
+        assert.deepEqual(b, a, `${name}, round ${round}`);
+        assert.equal(cursorOf(orch), cursorOf(am), `${name}, round ${round}: cursor`);
+      }
+      if (name.includes('handed over')) assert.equal(cursorOf(orch), String(Buffer.byteLength(bytes)));
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+  }
+});

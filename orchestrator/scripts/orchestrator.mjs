@@ -1595,14 +1595,14 @@ async function runTask(ctx, t) {
 const lockFile = (repo) => path.join(repo, ORCH_DIR, 'lock.json');
 
 /** 살아 있는 잠금이면 그 내용, 없거나 주인이 죽었으면 null. */
-function readLock(repo) {
+function readLock(repo, alive = pidAlive) {
   let lock;
   try {
     lock = readJson(lockFile(repo));
   } catch {
     return null;
   }
-  return pidAlive(lock?.pid) ? lock : null;
+  return alive(lock?.pid) ? lock : null;
 }
 
 function acquireLock(repo, command, run) {
@@ -2505,6 +2505,219 @@ async function cmdRun(repo, opt) {
   if (count('done') !== total) process.exitCode = 1;
 }
 
+// ------------------------------------------------------------------ 진행 소식 기다리기
+
+// am 의 대기 명령(plugin/scripts/progress.mjs)과 같은 규격이다: 같은 이벤트 줄에는 같은 출력을 낸다.
+// am 과 따로 설치되므로 그 파일을 import 하지 않고 다시 쓴다. 시간 값은 모두 인자로 받는다.
+export const PROGRESS_DEFAULTS = { batchMs: 30000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
+const PROGRESS_EVENTS = ['start', 'step', 'note', 'alert', 'end'];
+const PROGRESS_SHOWN = ['stage', 'task', 'status', 'min', 'src'];
+const PROGRESS_ENDED = 'state: ended';
+const PROGRESS_USAGE = 'usage: node orchestrator.mjs progress [--run <run>] [--consumer <name>]';
+const oneLine = (v) => String(v).replace(/\s+/g, ' ').trim();
+
+function parseProgressLine(line) {
+  try {
+    const e = JSON.parse(line);
+    return isObj(e) && PROGRESS_EVENTS.includes(e.ev) && typeof e.text === 'string' ? e : null;
+  } catch {
+    return null;
+  }
+}
+
+// 이벤트 파일을 한 번 읽는다: 줄바꿈으로 끝난 줄과 그 바이트 위치. 없는 파일은 빈 파일, 다른 읽기 오류는 null(이번 확인은 변화 없음)
+function scanProgress(file) {
+  let buf;
+  try {
+    buf = readFileSync(file);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') return null;
+    buf = Buffer.alloc(0);
+  }
+  const items = [];
+  let pos = 0;
+  for (let nl = buf.indexOf(10, pos); nl >= 0; nl = buf.indexOf(10, pos)) {
+    const line = buf.toString('utf8', pos, nl).replace(/\r$/, '');
+    const e = parseProgressLine(line);
+    if (e) items.push({ event: e, pos, line });
+    pos = nl + 1;
+  }
+  return { items, next: pos, size: buf.length };
+}
+
+// 커서부터의 줄. 커서보다 짧은 파일은 다시 쓰인 것이라 처음부터 읽는다
+function unreadProgress(snap, offset) {
+  const from = offset > snap.size ? 0 : offset;
+  return { items: snap.items.filter((i) => i.pos >= from), next: Math.max(from, snap.next) };
+}
+
+/** 이벤트 하나의 출력 줄. pid 와 모르는 필드는 내지 않는다. */
+function progressLine(e) {
+  const fields = PROGRESS_SHOWN.filter((k) => e[k] !== undefined && e[k] !== null && oneLine(e[k]) !== '').map((k) => `${k}=${oneLine(e[k])}`);
+  return `${e.ev}: ${oneLine(e.text)}${fields.length ? ` [${fields.join(' ')}]` : ''}`;
+}
+
+// 마지막 start 의 명령이 아직 돌고 있으면 그 start, 아니면 null: 뒤에 end 가 있거나 pid 가 양의 정수가 아니거나 죽었으면 끝난 것
+function runningStart(events, alive) {
+  const at = events.map((e) => e.ev).lastIndexOf('start');
+  if (at < 0) return null;
+  const start = events[at];
+  const after = events.slice(at + 1);
+  if (after.some((e) => e.ev === 'end')) return null;
+  if (!Number.isInteger(start.pid) || start.pid <= 0 || !alive(start.pid)) return null;
+  return { start, handover: after.some((e) => e.ev === 'note' && e.stage === 'handover') };
+}
+
+function progressState(running, nowMs) {
+  if (!running) return PROGRESS_ENDED;
+  const { start, handover } = running;
+  const what = handover ? 'handover' : oneLine(typeof start.stage === 'string' && start.stage ? start.stage : start.text);
+  const min = Math.max(0, Math.floor((nowMs() - Date.parse(start.t)) / 60000)) || 0;
+  return `state: running (${what}, ${min} min)`;
+}
+
+function readCursor(file) {
+  try {
+    const text = readFileSync(file, 'utf8');
+    return /^\d+$/.test(text) ? Number(text) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function sizeOf(file) {
+  try {
+    return statSync(file).size;
+  } catch (err) {
+    return err && err.code === 'ENOENT' ? 0 : Infinity;
+  }
+}
+
+// 커서를 임시 파일로 바꿔 넣는다. 뒤로 옮기지 않는다(이벤트 파일이 커서보다 짧아졌을 때만 예외)
+function saveCursor(file, next, events) {
+  const at = readCursor(file);
+  if (at > next && at <= sizeOf(events)) return;
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, String(next));
+    renameSync(tmp, file);
+  } catch {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* 같은 줄이 다음에 한 번 더 나온다 */
+    }
+  }
+}
+
+async function progressLoop(repo, o) {
+  const began = o.now();
+  let followed = ''; // 이 대기가 잠금으로 마지막에 고른 실행: 잠금이 사라진 뒤에도 그 실행의 end 를 읽는다
+  // 따라갈 실행을 확인할 때마다 다시 고른다: --run → 살아 있는 잠금 → 따라가던 실행 → current
+  const pick = () => {
+    if (o.run) return { run: o.run, by: 'run' };
+    const lock = readLock(repo, o.alive);
+    if (lock && typeof lock.run === 'string' && lock.run) followed = lock.run;
+    if (followed) return { run: followed, by: 'lock' };
+    const run = currentRun(repo);
+    return { run, by: run ? 'current' : 'none' };
+  };
+  // 확인 한 번: 고른 실행의 이벤트 파일을 한 번 읽어 읽지 않은 줄과 상태를 함께 얻는다. 실행이 없으면 빈 파일처럼 다룬다
+  const look = () => {
+    const { run, by } = pick();
+    const dir = path.join(repo, ORCH_DIR, 'runs', run);
+    const events = path.join(dir, 'progress.jsonl');
+    const cursor = path.join(dir, `progress.${o.consumer}.cursor`);
+    const snap = run ? scanProgress(events) : { items: [], next: 0, size: 0 };
+    if (!snap) return null;
+    const { items, next } = unreadProgress(snap, run ? readCursor(cursor) : 0);
+    const last = snap.items.filter((i) => i.event.ev === 'start').pop();
+    return { run, by, events, cursor, unread: items, next, running: runningStart(snap.items.map((i) => i.event), o.alive), lastStart: last ? `${last.pos}:${last.line}` : '' };
+  };
+  const emit = (snap, items) => {
+    o.out.write([...items.map((i) => progressLine(i.event)), snap ? progressState(snap.running, o.now) : PROGRESS_ENDED].map((l) => `${l}\n`).join(''));
+    if (items.length) saveCursor(snap.cursor, snap.next, snap.events);
+    return 0;
+  };
+  const has = (snap, kinds) => snap.unread.some((i) => kinds.includes(i.event.ev));
+
+  let good = null; // 파일을 읽을 수 있었던 마지막 확인
+  let phase; // 읽기에 성공한 첫 확인 전에는 undefined, 그 뒤 'start'(새 start 를 기다림) 또는 'normal'
+  const seen = new Map(); // 실행 이름 → 처음 본 마지막 start. 그 실행의 옛 start 를 새것으로 잘못 읽지 않게 한다
+  let batchAt = null;
+  for (;;) {
+    const t = o.now();
+    const snap = look();
+    if (snap) {
+      if (phase === 'normal' && good && good.run !== snap.run) batchAt = null;
+      good = snap;
+      if (phase !== 'normal') {
+        // 잠금은 새 start 보다 먼저 잡히므로 잠금으로 처음 고른 실행은 기억만 한다. current 는 split 이 끝날 때만 바뀐다
+        if (snap.running) phase = 'normal';
+        else if (phase === 'start' && seen.has(snap.run) && snap.lastStart && snap.lastStart !== seen.get(snap.run)) phase = 'normal';
+        else if (phase === 'start' && !seen.has(snap.run) && snap.by === 'current' && snap.lastStart) phase = 'normal';
+        else {
+          if (!seen.has(snap.run)) seen.set(snap.run, snap.lastStart);
+          phase = 'start';
+        }
+      }
+      if (phase === 'start') {
+        if (t - began >= o.startWaitMs) return emit(snap, snap.unread);
+      } else {
+        if (!snap.running || has(snap, ['alert', 'end'])) return emit(snap, snap.unread);
+        if (has(snap, ['step', 'start'])) {
+          batchAt ??= t;
+          if (t - batchAt >= o.batchMs) return emit(snap, snap.unread);
+        } else {
+          batchAt = null; // 같은 소비자의 다른 대기가 그 묶음을 가져갔다
+        }
+      }
+    }
+    if (t - began >= o.maxLifeMs) return emit(good, good && batchAt !== null ? good.unread : []);
+    if (batchAt === null && t - began >= o.quietMs) return emit(good, []);
+    const deadlines = [began + o.maxLifeMs];
+    if (phase === 'start') deadlines.push(began + o.startWaitMs);
+    if (batchAt !== null) deadlines.push(batchAt + o.batchMs);
+    else deadlines.push(began + o.quietMs);
+    const left = deadlines.map((d) => d - t).filter((ms) => ms > 0);
+    await o.sleep(Math.min(o.pollMs, ...left));
+  }
+}
+
+/**
+ * 소비자가 아직 못 본 소식을 기다렸다가 상태 줄과 함께 내고 0 을 돌려준다(어떤 오류에도 던지지 않는다).
+ * opts: run, consumer(기본 terminal), PROGRESS_DEFAULTS 의 값들, now, sleep(ms), alive(pid), out.
+ */
+export async function waitProgress(repo, opts = {}) {
+  try {
+    const given = Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined));
+    return await progressLoop(repo, { ...PROGRESS_DEFAULTS, run: '', consumer: 'terminal', now: Date.now, sleep: (ms) => new Promise((res) => setTimeout(res, ms)), alive: pidAlive, out: process.stdout, ...given });
+  } catch {
+    return 0;
+  }
+}
+
+/** progress 명령. 잘못 부르면 이유·사용법·`state: ended` 를 내고 종료 코드 1, 받아들인 대기는 무슨 일이 있어도 0. 저장소 검사와 잠금 없이 돈다. */
+async function cmdProgress(repo, extra, opt) {
+  const bad = (why) => {
+    process.stdout.write(`${why}\n${PROGRESS_USAGE}\n${PROGRESS_ENDED}\n`);
+    process.exitCode = 1;
+  };
+  const unknown = Object.keys(opt).find((k) => !['repo', 'run', 'consumer'].includes(k));
+  if (unknown !== undefined) return bad(`unknown option: --${oneLine(unknown)}`);
+  if (extra.length) return bad(`unexpected argument: ${oneLine(extra[0])}`);
+  for (const k of ['repo', 'run', 'consumer']) if (k in opt && typeof opt[k] !== 'string') return bad(`--${k} needs a value`);
+  const consumer = 'consumer' in opt ? opt.consumer : 'terminal';
+  if (!/^[a-z0-9-]+$/.test(consumer)) return bad(`invalid consumer name: ${oneLine(consumer)}`);
+  if ('run' in opt && (!opt.run.trim() || ['.', '..'].includes(opt.run) || /[\\/]/.test(opt.run))) return bad(`invalid run name: ${oneLine(opt.run)}`);
+  try {
+    await waitProgress(repo, { run: opt.run, consumer });
+  } catch {
+    /* 받아들인 대기는 부른 쪽을 실패시키지 않는다 */
+  }
+  return undefined;
+}
+
 // ------------------------------------------------------------------ 진입점
 
 const USAGE = `am-orchestrator: 설계 문서를 작업으로 나누고 작업마다 am 의 plan → do → check → commit 을 돌립니다.
@@ -2516,6 +2729,8 @@ const USAGE = `am-orchestrator: 설계 문서를 작업으로 나누고 작업�
                             claude, am 플러그인, 스킬, 게이트를 확인합니다
   split <설계문서>           설계 문서를 작업 목록(tasks.json)으로 나눕니다
   status [--json]           작업별 상태를 봅니다. --json 은 다음에 할 일(next)과 답할 결정·막힌 작업을 구조로 냅니다
+  progress [--consumer <이름>]
+                            새 진행 소식을 기다렸다가 출력하고 끝납니다(최대 8분 30초). 다른 명령이 도는 중에도 됩니다
   decide <결정ID> "<답>"     작업 목록에 딸린 결정에 답합니다
   run [--dry-run] [--only <작업ID>] [--max-tasks N]
                             진행할 수 있는 작업을 돌립니다. 서로 무관한 작업은 동시에(중단된 곳부터 이어 감)
@@ -2525,7 +2740,7 @@ const USAGE = `am-orchestrator: 설계 문서를 작업으로 나누고 작업�
   done <작업ID>              사람이 직접 끝낸 작업을 완료로 표시합니다
   sessions [<N> | default]  이 PC 에서 모든 실행을 합쳐 동시에 돌릴 claude 세션 수를 보거나 바꿉니다(기본 ${DEFAULT_MAX_SESSIONS}). 저장소와 상관없음`;
 
-const VALUE_FLAGS = new Set(['repo', 'run', 'only', 'max-tasks', 'from']);
+const VALUE_FLAGS = new Set(['repo', 'run', 'only', 'max-tasks', 'from', 'consumer']);
 
 export function parseArgs(argv) {
   const pos = [];
@@ -2560,6 +2775,8 @@ async function main(argv) {
       return cmdSplit(repo, a, opt);
     case 'status':
       return cmdStatus(repo, opt);
+    case 'progress':
+      return cmdProgress(repo, pos.slice(1), opt);
     case 'decide':
       return cmdDecide(repo, a, rest.join(' '), opt);
     case 'answer':
