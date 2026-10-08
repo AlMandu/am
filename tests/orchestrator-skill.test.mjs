@@ -65,7 +65,7 @@ test('the run skill follows the am skill rules: same common block, size limit, u
 
 test('the skill and the script agree on commands and on every "next" value', () => {
   const commands = [...SKILL.matchAll(/^\| `([a-z]+)[ `]/gm)].map((m) => m[1]);
-  assert.deepEqual(commands, ['doctor', 'split', 'status', 'decide', 'answer', 'run', 'retry', 'done', 'sessions']);
+  assert.deepEqual(commands, ['doctor', 'split', 'status', 'progress', 'decide', 'answer', 'run', 'retry', 'done', 'sessions']);
   for (const c of commands) assert.ok(SCRIPT.includes(`case '${c}':`), `script has no "${c}" command`);
   const doc = / \* next: ([a-z| -]+)\n/.exec(SCRIPT);
   assert.ok(doc, 'the script documents its next values');
@@ -277,6 +277,29 @@ test('the progress command takes no lock, is in the usage text, and its section 
   const section = /\n\/\/ -+ 진행 소식 기다리기\n([\s\S]*?)\n\/\/ -+ 진입점\n/.exec(SCRIPT);
   assert.ok(section, 'the progress section');
   assert.ok(!section[1].includes('process.env'));
+});
+
+test('the run skill starts the progress command next to split, answer and run', async () => {
+  const rules = /\nRules while driving:\n([\s\S]*?)\n## Steps\n/.exec(SKILL);
+  assert.ok(rules, 'the Rules while driving block');
+  const items = rules[1].split('\n').filter((l) => l.includes('`progress --consumer main`'));
+  assert.equal(items.length, 1, 'one rule names the progress command');
+  for (const name of ['split', 'answer', 'run', 'doctor', 'status --json']) assert.ok(items[0].includes(`\`${name}\``), name);
+  // The skill reads this line and does not start the progress command again.
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const { waitProgress } = await import('../orchestrator/scripts/orchestrator.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-ended-'));
+  try {
+    let t = Date.parse('2026-10-08T00:00:00.000Z');
+    const writes = [];
+    const code = await waitProgress(dir, { consumer: 'main', now: () => t, sleep: async (ms) => void (t += ms), alive: () => false, out: { write: (s) => writes.push(s) } });
+    assert.equal(code, 0);
+    assert.equal(writes.join(''), 'state: ended\n');
+    assert.ok(rules[1].includes('`state: ended`'), 'the rule names the state line');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
 });
 
 test('the same event lines give the same output from the am wait command and the orchestrator one', async () => {

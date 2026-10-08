@@ -46,6 +46,7 @@ Run it from the repository root: `node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrat
 | `doctor` | checks the claude command, the am plugin and the gate; creates the config on first use |
 | `split <file>` | turns the design document into a task list |
 | `status --json` | the state, and what to do next |
+| `progress --consumer main` | waits for news of the running command, prints the lines not yet reported and one state line, then ends by itself (within 9 minutes) |
 | `decide <id> "<answer>"` | records the answer to a decision from the task list |
 | `answer <task> "<answer>"` | answers a question that a task's plan raised and finishes that plan |
 | `run` | runs every task that can run, unrelated ones at the same time; resumes where it stopped |
@@ -54,7 +55,8 @@ Run it from the repository root: `node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrat
 | `sessions [<N>\|default]` | shows or sets how many `claude` sessions the orchestrator may run at once on this PC, across all runs; `default` goes back to the built-in value |
 
 Rules while driving:
-- `doctor`, `split`, `answer` and `run` start builds or model sessions and take minutes to hours. Start each one in the background, tell the user in one line that it is running, and go on when its completion notice arrives. Do not poll in a loop. Never start a command while another is running; the script refuses a second one. `sessions` is the exception: it may run at any time, and a new limit applies from the next session any run starts.
+- `doctor`, `split`, `answer` and `run` start builds or model sessions and take minutes to hours. Start each one in the background, tell the user in one line that it is running, and go on when its completion notice arrives. Do not poll in a loop. Never start a command while another is running; the script refuses a second one. `sessions` and `progress` are the exceptions: they may run at any time, and a new `sessions` limit applies from the next session any run starts.
+- Progress news: right after starting `split`, `answer` or `run` (not `doctor`), also start `progress --consumer main` in the background (the progress command); it only reads. Each time it ends, tell the user what it printed in one or two plain lines (a bare `state: ended` needs no line), then stop if its last line is `state: ended` or the command it followed has already ended; otherwise start it again (this restart is not the polling forbidden above). Its notice is never the completion notice of the command it follows: at its notice start no other command, and wait for that command's own notice before you act. Never report late news of a command whose result you already handled, and never choose what to do next from this output: `status --json` decides.
 - While `split` or `run` is running, other sessions are changing this repository and its worktrees under `.orchestrator/wt/`. Do not edit, stage, commit, stash or switch branches, and do not open the project in an editor that the gate builds with.
 - After every command read `status --json` and act on its `next` field. It is the only source of truth: under `.orchestrator/` edit nothing but `config.json`, in step 3 `tasks.json`, and in step 4 the plan.md of a task blocked on a split choice.
 - Never push or merge. Do not use the am skills yourself on these tasks; the script runs them.
