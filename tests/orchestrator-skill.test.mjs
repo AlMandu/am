@@ -1,14 +1,15 @@
 // Run: node --test tests/orchestrator-skill.test.mjs
 // The am-orchestrator plugin (orchestrator/): its manifest, its one skill, and the parts of the am plugin its script relies on.
 // Also the other direction: what am:auto relies on when it hands a large task to the run skill.
-// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial.
+// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load, STAGE_SKILLS } from '../scripts/models.mjs';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
+import { makeRepo } from './orchestrator-helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
@@ -177,6 +178,39 @@ test('the am stage runner hands a large plan to the run skill only through what 
   const system = instructions('handover', 'x').system;
   readsStatusLikeAuto(system);
   assert.match(system, /Its rule never to merge or push covers its own flow only/);
+});
+
+test('the am stage runner copies the events a real split writes, from the path the orchestrator uses', async () => {
+  const { runRelay, instructions } = await import('../plugin/scripts/stage.mjs');
+  const { readFrom } = await import('../plugin/scripts/progress.mjs');
+  const r = makeRepo();
+  const doctor = r.orch('doctor');
+  assert.equal(doctor.code, 0, doctor.out);
+  mkdirSync(path.join(r.repo, '.am', 'x'), { recursive: true });
+  writeFileSync(path.join(r.repo, '.am', '.gitignore'), '*\n');
+  // Made before the split, as in a new hand-over: no current run yet.
+  const relay = runRelay(r.repo, 'x');
+  const split = r.orch('split', path.join(r.repo, 'docs', 'design.md'));
+  assert.equal(split.code, 0, split.out);
+  relay();
+  const copied = () => readFrom(path.join(r.repo, '.am', 'x', 'progress.jsonl'), 0).events;
+  const list = copied();
+  assert.ok(list.length >= 1);
+  assert.equal(list.length, readFrom(path.join(r.runDir(), 'progress.jsonl'), 0).events.length);
+  for (const e of list) {
+    assert.equal(e.src, 'run', e.text);
+    assert.ok(e.ev !== 'start' && e.ev !== 'end' && !('pid' in e), e.text);
+  }
+  assert.deepEqual([list[0].ev, list[0].stage, list[0].text], ['step', 'split', 'split started']);
+  assert.ok(list.at(-1).text.startsWith('split into 3 tasks'), list.at(-1).text);
+  assert.equal(list.at(-1).status, 'done');
+  // A resumed hand-over starts at the end of what the run already wrote.
+  runRelay(r.repo, 'x', { resume: true })();
+  assert.equal(copied().length, list.length);
+  assert.deepEqual(readdirSync(r.runDir()).filter((f) => f.endsWith('.cursor')), []);
+  // The command the hand-over session is told to leave alone exists in the script.
+  for (const resume of [true, false]) assert.ok(instructions('handover', 'x', { resume }).system.includes("Do not run the `progress` command of the run skill's script"), `resume ${resume}`);
+  assert.ok(SCRIPT.includes("case 'progress':"));
 });
 
 test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {

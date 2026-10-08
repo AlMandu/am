@@ -15,7 +15,8 @@
 // (originals kept as <name>.orig-<n>.md); `compacted` reports it. The request (request.md) is the user's own words: never
 // counted, never shortened. Nothing is shortened before the plan stage or a hand-over.
 // Each stage appends to .am/<slug>/progress.jsonl: `start` (pid, stage), a `note` for a compaction, a second ask or a
-// hand-over, and one `end` (status, min) on every way out; write errors are dropped (see progress.mjs).
+// hand-over, and one `end` (status, min) on every way out; write errors are dropped (see progress.mjs). During a hand-over
+// the news of the orchestrator run (.orchestrator/runs/<run>/progress.jsonl) is copied in as lines with `src: "run"`.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker. Exit codes: 0 result printed, 1 bad input.
@@ -28,7 +29,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
 import { findOrchestrator, readPlan, withinOneRun } from '../hooks/handover.mjs';
-import { appendEvent } from './progress.mjs';
+import { appendEvent, readFrom } from './progress.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,6 +38,8 @@ export const STAGES = ['plan', 'do', 'check', 'compactmem', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
 // A caller of main that gives only some of them gets the rest from here.
 export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compactmem: 20, commit: 25, compact: 15 };
+// How often a hand-over copies the run's new event lines into the task's event file.
+export const RELAY_MS = 5000;
 // End markers each session may give; anything else is `failed`.
 export const MARKS = {
   plan: ['READY', 'NEEDS_DECISION'],
@@ -181,6 +184,7 @@ const STAGE_RULES = {
 - ${resume ? 'The Change log of the plan already records the hand-over with a run ID. Check that `status --json` shows the same `run.id` (if not, end with AM_STAGE: BLOCKED and say why). If the log also records the merge, only the push below is left.' : 'Before `split`, note `run.id` from `status --json` (none if `run` is null). Once `split` has made the run (`run.id` present and not the noted one; otherwise end with AM_STAGE: BLOCKED and say why), log in one Change log line of the plan that it went to the am-orchestrator run skill, with `run.id` and the current branch as the start branch.'}
 - Its \`decide\` questions are scope or screen questions: decide them as above and pass each answer with \`decide\`. Its \`answer\` and \`blocked\` questions, and any question of its Prepare step, are stops: write the card into plan.md as above. When plan.md holds the user's answer to such a card, pass it to the run skill (\`answer\`, \`decide\`), or carry out exactly the action the answer names (for example write am-gate.json and commit it, or commit or stash the changes it names) and nothing more.
 - Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, check out the start branch and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits).
+- Do not run the \`progress\` command of the run skill's script, even where the skill says to start it: nobody reads this session, and the am stage runner copies the run's news into this task's event file itself.
 - In your final reply give: tasks done of all and the branch, \`costUsd\`, the human checklist of the report at \`run.report\` (shortened, with its path), and every line of \`autoDecided\`.
 - ${MARK('handover')}  HANDED means the run is done and merged${push ? ' and pushed' : ''}.`,
   check: (slug) => `This is the check stage for .am/${slug}/plan.md, with the am:check skill.
@@ -252,6 +256,59 @@ export function doKind(planText, { orchestrator = findOrchestrator, fix = false 
   if (!orchRoot) return { kind: 'do' };
   if (!info.scale) return { error: 'the plan has no Scale line (`Scale: N implementation runs, M commits` / `규모: 구현 N회, 커밋 M개`); add it to the Summary and run this stage again' };
   return { kind: 'handover', resume: false, orchRoot };
+}
+
+/**
+ * Returns a function that copies the new complete event lines of the orchestrator run a hand-over drives into the slug's
+ * event file, marked `src: 'run'`. A new hand-over follows the run that appears in .orchestrator/current, a resumed one the
+ * run named there from the end of its file. The position lives in memory only; the function never throws.
+ */
+export function runRelay(cwd, slug, { resume = false, now = Date.now } = {}) {
+  const fileOf = (run) => path.join(cwd, '.orchestrator', 'runs', run, 'progress.jsonl');
+  // '' without the file; undefined when it could not be read, which says nothing about the run.
+  const readCurrent = () => {
+    try {
+      return readFileSync(path.join(cwd, '.orchestrator', 'current'), 'utf8').trim();
+    } catch (err) {
+      return err && err.code === 'ENOENT' ? '' : undefined;
+    }
+  };
+  let noted = readCurrent();
+  let run = null;
+  let pos; // undefined: the end of the lines that were there is not known yet
+  const baseline = () => {
+    const r = readFrom(fileOf(run), 0);
+    if (!r.failed) pos = r.next;
+  };
+  if (resume && noted) {
+    run = noted;
+    baseline();
+  }
+  return () => {
+    try {
+      if (noted === undefined) {
+        noted = readCurrent();
+        if (noted === undefined) return;
+        if (resume && noted) run = noted;
+      }
+      if (!run) {
+        const current = readCurrent();
+        if (!current || current === noted) return;
+        run = current;
+        pos = 0;
+      }
+      if (pos === undefined) {
+        baseline();
+        return;
+      }
+      const r = readFrom(fileOf(run), pos);
+      if (r.failed) return;
+      for (const { pid, ...line } of r.events) appendEvent(cwd, slug, { ...line, ev: line.ev === 'start' || line.ev === 'end' ? 'step' : line.ev, src: 'run' }, { now });
+      pos = r.next;
+    } catch {
+      // Dropped on purpose, like a failed event write.
+    }
+  };
 }
 
 // ------------------------------------------------------------------ running claude
@@ -487,7 +544,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout, now = Date.now } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS } = {}) {
   const [stage, slug, ...flags] = argv;
   if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
     out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
@@ -513,9 +570,11 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const startedAt = now();
   const event = (fields) => appendEvent(cwd, slug, fields, { now });
   event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage });
+  let stopRelay = null; // set while a hand-over copies the run's events
   finish = ({ status, reason }) => {
     if (!finishers.has(finish)) return;
     finishers.delete(finish);
+    stopRelay?.();
     const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
     event({ ev: 'end', text: first || `${result.stage} stage ended`, stage: result.stage, status, min: Math.max(0, Math.floor((now() - startedAt) / 60000)) });
   };
@@ -562,6 +621,16 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     return { r, parsed };
   };
 
+  if (kind === 'handover') {
+    // Stopped in finish, which copies once more so that every copied line comes before the end event.
+    const relay = runRelay(cwd, slug, { resume: opts.resume, now });
+    const timer = setInterval(relay, relayMs);
+    timer.unref();
+    stopRelay = () => {
+      clearInterval(timer);
+      relay();
+    };
+  }
   const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir }));
   if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
   const problem = (x) => {

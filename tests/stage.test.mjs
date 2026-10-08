@@ -2,11 +2,12 @@
 // The am:auto stage runner: what each stage session may do, what it is told, and how its end is read.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt } from '../plugin/scripts/stage.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -628,4 +629,252 @@ test('events: a write error changes nothing for the stage', async (t) => {
   const { code, result } = await run(dir, ['plan', 'demo']);
   assert.equal(code, 0);
   assert.deepEqual({ ...result, reply: !!result.reply }, PLAN_RESULT);
+});
+
+// ------------------------------------------------------------------ hand-over: the run's events are copied
+
+const RUN_T = '2026-10-08T01:02:03.000Z';
+/** One event line as the orchestrator writes it into its run folder. */
+const runLine = (fields) => `${JSON.stringify({ t: RUN_T, ...fields })}\n`;
+const runFile = (dir, name) => path.join(dir, '.orchestrator', 'runs', name, 'progress.jsonl');
+const currentFile = (dir) => path.join(dir, '.orchestrator', 'current');
+/** Writes the event file of a run (null: only its folder) and, when given, .orchestrator/current. */
+function orchRun(dir, name, text, { current } = {}) {
+  mkdirSync(path.dirname(runFile(dir, name)), { recursive: true });
+  if (text !== null) writeFileSync(runFile(dir, name), text);
+  if (current !== undefined) writeFileSync(currentFile(dir), current);
+}
+const append = (dir, name, text) => writeFileSync(runFile(dir, name), text, { flag: 'a' });
+const relayed = (list) => list.filter((e) => e.src === 'run');
+const texts = (list) => list.map((e) => e.text);
+const slugBytes = (dir) => readFileSync(path.join(dir, '.am', 'demo', 'progress.jsonl'), 'utf8');
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (cond, ms = 10000) => {
+  const began = Date.now();
+  while (!cond() && Date.now() - began < ms) await pause(20);
+};
+const ORCH = { orchestrator: () => '/orch' };
+const OLD_LINES = runLine({ ev: 'start', text: 'old run started', pid: 1, stage: 'run' }) + runLine({ ev: 'step', text: 'old step' });
+const NEW_TEXTS = ['split started', 'T01 plan started', 'plan session ended', 'T01 blocked', 'done 1 of 1'];
+const NEW_LINES = `not an event\n${runLine({ ev: 'start', text: NEW_TEXTS[0], pid: 4242, stage: 'split' })}${runLine({ ev: 'step', text: NEW_TEXTS[1], task: 'T01', stage: 'plan' })}${runLine({ ev: 'note', text: NEW_TEXTS[2] })}${runLine({ ev: 'alert', text: NEW_TEXTS[3], task: 'T01', status: 'blocked' })}${runLine({ ev: 'end', text: NEW_TEXTS[4], status: 'done', min: 3 })}{"t":"x","ev":"alert","te`;
+// The session makes the run: it writes the new run's events and points .orchestrator/current at it.
+const NEW_RUN = { '.orchestrator/runs/new/progress.jsonl': NEW_LINES, '.orchestrator/current': 'new\n' };
+const HANDED_PLAN = `${LARGE}## 변경 기록\n- am-orchestrator run 스킬로 넘김, run.id 20261007-1200, 시작 브랜치 main\n`;
+
+/** A large plan, an earlier run `old` with a cursor of its own, and a session that makes the run `new`. */
+function newHandover(t, fake = {}) {
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'], write: NEW_RUN, ...fake } });
+  orchRun(dir, 'old', OLD_LINES, { current: 'old\n' });
+  writeFileSync(path.join(dir, '.orchestrator', 'runs', 'old', 'progress.main.cursor'), '7');
+  return dir;
+}
+const oneEndLast = (list) => {
+  assert.equal(ends(list).length, 1);
+  assert.equal(list.at(-1).ev, 'end');
+};
+
+test('relay: a new hand-over copies the events of the run it made, before its own end', async (t) => {
+  const dir = newHandover(t);
+  const { result } = await run(dir, ['do', 'demo'], { ...ORCH, relayMs: 60000 });
+  assert.equal(result.status, 'HANDED');
+  assert.equal(result.stage, 'handover');
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'note', 'step', 'step', 'note', 'alert', 'step', 'end']);
+  oneEndLast(list);
+  const moved = relayed(list);
+  assert.equal(moved.length, 5);
+  assert.deepEqual(texts(moved), NEW_TEXTS);
+  for (const e of moved) {
+    assert.ok(!('pid' in e), e.text);
+    assert.equal(e.t, RUN_T, e.text);
+  }
+  assert.ok(!texts(list).some((x) => x.startsWith('old ')), 'nothing of the earlier run');
+  assert.equal(formatEvent(moved[0]), 'step: split started [stage=split src=run]');
+  // The run's own end came over as a step: it does not end the stage.
+  const state = stateLine(list.slice(0, -1), { alive: () => true });
+  assert.ok(state.includes('(handover,'), state);
+  // No cursor of the stage runner in the run folders.
+  assert.deepEqual(readdirSync(path.dirname(runFile(dir, 'new'))).filter((f) => f.endsWith('.cursor')), []);
+  assert.deepEqual(readdirSync(path.dirname(runFile(dir, 'old'))).filter((f) => f.endsWith('.cursor')), ['progress.main.cursor']);
+  assert.equal(readFileSync(path.join(dir, '.orchestrator', 'runs', 'old', 'progress.main.cursor'), 'utf8'), '7');
+});
+
+test('relay: lines are copied while the session runs, and a stop signal copies the rest before the end', async (t) => {
+  const dir = makeRepo(t, { plan: LARGE, fake: { hang: [1] } });
+  orchRun(dir, 'old', OLD_LINES, { current: 'old\n' });
+  const running = run(dir, ['do', 'demo'], { ...ORCH, relayMs: 20 });
+  let code = null;
+  try {
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    orchRun(dir, 'new', runLine({ ev: 'start', text: 'split started', pid: 4242, stage: 'split' }) + runLine({ ev: 'step', text: 'T01 plan started', task: 'T01' }));
+    writeFileSync(currentFile(dir), 'new\n');
+    await until(() => relayed(events(dir)).length >= 2);
+    const live = events(dir);
+    assert.deepEqual(texts(relayed(live)), ['split started', 'T01 plan started']);
+    assert.equal(ends(live).length, 0, 'the session is still running');
+    assert.ok(!texts(live).some((x) => x.startsWith('old ')));
+    append(dir, 'new', runLine({ ev: 'alert', text: 'T01 blocked', task: 'T01' }));
+  } finally {
+    interrupt('SIGTERM', { exit: (c) => (code = c) });
+    await running;
+  }
+  assert.equal(code, 1);
+  const list = events(dir);
+  oneEndLast(list);
+  assert.equal(list.at(-1).text, 'stopped by SIGTERM');
+  assert.deepEqual([list.at(-2).ev, list.at(-2).text, list.at(-2).src], ['alert', 'T01 blocked', 'run']);
+  // The timer is gone: a later line of the run stays where it is.
+  const before = slugBytes(dir);
+  append(dir, 'new', runLine({ ev: 'step', text: 'too late' }));
+  await pause(100);
+  assert.equal(slugBytes(dir), before);
+});
+
+test('relay: a resumed hand-over starts after the last complete line that was there', async (t) => {
+  const first = runLine({ ev: 'start', text: 'r1 started', pid: 1, stage: 'run' }) + runLine({ ev: 'step', text: 'r1 before' });
+  const half = runLine({ ev: 'step', text: 'half written' });
+  const rest = runLine({ ev: 'step', text: 'after 1' }) + runLine({ ev: 'alert', text: 'after 2' });
+  const dir = makeRepo(t, { plan: HANDED_PLAN, fake: { replies: ['Run done.\nAM_STAGE: HANDED'], write: { '.orchestrator/runs/r1/progress.jsonl': first + half + rest } } });
+  orchRun(dir, 'r1', first + half.slice(0, 20), { current: 'r1\n' });
+  const { result, calls } = await run(dir, ['do', 'demo'], { ...ORCH, relayMs: 60000 });
+  assert.equal(result.status, 'HANDED');
+  assert.equal(flag(calls[0], '-p'), '/am-orchestrator:run');
+  const list = events(dir);
+  assert.deepEqual(texts(relayed(list)), ['half written', 'after 1', 'after 2']);
+  oneEndLast(list);
+});
+
+test('relay: the timer stops at a normal end too', async (t) => {
+  const dir = newHandover(t);
+  const { result } = await run(dir, ['do', 'demo'], { ...ORCH, relayMs: 20 });
+  assert.equal(result.status, 'HANDED');
+  oneEndLast(events(dir));
+  const before = slugBytes(dir);
+  append(dir, 'new', `${NEW_LINES.slice(NEW_LINES.lastIndexOf('{'))}\n${runLine({ ev: 'step', text: 'too late' })}`);
+  await pause(100);
+  assert.equal(slugBytes(dir), before);
+});
+
+test('relay: a run without a readable event file changes nothing for the stage', async (t) => {
+  const plain = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const expected = (await run(plain, ['do', 'demo'], ORCH)).result;
+  assert.equal(expected.status, 'HANDED');
+  assert.equal(expected.reason, '');
+  const handed = (write) => ({ replies: ['Run done.\nAM_STAGE: HANDED'], write });
+  const cases = {
+    'the run has no event file': () => {
+      const dir = makeRepo(t, { plan: LARGE, fake: handed({ '.orchestrator/current': 'new\n' }) });
+      orchRun(dir, 'old', OLD_LINES, { current: 'old\n' });
+      return dir;
+    },
+    'a folder in place of the run event file': () => {
+      const dir = makeRepo(t, { plan: LARGE, fake: handed({ '.orchestrator/current': 'new\n' }) });
+      orchRun(dir, 'old', OLD_LINES, { current: 'old\n' });
+      mkdirSync(runFile(dir, 'new'), { recursive: true });
+      return dir;
+    },
+    'a folder in place of current': () => {
+      const dir = makeRepo(t, { plan: LARGE, fake: handed({ '.orchestrator/runs/new/progress.jsonl': NEW_LINES }) });
+      mkdirSync(currentFile(dir), { recursive: true });
+      return dir;
+    },
+    'a folder in place of the task event file': () => {
+      const dir = newHandover(t);
+      mkdirSync(path.join(dir, '.am', 'demo', 'progress.jsonl'));
+      return dir;
+    },
+  };
+  for (const [name, make] of Object.entries(cases)) {
+    const dir = make();
+    const { code, result } = await run(dir, ['do', 'demo'], { ...ORCH, relayMs: 60000 });
+    assert.equal(code, 0, name);
+    assert.deepEqual(result, expected, name);
+    if (!name.includes('task event file')) assert.deepEqual(evs(events(dir)), ['start', 'note', 'end'], name);
+  }
+});
+
+test('relay: only a hand-over copies run events', async (t) => {
+  for (const [stage, mark] of [['do', 'DONE'], ['check', 'NOTE']]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: [`AM_STAGE: ${mark}`], write: NEW_RUN } });
+    orchRun(dir, 'old', OLD_LINES, { current: 'old\n' });
+    const { result } = await run(dir, [stage, 'demo'], { ...ORCH, relayMs: 20 });
+    assert.equal(result.status, mark);
+    const list = events(dir);
+    assert.deepEqual(evs(list), ['start', 'end'], stage);
+    assert.ok(!list.some((e) => 'src' in e), stage);
+  }
+});
+
+test('runRelay: which run is followed and from where', (t) => {
+  assert.equal(RELAY_MS, 5000);
+  // A new hand-over: nothing while current is the noted run or empty, then the new run from its start, and only that run.
+  const dir = makeRepo(t, { plan: LARGE });
+  orchRun(dir, 'old', OLD_LINES, { current: 'old\n' });
+  const relay = runRelay(dir, 'demo');
+  relay();
+  writeFileSync(currentFile(dir), '\n');
+  relay();
+  assert.deepEqual(events(dir), []);
+  orchRun(dir, 'new', runLine({ ev: 'start', text: 'new 1', pid: 7 }) + runLine({ ev: 'step', text: 'new 2' }), { current: 'new\n' });
+  relay();
+  assert.deepEqual(texts(events(dir)), ['new 1', 'new 2']);
+  orchRun(dir, 'other', runLine({ ev: 'step', text: 'other 1' }), { current: 'other\n' });
+  append(dir, 'new', runLine({ ev: 'step', text: 'new 3' }));
+  relay();
+  assert.deepEqual(texts(events(dir)), ['new 1', 'new 2', 'new 3']);
+  assert.ok(events(dir).every((e) => e.src === 'run' && !('pid' in e) && e.ev === 'step'));
+
+  // A resumed hand-over whose event file could not be read: the first good read only sets where to start.
+  const resumed = makeRepo(t, { plan: HANDED_PLAN });
+  orchRun(resumed, 'r1', null, { current: 'r1\n' });
+  mkdirSync(runFile(resumed, 'r1'));
+  const again = runRelay(resumed, 'demo', { resume: true });
+  again();
+  rmSync(runFile(resumed, 'r1'), { recursive: true });
+  orchRun(resumed, 'r1', runLine({ ev: 'step', text: 'r1 before 1' }) + runLine({ ev: 'step', text: 'r1 before 2' }));
+  again();
+  assert.deepEqual(events(resumed), []);
+  append(resumed, 'r1', runLine({ ev: 'step', text: 'r1 after' }));
+  again();
+  assert.deepEqual(texts(events(resumed)), ['r1 after']);
+
+  // A new hand-over that could not read current: the run found there later was not made by this session.
+  const unread = makeRepo(t, { plan: LARGE });
+  mkdirSync(currentFile(unread), { recursive: true });
+  const late = runRelay(unread, 'demo');
+  late();
+  rmSync(currentFile(unread), { recursive: true });
+  orchRun(unread, 'old', OLD_LINES, { current: 'old\n' });
+  late();
+  late();
+  assert.deepEqual(events(unread), []);
+  orchRun(unread, 'new', runLine({ ev: 'step', text: 'new 1' }), { current: 'new\n' });
+  late();
+  assert.deepEqual(texts(events(unread)), ['new 1']);
+});
+
+test('relay: the real command ends by itself and prints the same result line', (t) => {
+  const dir = newHandover(t);
+  const stage = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
+  writeFileSync(path.join(dir, 'wrapper.mjs'), `import { main } from ${JSON.stringify(stage)};\nprocess.exitCode = await main(['do', 'demo'], { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => '/orch', relayMs: 60000 });\n`);
+  // A timer that is neither unref'd nor cleared would keep the process alive past the limit.
+  const r = spawnSync(process.execPath, ['wrapper.mjs'], { cwd: dir, encoding: 'utf8', timeout: 20000 });
+  assert.equal(r.error, undefined);
+  assert.equal(r.signal, null);
+  assert.equal(r.status, 0, r.stderr);
+  const lines = r.stdout.trim().split('\n');
+  assert.equal(lines.length, 1, r.stdout);
+  assert.equal(JSON.parse(lines[0]).status, 'HANDED');
+  const list = events(dir);
+  oneEndLast(list);
+  assert.equal(relayed(list).length, 5);
+  assert.ok(list.findLastIndex((e) => e.src === 'run') < list.length - 1);
+});
+
+test('instructions: only a hand-over is told not to run the progress command, once', () => {
+  const line = "- Do not run the `progress` command of the run skill's script, even where the skill says to start it: nobody reads this session, and the am stage runner copies the run's news into this task's event file itself.";
+  for (const resume of [true, false]) {
+    for (const push of [true, false]) assert.equal(instructions('handover', 'demo', { resume, push }).system.split(`\n${line}\n`).length, 2, `resume ${resume}, push ${push}`);
+  }
+  for (const s of STAGES) assert.ok(!instructions(s, 'demo').system.includes('`progress` command'), s);
 });

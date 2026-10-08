@@ -1,4 +1,4 @@
-// 오케스트레이터 테스트의 공통 도우미. 테스트 파일이 아니라(이름이 .test.mjs 가 아님) 아래 테스트 파일들이 import 한다.
+// 오케스트레이터 테스트의 공통 도우미. 테스트 파일이 아니라(이름이 .test.mjs 가 아님) 아래 테스트 파일들과 orchestrator-skill.test.mjs(소식 옮기기 테스트 하나)가 import 한다.
 // Run: node --test tests/orchestrator.test.mjs tests/orchestrator-plan.test.mjs tests/orchestrator-commit.test.mjs tests/orchestrator-drive.test.mjs tests/orchestrator-doctor.test.mjs tests/orchestrator-parallel.test.mjs tests/orchestrator-volatile.test.mjs tests/orchestrator-rewrite.test.mjs tests/orchestrator-sessions.test.mjs tests/orchestrator-progress.test.mjs
 // node --test 는 파일들을 동시에 돌린다. 배정 규칙: 주제별 파일(plan·commit·drive·doctor·parallel·volatile·rewrite·sessions·progress, 나머지는 orchestrator.test.mjs), 파일 하나를 혼자 돌려 약 30초 이하,
 // 오래 걸리는 테스트는 서로 다른 파일에 둔다. 여기에는 둘 이상의 파일이 쓰는 것만 둔다.
