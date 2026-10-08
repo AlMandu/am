@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { decide, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
+import { countDone, decide, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
 
 const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
 const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';
@@ -62,6 +62,22 @@ test('reads the scale line in both languages, done marks and the hand-over line'
   assert.equal(readPlan('- 목표: am-orchestrator 의 토큰을 줄인다\n').handedOver, false);
   assert.equal(readPlan('- 20261007-1412 빌드 로그\n').handedOver, false);
   assert.equal(readPlan('- went to the am-orchestrator run skill, run.id fix-2, start branch main\n').handedOver, true);
+});
+
+test('countDone counts the done marks of both languages and leaves readPlan as it was', () => {
+  assert.equal(countDone(LARGE), 0);
+  assert.equal(countDone(SMALL), 0);
+  const mixed = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. (완료) 확인: x\n2. Step two (done)\n3. 셋째 단계. 확인: y\n4. Step four (DONE)\n## 변경 기록\n';
+  const before = readPlan(mixed);
+  assert.equal(countDone(mixed), 3);
+  assert.equal(countDone(mixed), 3); // the counting copy keeps no position between calls
+  assert.deepEqual(readPlan(mixed), before);
+  assert.deepEqual(readPlan(mixed), { scale: [2, 3], started: true, handedOver: false });
+  // The template's own rule text mentions marking a step done; it is not a mark.
+  assert.equal(countDone('> Rules: 2) run each step\'s check and mark the step done\n1. Step. Check: x\n'), 0);
+  const plain = readPlan(LARGE);
+  countDone(LARGE);
+  assert.deepEqual(readPlan(LARGE), plain);
 });
 
 test('withinOneRun is true only for at most 1 implementation run and 1 commit', () => {

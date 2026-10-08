@@ -28,7 +28,7 @@ Lightweight plan/do/check/commit workflow plugin for Claude Code and Codex CLI. 
 - Each plugin has its own `version`; a user-visible change to `orchestrator/` bumps `orchestrator/.claude-plugin/plugin.json` and gets its own CHANGELOG entry headed `am-orchestrator <version>`.
 
 ## Before committing
-- `node --test tests/gate.test.mjs tests/skills.test.mjs tests/codex-opinion.test.mjs tests/models.test.mjs tests/handover.test.mjs tests/stage.test.mjs`
+- `node --test tests/gate.test.mjs tests/skills.test.mjs tests/codex-opinion.test.mjs tests/models.test.mjs tests/handover.test.mjs tests/stage.test.mjs tests/progress.test.mjs`
 - `claude plugin validate .` and `claude plugin validate plugin`
 - After touching `orchestrator/`, anything in `plugin/` that it relies on, or am:auto's hand-over: `node --test tests/orchestrator-skill.test.mjs tests/orchestrator.test.mjs tests/orchestrator-plan.test.mjs tests/orchestrator-commit.test.mjs tests/orchestrator-drive.test.mjs tests/orchestrator-doctor.test.mjs tests/orchestrator-parallel.test.mjs tests/orchestrator-volatile.test.mjs tests/orchestrator-rewrite.test.mjs tests/orchestrator-sessions.test.mjs` (the files after the first take about 35 seconds together on a 24-core PC and need no `claude`) and `claude plugin validate orchestrator`
 - User-visible change: bump `version` in `plugin/.claude-plugin/plugin.json` and add one CHANGELOG entry.
