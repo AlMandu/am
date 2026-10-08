@@ -4,6 +4,7 @@
 //   { "plan": { "<slug>": ["NEEDS_DECISION", "READY"] }, "check": { "<slug>": ["BLOCK", "NOTE"] },
 //     "implement": { "<slug>": ["CRASH", "DONE"] }, "breakGate": ["<slug>"], "split": ["<fixture>", ...],
 //     "answer": { "<slug>": ["TOO_BIG"] } }
+// "snapshotLock": true 면 split 세션이 그 순간의 lock.json 과 current 를 fake-split-lock.json·fake-split-current.txt 로 복사해 둔다.
 // 동시 진행: 단계가 끝날 때마다 "<단계>:<slug>" 표시를 남기고, "waitFor": { "implement:t01-a": "plan:t03-c" } 처럼
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
 // 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
@@ -90,6 +91,11 @@ if (m) {
 let text = 'OK';
 let denials = [];
 if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(prompt))) {
+  if (scenario.snapshotLock) {
+    copyFileSync(path.join(stateDir, 'lock.json'), path.join(stateDir, 'fake-split-lock.json'));
+    const current = path.join(stateDir, 'current');
+    writeFileSync(path.join(stateDir, 'fake-split-current.txt'), existsSync(current) ? readFileSync(current, 'utf8') : '');
+  }
   copyFileSync(pick('split', 'x', process.env.FAKE_TASKS), path.join(cwd, m[2]));
   text = 'Wrote the task list.\nORCH_STATUS: DONE';
 } else if ((m = /^tasks\.json failed validation\. Read \S+, fix (\S+), and stop/.exec(prompt))) {

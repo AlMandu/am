@@ -1,14 +1,15 @@
 // Run: node --test tests/orchestrator-skill.test.mjs
 // The am-orchestrator plugin (orchestrator/): its manifest, its one skill, and the parts of the am plugin its script relies on.
 // Also the other direction: what am:auto relies on when it hands a large task to the run skill.
-// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial.
+// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load, STAGE_SKILLS } from '../scripts/models.mjs';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
+import { makeRepo } from './orchestrator-helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
@@ -64,7 +65,7 @@ test('the run skill follows the am skill rules: same common block, size limit, u
 
 test('the skill and the script agree on commands and on every "next" value', () => {
   const commands = [...SKILL.matchAll(/^\| `([a-z]+)[ `]/gm)].map((m) => m[1]);
-  assert.deepEqual(commands, ['doctor', 'split', 'status', 'decide', 'answer', 'run', 'retry', 'done', 'sessions']);
+  assert.deepEqual(commands, ['doctor', 'split', 'status', 'progress', 'decide', 'answer', 'run', 'retry', 'done', 'sessions']);
   for (const c of commands) assert.ok(SCRIPT.includes(`case '${c}':`), `script has no "${c}" command`);
   const doc = / \* next: ([a-z| -]+)\n/.exec(SCRIPT);
   assert.ok(doc, 'the script documents its next values');
@@ -179,6 +180,39 @@ test('the am stage runner hands a large plan to the run skill only through what 
   assert.match(system, /Its rule never to merge or push covers its own flow only/);
 });
 
+test('the am stage runner copies the events a real split writes, from the path the orchestrator uses', async () => {
+  const { runRelay, instructions } = await import('../plugin/scripts/stage.mjs');
+  const { readFrom } = await import('../plugin/scripts/progress.mjs');
+  const r = makeRepo();
+  const doctor = r.orch('doctor');
+  assert.equal(doctor.code, 0, doctor.out);
+  mkdirSync(path.join(r.repo, '.am', 'x'), { recursive: true });
+  writeFileSync(path.join(r.repo, '.am', '.gitignore'), '*\n');
+  // Made before the split, as in a new hand-over: no current run yet.
+  const relay = runRelay(r.repo, 'x');
+  const split = r.orch('split', path.join(r.repo, 'docs', 'design.md'));
+  assert.equal(split.code, 0, split.out);
+  relay();
+  const copied = () => readFrom(path.join(r.repo, '.am', 'x', 'progress.jsonl'), 0).events;
+  const list = copied();
+  assert.ok(list.length >= 1);
+  assert.equal(list.length, readFrom(path.join(r.runDir(), 'progress.jsonl'), 0).events.length);
+  for (const e of list) {
+    assert.equal(e.src, 'run', e.text);
+    assert.ok(e.ev !== 'start' && e.ev !== 'end' && !('pid' in e), e.text);
+  }
+  assert.deepEqual([list[0].ev, list[0].stage, list[0].text], ['step', 'split', 'split started']);
+  assert.ok(list.at(-1).text.startsWith('split into 3 tasks'), list.at(-1).text);
+  assert.equal(list.at(-1).status, 'done');
+  // A resumed hand-over starts at the end of what the run already wrote.
+  runRelay(r.repo, 'x', { resume: true })();
+  assert.equal(copied().length, list.length);
+  assert.deepEqual(readdirSync(r.runDir()).filter((f) => f.endsWith('.cursor')), []);
+  // The command the hand-over session is told to leave alone exists in the script.
+  for (const resume of [true, false]) assert.ok(instructions('handover', 'x', { resume }).system.includes("Do not run the `progress` command of the run skill's script"), `resume ${resume}`);
+  assert.ok(SCRIPT.includes("case 'progress':"));
+});
+
 test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {
   const { MARKS, lastMark, checkVerdict } = await import('../plugin/scripts/stage.mjs');
   const { lastMarker, verdictFromFile } = await import('../orchestrator/scripts/orchestrator.mjs');
@@ -225,4 +259,101 @@ test('stages that never push deny both git push rules in both runners', async ()
   // The fix stage uses the implement set.
   const orch = defaults().permissions;
   for (const stage of ['implement', 'check', 'commit']) denies(orch[stage], `orchestrator ${stage}`);
+});
+
+test('the progress command takes no lock, is in the usage text, and its section imports nothing from am and reads no environment', () => {
+  assert.ok(SCRIPT.includes("case 'progress':"));
+  // The commands that take the lock: progress must run next to them.
+  const locking = /\[([^\]]*)\]\.includes\(cmd\)/.exec(SCRIPT);
+  assert.ok(locking, 'the list of locking commands');
+  assert.deepEqual([...locking[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]), ['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done']);
+  const usage = /const USAGE = `([\s\S]*?)`;/.exec(SCRIPT);
+  assert.ok(usage && usage[1].split('\n').some((line) => line.trim().startsWith('progress ')), 'usage has a progress line');
+  // The orchestrator is installed without am: only Node's own modules, and no import at run time.
+  const imports = [...SCRIPT.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.equal(imports.length, SCRIPT.match(/^import /gm).length, 'an import of another form: check its target here');
+  for (const target of imports) assert.ok(target.startsWith('node:'), target);
+  assert.ok(!/\bimport\(/.test(SCRIPT));
+  const section = /\n\/\/ -+ 진행 소식 기다리기\n([\s\S]*?)\n\/\/ -+ 진입점\n/.exec(SCRIPT);
+  assert.ok(section, 'the progress section');
+  assert.ok(!section[1].includes('process.env'));
+});
+
+test('the run skill starts the progress command next to split, answer and run', async () => {
+  const rules = /\nRules while driving:\n([\s\S]*?)\n## Steps\n/.exec(SKILL);
+  assert.ok(rules, 'the Rules while driving block');
+  const items = rules[1].split('\n').filter((l) => l.includes('`progress --consumer main`'));
+  assert.equal(items.length, 1, 'one rule names the progress command');
+  for (const name of ['split', 'answer', 'run', 'doctor', 'status --json']) assert.ok(items[0].includes(`\`${name}\``), name);
+  // The skill reads this line and does not start the progress command again.
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const { waitProgress } = await import('../orchestrator/scripts/orchestrator.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-ended-'));
+  try {
+    let t = Date.parse('2026-10-08T00:00:00.000Z');
+    const writes = [];
+    const code = await waitProgress(dir, { consumer: 'main', now: () => t, sleep: async (ms) => void (t += ms), alive: () => false, out: { write: (s) => writes.push(s) } });
+    assert.equal(code, 0);
+    assert.equal(writes.join(''), 'state: ended\n');
+    assert.ok(rules[1].includes('`state: ended`'), 'the rule names the state line');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test('the same event lines give the same output from the am wait command and the orchestrator one', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const { DEFAULTS, wait } = await import('../plugin/scripts/progress.mjs');
+  const { PROGRESS_DEFAULTS, waitProgress } = await import('../orchestrator/scripts/orchestrator.mjs');
+  assert.deepEqual(PROGRESS_DEFAULTS, DEFAULTS);
+  const T0 = Date.parse('2026-10-08T00:00:00.000Z');
+  const LIVE = 4242;
+  const alive = (pid) => pid === LIVE;
+  const line = (fields) => `${JSON.stringify({ t: new Date(T0).toISOString(), ...fields })}\n`;
+  const start = line({ ev: 'start', text: 'run started', pid: LIVE, stage: 'run' });
+  const cases = {
+    'a live start, a step and a note': start + line({ ev: 'step', text: 'T01 plan started', task: 'T01', stage: 'plan' }) + line({ ev: 'note', text: 'plan session ended' }),
+    'an alert': start + line({ ev: 'alert', text: 'T01 blocked', task: 'T01', status: 'blocked' }),
+    'ends with an end': start + line({ ev: 'step', text: 'T01 done', status: 'done' }) + line({ ev: 'end', text: 'done 1 of 1', status: 'done', min: 3 }),
+    'a start with a dead pid': line({ ev: 'start', text: 'run started', pid: 1, stage: 'run' }),
+    'a start without a pid': line({ ev: 'start', text: 'run started', stage: 'run' }),
+    'lines that are no events and an unfinished last line': `not json\n[1]\n${start}{"ev":"other","text":"x"}\r\n${line({ ev: 'alert', text: '막힘  é' })}{"t":"x","ev":"alert","te`,
+    'a do stage that was handed over': line({ ev: 'start', text: 'do stage started', pid: LIVE, stage: 'do' }) + line({ ev: 'note', text: 'handed over', stage: 'handover' }),
+    'no file': null,
+  };
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-same-'));
+  try {
+    for (const [name, bytes] of Object.entries(cases)) {
+      const dir = fs.mkdtempSync(path.join(base, 'c-'));
+      const am = path.join(dir, '.am', 'x');
+      const orch = path.join(dir, '.orchestrator', 'runs', 'x');
+      if (bytes !== null) {
+        for (const folder of [am, orch]) {
+          fs.mkdirSync(folder, { recursive: true });
+          fs.writeFileSync(path.join(folder, 'progress.jsonl'), bytes);
+        }
+      }
+      const cursorOf = (folder) => (fs.existsSync(path.join(folder, 'progress.terminal.cursor')) ? fs.readFileSync(path.join(folder, 'progress.terminal.cursor'), 'utf8') : null);
+      // One wait on a virtual clock that only sleep moves: what it printed, and how long it took.
+      const one = async (fn) => {
+        let t = T0;
+        const writes = [];
+        const code = await fn({ now: () => t, sleep: async (ms) => void (t += ms), alive, out: { write: (s) => writes.push(s) } });
+        return { code, out: writes.join(''), took: t - T0 };
+      };
+      // The second round starts from the moved cursors.
+      for (const round of [1, 2]) {
+        const a = await one((o) => wait({ events: path.join(am, 'progress.jsonl'), cursor: path.join(am, 'progress.terminal.cursor'), plan: path.join(am, 'plan.md') }, o));
+        const b = await one((o) => waitProgress(dir, { run: 'x', ...o }));
+        assert.match(a.out, /(^|\n)state: (ended|running \(.+, \d+ min\))\n$/, `${name}, round ${round}`);
+        assert.deepEqual(b, a, `${name}, round ${round}`);
+        assert.equal(cursorOf(orch), cursorOf(am), `${name}, round ${round}: cursor`);
+      }
+      if (name.includes('handed over')) assert.equal(cursorOf(orch), String(Buffer.byteLength(bytes)));
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+  }
 });

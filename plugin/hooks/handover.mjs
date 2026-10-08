@@ -17,6 +17,7 @@ const STATE_DIR = path.join(tmpdir(), 'am-handover');
 const PLAN = /^\.am\/[^/]+\/plan\.md$/;
 const SCALE = /(?:Scale:\s*(\d+)\s+implementation runs?,\s*(\d+)\s+commits?|규모:\s*구현\s*(\d+)\s*회,\s*커밋\s*(\d+)\s*개)/i;
 const DONE = /^\s*\d+\.\s.*\((?:done|완료)\)/im; // the am:do skill's mark on a step's first line
+const DONE_ALL = new RegExp(DONE.source, DONE.flags + 'g'); // a copy for counting: DONE itself stays without `g`, so its test() keeps no position
 const HANDED = /^(?=.*(?:orchestrator|오케스트레이터)).*(?:\b\d{8}-\d{4}\b|\brun\.?\s?id\b)/im; // am:auto logs the hand-over with the run ID (default YYYYMMDD-HHMM)
 
 const ALLOW = { stdout: '' };
@@ -31,6 +32,11 @@ export function readPlan(text) {
   const m = SCALE.exec(text);
   const scale = m ? [Number(m[1] ?? m[3]), Number(m[2] ?? m[4])] : null;
   return { scale, started: DONE.test(text), handedOver: HANDED.test(text) };
+}
+
+/** How many steps of the plan carry the am:do done mark. */
+export function countDone(text) {
+  return (String(text).match(DONE_ALL) || []).length;
 }
 
 /** True when the plan's Scale is at most 1 implementation run and 1 commit. */

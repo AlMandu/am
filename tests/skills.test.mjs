@@ -96,6 +96,18 @@ test('am:auto drives the stage runner and handles every status it prints', async
   for (const field of ['status', 'reason', 'reply', 'costUsd', 'compacted']) assert.ok(auto.includes(`\`${field}\``), field);
 });
 
+test('am:auto starts the progress command next to every stage command', async () => {
+  const m = /## Stage sessions \(Claude Code\)\n([\s\S]*?)\n## Steps\n/.exec(read('auto'));
+  assert.ok(m, 'the Stage sessions section');
+  const section = m[1];
+  assert.ok(section.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs" <slug> --consumer main`'));
+  assert.ok(existsSync(path.join(ROOT, '..', 'scripts', 'progress.mjs')), 'plugin/scripts/progress.mjs');
+  // The skill stops restarting the progress command when its last line is the one the script prints for an ended task.
+  const { stateLine } = await import('../plugin/scripts/progress.mjs');
+  assert.equal(stateLine([]), 'state: ended');
+  assert.ok(section.includes(`\`${stateLine([])}\``), 'state: ended');
+});
+
 test('the second-opinion agent stays pinned and read-only, and the common rules send choices to it', () => {
   const fm = frontmatter(readFileSync(AGENT, 'utf8'));
   // Claude Code ignores a misspelled key without an error, which would silently unpin the agent.

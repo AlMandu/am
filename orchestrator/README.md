@@ -33,6 +33,7 @@
 | 막혔을 때 | 세션이 원인을 없앨 수 없는 막힘: 어느 단계부터 다시 할지, 손으로 고칠지, 여기서 멈출지 |
 
 - 실행은 몇 시간이 걸릴 수 있습니다. 세션은 명령을 백그라운드로 띄우고 끝났다는 알림을 기다립니다. 그동안 저장소를 직접 고치거나 게이트가 쓰는 에디터를 열면 안 됩니다.
+- 기다리는 동안 세션은 분할·실행·결정 답변 명령 옆에 `progress` 명령을 하나 더 띄워, 작업 시작, 단계 전환, 완료, 막힘, 결정 필요 소식을 채팅에 한두 줄씩 알립니다. 30초 안에 붙어 온 소식은 한 번에 묶이고, 약 8분간 소식이 없으면 무엇이 몇 분째 도는지 한 줄이 나옵니다. 실행이 끝나면 더 나오지 않습니다. 소식 한 번마다 대화 차례가 한 번 듭니다. `doctor` 가 도는 동안에는 소식이 없고, 세션 안의 세부(고치는 파일, 돌리는 명령)는 나오지 않습니다.
 - 서로 무관한 작업(의존 관계가 없고 예상 파일이 겹치지 않음)은 최대 3개까지 동시에 돕니다. 진행 메시지와 `status` 에 돌고 있는 작업이 모두 보입니다. 아래 "동시 진행" 참고.
 - 오케스트레이터가 띄우는 세션은 이 PC 의 모든 실행·저장소를 합쳐 최대 3개까지만 함께 돕니다. 다른 실행이 자리를 다 쓰고 있으면 기다렸다가 이어 갑니다. 아래 "동시 세션 제한" 참고.
 - 답을 기다리는 작업이 있어도 그 작업과 무관한 작업은 계속 진행합니다. 더 진행할 작업이 없을 때 모아서 묻습니다.
@@ -94,12 +95,15 @@ node orchestrator.mjs run --dry-run          # 순서와 실제 claude 명령만
 node orchestrator.mjs run                    # 실행 (중단되면 같은 명령으로 이어 감)
 node orchestrator.mjs status                 # 작업별 상태
 node orchestrator.mjs status --json          # 다음에 할 일(next)과 답할 결정·막힌 작업을 구조로
+node orchestrator.mjs progress               # 새 진행 소식을 기다렸다가 출력하고 끝남
 node orchestrator.mjs sessions 2             # 이 PC 에서 모든 실행을 합쳐 동시에 돌릴 세션 수(위 "동시 세션 제한")
 ```
 
 `status --json` 의 `next` 는 `doctor`, `split`, `wait`, `fix-tasks`, `decide`, `answer`, `blocked`, `run`, `done`, `stuck` 중 하나입니다. 스킬은 이 값만 보고 다음 명령을 정합니다.
 
-상태를 바꾸는 명령(`doctor`, `split`, `decide`, `answer`, `run`, `retry`, `done`)은 한 저장소에서 한 번에 하나만 돕니다(`sessions` 는 언제든 됨). 실행 중에 다른 명령을 부르면 거절합니다. 작업 여러 개를 동시에 돌리는 것은 `run` 하나가 안에서 합니다.
+`progress` 는 아직 보지 못한 소식 줄과 상태 줄 하나(`state: running (무엇, 몇 분)` 또는 `state: ended`)를 내고, 길어도 8분 30초 안에 스스로 끝납니다(종료 코드 0). 소식은 `.orchestrator/runs/<실행 ID>/progress.jsonl` 에 쌓입니다. 손으로 볼 때는 인자 없이 부릅니다. 읽은 위치를 소비자마다 따로 기억하므로 채팅에 나올 소식을 가져가지 않습니다. `--consumer main` 은 스킬이 쓰는 이름이라 손으로 붙이지 않습니다. 지난 실행은 `--run <실행 ID>` 로 봅니다(끝난 실행은 약 1분 뒤에 나오고, 한 번 본 줄은 다시 나오지 않습니다).
+
+상태를 바꾸는 명령(`doctor`, `split`, `decide`, `answer`, `run`, `retry`, `done`)은 한 저장소에서 한 번에 하나만 돕니다(`sessions` 와 `progress` 는 언제든 됨). 실행 중에 다른 명령을 부르면 거절합니다. 작업 여러 개를 동시에 돌리는 것은 `run` 하나가 안에서 합니다.
 
 `status --json` 의 `running.tasks` 는 돌고 있는 작업마다 단계와 작업 공간을, `parallel` 은 동시에 돌릴 수(`max`, 이 PC 의 동시 세션 제한 포함)와 하나씩 도는 이유(`reason`), 다시 확인이 필요한지(`stale`)를, `sessions` 는 이 PC 의 동시 세션 제한과 지금 도는 수를 알려 줍니다. `run --dry-run` 은 같이 돌 작업을 회차로 묶어 보여 줍니다.
 
@@ -305,13 +309,13 @@ am 스킬 본문은 그대로 쓰고, 세션마다 덧붙이는 지시문으로 
 - am 스킬(plan, do, check, commit, auto) 본문과 `agents/second-opinion.md`, `hooks/gate.mjs` 를 읽고 그 인터페이스(`/am:plan`, `/am:do <slug>`, `.am/<slug>/plan.md`·`check.md`, `gate.mjs --run --json --cwd`)에 맞췄습니다. `tests/orchestrator-skill.test.mjs` 가 이 접점을 지킵니다.
 - `am:auto` 는 오케스트레이터가 부르지 않습니다(반대로 Claude Code 의 `am:auto` 는 큰 작업을 run 스킬에 넘기고, 끝나면 합칩니다). 오케스트레이터는 단계마다 세션을 따로 띄워 권한을 달리 주고, 단계 사이에 게이트와 작업 트리를 직접 확인합니다.
 - Claude Code 2.1.289 로 확인한 것: `claude plugin validate` 가 마켓플레이스와 두 플러그인을 통과시킵니다. 세션 시작 정보에 `am-orchestrator:run` 과 am 의 스킬이 실려 옵니다. 오케스트레이터가 단계별로 만드는 명령줄(권한 규칙, `--append-system-prompt-file`, `--plugin-dir`, `--resume`)을 CLI 가 받아들입니다. 로그인하지 않은 환경이라 모델 호출 직전까지만 봤습니다.
-- 가짜 `claude` 로 흐름 전체를 테스트했습니다(주제별 테스트 파일 9개가 동시에 돕니다. 목록은 아래 "파일" 절에, 한 번에 돌리는 명령은 `tests/orchestrator-helpers.mjs` 머리 주석에 있습니다). 게이트와 스킬 파일은 이 저장소의 `plugin/` 것을 그대로 씁니다.
+- 가짜 `claude` 로 흐름 전체를 테스트했습니다(주제별 테스트 파일 10개가 동시에 돕니다. 목록은 아래 "파일" 절에, 한 번에 돌리는 명령은 `tests/orchestrator-helpers.mjs` 머리 주석에 있습니다). 게이트와 스킬 파일은 이 저장소의 `plugin/` 것을 그대로 씁니다.
 - 스킬 없이 스크립트만 쓴 이전 판으로 실제 저장소에서 두 번 실행했습니다(작업 28개, 48개). 그때 드러난 문제를 고친 것이 지금 판입니다.
 
 확인하지 못한 것
 
 - 계획 세션에 연 `node "<am 경로>/scripts/codex-opinion.mjs" *` 규칙이 세션이 실제로 적는 명령과 맞는지는 실제 모델 호출로 재 보지 못했습니다. 맞지 않으면 권한 거부로 Codex 실패가 되어 Claude 2차 의견만으로 정하고(표시가 남음), 실행 로그에 "권한 거부 N건"이 찍힙니다. am 을 업데이트한 뒤 `doctor` 없이 이어 가면 옛 경로가 남아 같은 일이 생깁니다.
-- `am-orchestrator:run` 스킬을 실제 세션에서 돌려 보지 못했습니다. 세션이 지시대로 백그라운드 실행을 기다리고 `status --json` 을 따라가는지는 작은 설계 문서로 먼저 확인해야 합니다.
+- `am-orchestrator:run` 스킬을 실제 세션에서 돌려 보지 못했습니다. 세션이 지시대로 백그라운드 실행을 기다리고 `status --json` 을 따라가는지는 작은 설계 문서로 먼저 확인해야 합니다. 세션이 진행 소식 명령을 지시대로 다시 띄우고 실행이 끝나면 그만두는지도 같은 확인이 필요합니다.
 - 마지막 두 번의 실제 실행 뒤에 넣은 변경(구현을 `am:do` 로 호출, 커밋 훅 거부 시 자동 수정, 빌드 산출물 되돌리기, `(자동 결정)` 규칙, 잠금)은 실제 모델 호출로 돌려 보지 못했습니다.
 - am 스킬 머리말의 `model`·`effort` 가 `claude -p` 의 슬래시 호출에서도 적용되는지, `--model`·`--effort` 플래그와 겹칠 때 어느 쪽이 쓰이는지는 Claude Code 문서에 없고 실제 모델 호출로 재 보지 못했습니다. 그래서 기본값은 양쪽을 같게 두었고, 설정으로 바꾼 단계는 inline 으로 불러 플래그만 남게 했습니다. 이어 가는 세션(`--resume`)이 처음 쓰던 모델을 그대로 쓰는지도 재 보지 못해, 이어 갈 때마다 같은 `--model` 을 다시 넘깁니다.
 - Windows 에서 실행해 보지 못했습니다. `claude` 가 `.exe` 면 직접, `.cmd` 면 cmd.exe 를 거쳐 실행하도록 했고 따옴표 처리만 단위 테스트했습니다.
@@ -335,7 +339,7 @@ tests/orchestrator-skill.test.mjs         스킬·매니페스트·am 과의 접
 tests/fake-claude.mjs                     테스트용 가짜 claude
 tests/orchestrator-helpers.mjs            흐름 테스트의 공통 도우미(전체 실행 명령은 머리 주석)
 
-흐름 테스트 (가짜 claude 로 돈다. 9개 파일을 함께 돌려 약 35초, 24코어 PC 에서 잰 값)
+흐름 테스트 (가짜 claude 로 돈다. 10개 파일을 함께 돌려 약 35초, 24코어 PC 에서 잰 값)
 tests/orchestrator.test.mjs               순수 함수, 기본 흐름
 tests/orchestrator-plan.test.mjs          계획 단계: 너무 큰 작업 나누기, 결정, 계획 저장
 tests/orchestrator-commit.test.mjs        커밋 단계: 안전장치, 권한 규칙, 커밋 훅 거부
@@ -345,6 +349,7 @@ tests/orchestrator-parallel.test.mjs      별도 작업 공간에서의 동시 �
 tests/orchestrator-volatile.test.mjs      volatilePaths, 커밋 세션의 빌드 산출물 되돌림
 tests/orchestrator-rewrite.test.mjs       설정 없이 빌드가 다시 쓴 파일, git add -N
 tests/orchestrator-sessions.test.mjs      PC 전체의 동시 세션 제한, 같은 초 스냅샷
+tests/orchestrator-progress.test.mjs      진행 소식 이벤트, 잠금 파일의 실행 이름, progress 명령
 
 대상 저장소에 생기는 것 (모두 git 제외)
 .orchestrator/config.json            설정
@@ -356,6 +361,8 @@ tests/orchestrator-sessions.test.mjs      PC 전체의 동시 세션 제한, 같
   tasks.json, tasks.md               작업 목록(기계용, 사람용)
   state.json                         진행 상태
   report.md                          보고서
+  progress.jsonl                     진행 소식(한 줄에 하나)
+  progress.<소비자>.cursor           소비자마다 읽은 위치
   <작업 ID>/NN-<단계>.out.json       claude 원본 출력, 덧붙인 지시문, 게이트 결과
 .am/<slug>/brief.md, plan.md, check.md
 
