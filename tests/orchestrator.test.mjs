@@ -1,12 +1,12 @@
 // Run: node --test tests/orchestrator.test.mjs
 // 공통 도우미·전체 명령은 tests/orchestrator-helpers.mjs
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
-import { task, planOf, CHAIN, own, DEF, M1, M2, E1, E2, E3, prepared } from './orchestrator-helpers.mjs';
+import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { task, planOf, CHAIN, own, DEF, M1, M2, E1, E2, E3, prepared, tmp } from './orchestrator-helpers.mjs';
 
 // ------------------------------------------------------------------ 순수 함수
 
@@ -224,6 +224,70 @@ test('claudeArgs: 설정에 적지 않은 단계는 기본 모델과 effort 로 
   const same = merge(defaults(), { model: Object.fromEntries(stages.map((p) => [p, DEF(p)[0]])), effort: { commit: DEF('commit')[1] }, extraArgs: { plan: ['--effort', DEF('plan')[1]] } });
   assert.deepEqual(stages.filter((p) => stageOverridden(same, p)), [], '기본값과 같은 값을 적은 것은 바꾼 것이 아니다');
   assert.deepEqual(stages.filter((p) => stageOverridden(merge(defaults(), { effort: { implement: E2 } }), p)), ['implement']);
+});
+
+test('사용자 모델 설정 파일: am 과 같은 경로와 검사', () => {
+  const dir = tmp('orch-user-');
+  assert.equal(userModelsFile({ CLAUDE_CONFIG_DIR: dir }), path.join(dir, 'am', 'models.json'));
+  const file = path.join(dir, 'models.json');
+  assert.deepEqual(readUserModels(file), { model: {}, effort: {} }, '파일이 없으면 빈 값');
+  writeFileSync(file, '{"model":{"implement":"opus"}}');
+  const implement = readUserModels(file).error;
+  assert.ok(implement.includes(file) && implement.includes('"do"'), implement);
+  writeFileSync(file, '{"effort":{"check":"huge"}}');
+  const huge = readUserModels(file).error;
+  assert.ok(huge.includes(file) && huge.includes('huge'), huge);
+});
+
+test('claudeArgs: 사용자 파일은 저장소 설정 다음 층(모델·effort 따로)', () => {
+  const of = (cfg, phase, opts = {}) => {
+    const a = claudeArgs(cfg, phase, { prompt: 'x', ...opts });
+    return ['--model', '--effort'].map((flag) => {
+      assert.equal(a.indexOf(flag), a.lastIndexOf(flag), `${phase}: ${flag} 는 한 번만 넘긴다`);
+      return a.includes(flag) ? a[a.indexOf(flag) + 1] : null;
+    });
+  };
+  const withUser = (repo, model = {}, effort = {}) => ({ ...merge(defaults(), repo), userModels: { model, effort } });
+  const all = withUser({}, { default: M1 });
+  for (const phase of ['split', 'plan', 'implement', 'check', 'commit']) assert.deepEqual(of(all, phase), [M1, DEF(phase)[1]], phase);
+  assert.deepEqual(of(all, 'fix', { resume: 's' }), [M1, DEF('implement')[1]]);
+  assert.deepEqual(of(all, 'answer', { resume: 's' }), [M1, DEF('plan')[1]]);
+  assert.deepEqual(of(all, 'probe', { format: 'stream-json' }), [M1, DEF('plan')[1]]);
+  // 저장소 default 가 사용자 단계 키보다 앞서고, effort 는 저장소에 없으니 사용자 default 가 쓰인다
+  assert.deepEqual(of(withUser({ model: { default: M2 } }, { check: M1 }, { default: E1 }), 'check'), [M2, E1]);
+  // 사용자 키 do 는 implement·fix, plan 은 answer·probe
+  const keyed = withUser({}, { do: M1, plan: M2 });
+  assert.deepEqual(of(keyed, 'implement'), [M1, DEF('implement')[1]]);
+  assert.deepEqual(of(keyed, 'fix', { resume: 's' }), [M1, DEF('implement')[1]]);
+  assert.deepEqual(of(keyed, 'answer', { resume: 's' }), [M2, DEF('plan')[1]]);
+  assert.deepEqual(of(keyed, 'probe', { format: 'stream-json' }), [M2, DEF('plan')[1]]);
+  assert.deepEqual(of(withUser({ model: { implement: M2 } }, { do: M1 }), 'fix', { resume: 's' })[0], M2, '저장소의 implement 가 사용자 do 보다 우선');
+  // extraArgs 의 플래그가 사용자 값보다 우선
+  const extra = withUser({ extraArgs: { commit: ['--model', M2], check: [`--effort=${E2}`] } }, { default: M1 }, { default: E1 });
+  assert.deepEqual(of(extra, 'commit'), [M2, E1]);
+  assert.deepEqual(of(extra, 'check'), [M1, null]);
+  assert.ok(claudeArgs(extra, 'check', { prompt: 'x' }).includes(`--effort=${E2}`));
+  // 사용자 값만으로 기본값과 달라진 단계만 바꾼 것으로 본다
+  const stages = ['plan', 'implement', 'check', 'commit'];
+  assert.deepEqual(stages.filter((p) => stageOverridden(withUser({}, { check: M1 }), p)), ['check']);
+  assert.deepEqual(stages.filter((p) => stageOverridden(withUser({}, { plan: DEF('plan')[0] }, { commit: DEF('commit')[1] }), p)), []);
+});
+
+test('사용자 파일이 단계 값을 바꾸면 inline 으로 부르고, 깨졌으면 세션 전에 멈춘다', () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]) });
+  const file = path.join(r.home, 'am', 'models.json');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ model: { check: M1 } }));
+  const dry = r.orch('run', '--dry-run');
+  assert.equal(dry.code, 0, dry.out);
+  assert.match(dry.out, /스킬 호출 방식 slash\(check 는 설정이 모델·effort 를 바꿔 inline\)/);
+  assert.match(dry.out, new RegExp(`\\[check\\]\\n[^\\n]*--model ${M1}`));
+  writeFileSync(file, '{"effort":{"check":"huge"}}');
+  const before = r.calls().length;
+  const run = r.orch('run');
+  assert.equal(run.code, 2, run.out);
+  assert.ok(run.out.includes(file) && run.out.includes('사용자 모델 설정 파일이 잘못돼 세션을 띄우지 않고 멈춥니다'), run.out);
+  assert.equal(r.calls().length, before, '세션을 띄우지 않는다');
 });
 
 // ------------------------------------------------------------------ 흐름

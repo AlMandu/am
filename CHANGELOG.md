@@ -1,5 +1,10 @@
 # Changelog
 
+## am-orchestrator 0.8.0 (2026-10-09)
+
+- 단계 세션이 PC 별 사용자 모델 설정 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 을 저장소 `.orchestrator/config.json` 다음 순서로 읽는다(모델·노력 수준 따로). 구현 단계의 키는 `do` 이고, 수정·답변 세션은 구현·계획의 값을 물려받는다. 파일이 없으면 지금과 똑같다.
+- 이 파일의 값이 기본값과 다르면 그 단계를 inline 으로 부르고, 파일이 깨졌으면 세션을 하나도 띄우지 않고 파일 경로와 함께 멈춘다.
+
 ## 0.1.28 (2026-10-09)
 
 - PC 마다 단계별 모델·노력 수준을 적는 사용자 설정 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 을 Claude Code 의 `am:auto` 단계 명령이 읽는다. 파일이 없으면 지금과 똑같다.

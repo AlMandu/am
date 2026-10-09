@@ -68,7 +68,8 @@ test('am:compactmem never runs inside an am-orchestrator session (user decision)
   // The words the skill looks for are the ones every orchestrator session gets.
   const orch = readFileSync(path.resolve(ROOT, '..', '..', 'orchestrator', 'scripts', 'orchestrator.mjs'), 'utf8');
   assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
-  assert.doesNotMatch(orch, /compactmem/, 'the orchestrator never calls it');
+  // Its copy of the user models key list may name the key; nothing else may.
+  assert.doesNotMatch(orch.replace(/^export const USER_MODEL_KEYS = \[.*\];$/m, ''), /compactmem/, 'the orchestrator never calls it');
   assert.match(read('check'), /in Claude Code outside an am-orchestrator run the am:compactmem skill/);
   assert.match(read('auto'), /skip check, compactmem and commit/);
 });

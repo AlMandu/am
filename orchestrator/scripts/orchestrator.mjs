@@ -51,7 +51,7 @@ export function defaults() {
     taskLimits: { maxFiles: 8, maxPlanLines: 150 },
     requiredGateCommands: [], // am-gate.json 의 명령 이름. "blocking": false 라 커밋 훅에서는 돌지 않지만 오케스트레이터의 게이트에서는 통과해야 하는 것(느린 테스트 등)
     volatilePaths: [], // 빌드 도구가 빌드할 때마다 다시 쓰는 추적 파일(경로나 glob). 게이트가 같은 내용을 다시 만들어 내면 커밋하지 않고 되돌린다
-    model: {}, // { default, split, plan, implement, check, commit } → --model. fix 는 implement, answer 는 plan 의 값을 물려받는다. 적지 않은 단계는 STAGE_DEFAULTS
+    model: {}, // { default, split, plan, implement, check, commit } → --model. fix 는 implement, answer 는 plan 의 값을 물려받는다. 적지 않은 단계는 사용자 파일, 그다음 STAGE_DEFAULTS
     effort: {}, // model 과 같은 키 → --effort
     timeoutMin: { probe: 5, split: 40, plan: 75, answer: 75, implement: 90, fix: 60, check: 45, commit: 25, gate: 30 },
     extraArgs: {}, // { all: [...], implement: [...] } 단계별로 claude 에 덧붙일 플래그
@@ -70,7 +70,7 @@ export function defaults() {
 // 권한 묶음을 같이 쓰는 단계
 const PROFILE = { probe: 'plan', answer: 'plan', fix: 'implement' };
 
-// 설정에 적은 값이 없을 때 단계마다 넘기는 모델과 effort. 설정의 default 보다 뒤라서 defaults() 에 넣지 않는다.
+// 설정에 적은 값이 없을 때 단계마다 넘기는 모델과 effort. 설정과 사용자 파일보다 뒤라서 defaults() 에 넣지 않는다.
 // plan·implement·check·commit 은 그 단계가 부르는 am 스킬 머리말의 값과 같아야 한다(tests/orchestrator-skill.test.mjs).
 // 모델은 별칭으로 적는다: 사용자의 Claude Code 버전과 공급자에 맞는 모델로 풀린다.
 export const STAGE_DEFAULTS = {
@@ -372,11 +372,56 @@ function ensureIgnored(repo, dir) {
 
 // ------------------------------------------------------------------ 설정과 실행 문맥
 
+// PC 단위 사용자 모델 설정 파일 읽기. am 의 plugin/scripts/user-models.mjs 와 경로·검사·오류 문구가 같은 사본이다(플러그인끼리 import 하지 않음).
+export const USER_MODEL_KEYS = ['default', 'plan', 'do', 'check', 'compactmem', 'commit', 'compact', 'run', 'split'];
+export const USER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** 이 환경의 사용자 모델 설정 파일 경로. */
+export const userModelsFile = (env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am', 'models.json');
+
+/** 메모(`_` 키)를 뺀 { model, effort }. 파일이 없으면 빈 값, 첫 문제에서 { error } (없는 파일 말고는 읽기 오류도 문제). */
+export function readUserModels(file) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { model: {}, effort: {} };
+    return { error: `${file}: cannot read the file (${oneLine(err && err.message)})` };
+  }
+  let data;
+  try {
+    data = JSON.parse(text.replace(/^﻿/, ''));
+  } catch (err) {
+    return { error: `${file}: not valid JSON (${oneLine(err && err.message)})` };
+  }
+  const problem = (what) => ({ error: `${file}: ${what}` });
+  const isNote = (k) => k.startsWith('_');
+  if (!isObj(data)) return problem('the top level must be a JSON object');
+  for (const k of Object.keys(data)) if (k !== 'model' && k !== 'effort' && !isNote(k)) return problem(`unknown key "${k}" (use "model" or "effort")`);
+  const result = {};
+  for (const part of ['model', 'effort']) {
+    const section = data[part] === undefined ? {} : data[part];
+    if (!isObj(section)) return problem(`"${part}" must be a JSON object of stage keys`);
+    result[part] = {};
+    for (const [k, v] of Object.entries(section)) {
+      if (isNote(k)) continue;
+      if (!USER_MODEL_KEYS.includes(k)) return problem(`unknown key "${part}.${k}" (${k === 'implement' ? 'use "do"' : `use one of ${USER_MODEL_KEYS.join(', ')}`})`);
+      if (part === 'model' && (typeof v !== 'string' || !v.trim())) return problem(`model.${k} must be a non-empty string (got ${JSON.stringify(v)})`);
+      if (part === 'effort' && !USER_EFFORTS.includes(v)) return problem(`effort.${k} must be one of ${USER_EFFORTS.join(', ')} (got ${JSON.stringify(v)})`);
+      result[part][k] = v;
+    }
+  }
+  return result;
+}
+
 function loadConfig(repo) {
   const file = path.join(repo, ORCH_DIR, 'config.json');
   const cfg = existsSync(file) ? merge(defaults(), readJson(file)) : defaults();
   // 문자열 하나로 적으면 단계 키를 찾지 못해 모든 단계가 조용히 기본값으로 돈다. 세션을 띄우기 전에 알린다.
   for (const key of ['model', 'effort']) if (!isObj(cfg[key])) fail(`config.json 의 "${key}" 값은 단계별 값을 담은 객체여야 합니다. 예: "${key}": { "default": "${key === 'model' ? 'sonnet' : 'medium'}" }`);
+  const user = readUserModels(userModelsFile(process.env));
+  if (user.error) fail(`사용자 모델 설정 파일이 잘못돼 세션을 띄우지 않고 멈춥니다: ${user.error}\n파일을 고치거나 지우고(지우면 기본값으로 돕니다) 다시 실행하세요.`);
+  cfg.userModels = user; // merge 뒤에 넣어 config.json 의 값과 섞이지 않는다
   return cfg;
 }
 
@@ -497,15 +542,18 @@ const totalCost = (ctx) => Object.values(ctx.costs).reduce((s, v) => s + v, 0);
 // ------------------------------------------------------------------ claude 호출
 
 /**
- * 단계에 넘길 모델·effort 와 덧붙일 플래그. 단계에 적은 값 → 물려받는 단계의 값 → 설정의 default → STAGE_DEFAULTS 순.
- * 이어 가는 단계(fix, answer)는 원래 단계(implement, plan)의 값과 플래그를 물려받는다.
+ * 단계에 넘길 모델·effort 와 덧붙일 플래그. 모델과 effort 따로, 설정(단계 → 물려받는 단계 → default) → 사용자 파일(단계 키 → default) → STAGE_DEFAULTS 순.
+ * 이어 가는 단계(fix, answer)는 원래 단계(implement, plan)의 값과 플래그를 물려받는다. 사용자 파일의 implement 키는 do 다.
  * 이어 가는 세션이 처음 쓰던 모델과 effort 를 그대로 쓰는지는 재 보지 못했으므로, 이어 갈 때도 처음과 같은 값을 넘긴다.
  */
 function stageFlags(cfg, phase) {
   const base = PROFILE[phase];
   const builtin = STAGE_DEFAULTS[base || phase];
-  const model = cfg.model[phase] ?? cfg.model[base] ?? cfg.model.default ?? builtin.model;
-  const effort = cfg.effort[phase] ?? cfg.effort[base] ?? cfg.effort.default ?? builtin.effort;
+  const u = cfg.userModels || { model: {}, effort: {} };
+  const userKey = (p) => (p === 'implement' ? 'do' : p);
+  const key = userKey(base || phase);
+  const model = cfg.model[phase] ?? cfg.model[base] ?? cfg.model.default ?? u.model[key] ?? u.model.default ?? builtin.model;
+  const effort = cfg.effort[phase] ?? cfg.effort[base] ?? cfg.effort.default ?? u.effort[key] ?? u.effort.default ?? builtin.effort;
   return { model, effort, extra: [...(cfg.extraArgs.all || []), ...(cfg.extraArgs[phase] ?? cfg.extraArgs[base] ?? [])] };
 }
 
@@ -519,7 +567,7 @@ function flagValue(args, name) {
   return value;
 }
 
-/** 설정이 이 단계의 모델이나 effort 를 기본값과 다르게 정했는가(단계 키, default, extraArgs 의 --model·--effort). */
+/** 설정이 이 단계의 모델이나 effort 를 기본값과 다르게 정했는가(단계 키, default, 사용자 파일, extraArgs 의 --model·--effort). */
 export function stageOverridden(cfg, phase) {
   const { model, effort, extra } = stageFlags(cfg, phase);
   return (flagValue(extra, '--model') ?? model) !== STAGE_DEFAULTS[phase].model || (flagValue(extra, '--effort') ?? effort) !== STAGE_DEFAULTS[phase].effort;
