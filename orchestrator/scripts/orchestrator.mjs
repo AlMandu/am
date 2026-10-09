@@ -1107,7 +1107,6 @@ function writeReport(ctx) {
     `- 설계 문서: ${plan.design}`,
     `- 브랜치: ${state.branch || '-'} (push 하지 않음)`,
     `- 진행: ${done.length} / ${plan.tasks.length} 완료${plan.tasks.filter((t) => st(t).running).map((t) => `, 지금 ${t.id} ${RUNNING_KO[st(t).running] || st(t).running}`).join('')}`,
-    `- 비용 추정: $${totalCost(ctx).toFixed(2)} (claude 가 알려 준 값의 합, 구독 사용 시 참고용)`,
     `- 동시 진행: ${par.max > 1 ? `서로 무관한 작업을 최대 ${par.max}개까지${par.sessions ? ' (이 PC 의 동시 세션 제한)' : ''}` : `하나씩${par.reason ? ` (${par.reason})` : ''}`}`,
     '',
     '## 사람이 할 일',

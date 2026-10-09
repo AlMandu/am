@@ -28,7 +28,7 @@ function readsStatusLikeAuto(text) {
   const fields = [...new Set([...text.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]))].sort();
   assert.deepEqual(fields, ['branch', 'id', 'report']);
   for (const f of fields) assert.match(RUN[1], new RegExp(`\\b${f}:`), `run.${f}`);
-  for (const field of ['costUsd', 'autoDecided']) assert.ok(text.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
+  for (const field of ['autoDecided']) assert.ok(text.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
   for (const c of ['split', 'decide']) assert.ok(text.includes(`\`${c}\``) && new RegExp(`^\\| \`${c}[ \`]`, 'm').test(SKILL), c);
   for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(text.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
 }
@@ -78,7 +78,7 @@ test('the skill and the script agree on commands and on every "next" value', () 
   assert.deepEqual([...new Set(code)].sort(), [...values].sort(), 'the documented next values and the ones the script sets');
   for (const v of values) assert.ok(SKILL.includes(`\`${v}\``), `skill does not say what to do on "${v}"`);
   // The fields the skill tells the session to read exist in the status output.
-  for (const field of ['next', 'decisions', 'needsDecision', 'blocked', 'errors', 'running', 'autoDecided', 'costUsd']) {
+  for (const field of ['next', 'decisions', 'needsDecision', 'blocked', 'errors', 'running', 'autoDecided']) {
     assert.ok(SKILL.includes(`\`${field}`) && new RegExp(`\\b${field}\\b`).test(SCRIPT), field);
   }
   for (const field of ['run.tasks', 'run.report', 'blocked[].reason', 'blocked[].logs', 'blocked[].hint', 'needsDecision[].file']) assert.ok(SKILL.includes(`\`${field}\``), field);

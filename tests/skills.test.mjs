@@ -105,7 +105,7 @@ test('am:auto drives the stage runner and handles every status it prints', async
   // The plan stage reads the request from this file (cmd.exe cannot pass every request as an argument).
   assert.ok(auto.includes('`.am/<slug>/request.md`'));
   for (const status of [...new Set(Object.values(MARKS).flat()), 'failed', 'unavailable', 'WAIT']) assert.ok(auto.includes(`\`${status}\``), `status ${status}`);
-  for (const field of ['status', 'reason', 'reply', 'costUsd', 'compacted']) assert.ok(auto.includes(`\`${field}\``), field);
+  for (const field of ['status', 'reason', 'reply', 'compacted']) assert.ok(auto.includes(`\`${field}\``), field);
 });
 
 test('am:auto starts the progress command next to every stage command', async () => {

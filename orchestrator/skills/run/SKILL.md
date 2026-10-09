@@ -88,4 +88,4 @@ Rules while driving:
    - what was decided for the user: every line of `autoDecided` in plain words, or none;
    - what the user must check by hand: the checklist section of the report at `run.report`, shortened to what matters, with the path for the rest;
    - what is still open (a blocked task, an unanswered question) and how to continue: this skill with no argument;
-   - the cost estimate from `costUsd`, and the next step, which is the user's: look at the result, then merge.
+   - the next step, which is the user's: look at the result, then merge.
