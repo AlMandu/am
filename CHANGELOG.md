@@ -12,6 +12,7 @@
 - 맥락 압축 세션은 이 파일의 `compact` 값(없으면 `default` 값)으로 돌고, 내장값과 다르면 진행 소식에 "model …, effort … from the user's setting …" 한 줄이 남는다.
 - 계획·구현·점검·메모리 정리·커밋 세션도 이 파일의 `plan`·`do`·`check`·`compactmem`·`commit` 값(없으면 `default` 값)으로 돈다. 그 값이 스킬의 기본값과 다르면 진행 소식에 같은 모양의 한 줄이 남고, 같거나 적지 않았으면 지금과 똑같다.
 - 큰 작업을 `am-orchestrator` 에 넘기는 세션도 이 파일의 `run` 값(없으면 `default` 값)으로 돈다. 기본값은 run 스킬의 값(opus, medium)이고, 다르면 진행 소식에 같은 모양의 한 줄이 남는다. `default` 만 적어도 이 세션이 바뀐다.
+- 파일 위치·예시·키·적용 범위와 제외 대상은 README 의 "모델과 effort 기본값" 절에, 오케스트레이터에서 저장소 설정과 겹칠 때의 순서는 orchestrator/README.md 의 "모델과 effort" 절에 적었다.
 
 ## am-orchestrator 0.7.0 (2026-10-09)
 

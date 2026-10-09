@@ -180,7 +180,7 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 
 ## 모델과 effort
 
-오케스트레이터가 띄우는 세션에는 단계마다 `--model` 과 `--effort` 를 넘깁니다. 설정에 아무것도 적지 않으면 아래 값으로 돕니다.
+오케스트레이터가 띄우는 세션에는 단계마다 `--model` 과 `--effort` 를 넘깁니다. 설정과 사용자 파일에 아무것도 적지 않으면 아래 값으로 돕니다.
 
 <!-- am:models:start -->
 
@@ -196,11 +196,13 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 <!-- am:models:end -->
 
 - 계획·구현·점검·커밋의 값은 그 단계가 부르는 am 스킬에 정해 둔 값과 같습니다. 분할은 한 세션이 모든 작업을 정하고 뒤에 형식 검사만 있어 따로 정합니다.
-- 바꾸려면 `.orchestrator/config.json` 의 `model`, `effort` 에 적습니다. 정하는 순서는 단계에 적은 값 → 물려받는 단계의 값(`fix` 는 `implement`, `answer` 는 `plan`) → `default` → 위 표입니다. 예: `{ "model": { "default": "sonnet", "implement": "opus" }, "effort": { "commit": "low" } }`. 둘 다 객체로 적어야 하고, `"model": "sonnet"` 처럼 문자열 하나로 적으면 세션을 띄우기 전에 멈추고 알려 줍니다.
-- 이어 가는 세션(`fix`, `answer`, 표시 줄을 되묻는 호출)에도 처음과 같은 `--model`·`--effort` 를 넘깁니다. 실행 도중 설정을 고치면 그다음 호출부터(이어 가는 호출 포함) 고친 값이 쓰입니다.
+- 바꾸려면 `.orchestrator/config.json` 의 `model`, `effort` 에 적습니다. 예: `{ "model": { "default": "sonnet", "implement": "opus" }, "effort": { "commit": "low" } }`. 둘 다 객체로 적어야 하고, `"model": "sonnet"` 처럼 문자열 하나로 적으면 세션을 띄우기 전에 멈추고 알려 줍니다.
+- PC 의 모든 저장소에 같은 값을 쓰려면 사용자 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 에 적습니다. 예: `{ "model": { "default": "sonnet" }, "effort": { "check": "medium" } }`. 형식과 키는 am README 의 ["모델과 effort 기본값"](../README.md#모델과-effort-기본값) 절에 있습니다. 이 파일이 깨졌으면 `status --json`·`doctor` 를 포함해 세션을 띄우기 전에 멈추고 알려 줍니다.
+- 정하는 순서는 모델과 effort 따로, 저장소 `.orchestrator/config.json` 의 사슬(단계에 적은 값 → 물려받는 단계의 값(`fix` 는 `implement`, `answer` 는 `plan`) → `default`) → 사용자 파일의 같은 사슬(구현 키는 `do`) → 위 표입니다. 그래서 `config.json` 의 `default` 도 사용자 파일의 단계 키보다 먼저입니다.
+- 이어 가는 세션(`fix`, `answer`, 표시 줄을 되묻는 호출)에도 처음과 같은 `--model`·`--effort` 를 넘깁니다. 실행 도중 설정이나 사용자 파일을 고치면 그다음 호출부터(이어 가는 호출 포함) 고친 값이 쓰입니다.
 - 그 단계의 `extraArgs` 에 `--model` 이나 `--effort` 가 있으면 그 값만 넘깁니다. effort 를 `extraArgs` 로 적어 둔 예전 설정은 그대로 동작합니다.
-- 설정이 어떤 단계의 값을 위 표와 다르게 정하면 그 단계의 스킬만 inline 으로 부릅니다(SKILL.md 본문을 머리말 없이 넘김). 슬래시로 부르면 am 스킬 머리말의 값이 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지 Claude Code 문서에 없기 때문입니다. 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계가 나옵니다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않으므로, 그때는 설정한 값 대신 스킬 머리말의 값이 쓰일 수 있습니다.
-- 스킬을 실행한 세션(`am-orchestrator:run`, 표 마지막 줄)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다.
+- 설정이나 사용자 파일이 어떤 단계의 값을 위 표와 다르게 정하면 그 단계의 스킬만 inline 으로 부릅니다(SKILL.md 본문을 머리말 없이 넘김). 슬래시로 부르면 am 스킬 머리말의 값이 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지 Claude Code 문서에 없기 때문입니다. 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계가 나옵니다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않으므로, 그때는 설정한 값 대신 스킬 머리말의 값이 쓰일 수 있습니다.
+- 스킬을 실행한 세션(`am-orchestrator:run`, 표 마지막 줄)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다. 사용자 파일도 이 차례에는 쓰이지 않고, 그 파일의 `run` 키는 `am:auto` 가 큰 작업을 넘길 때 띄우는 세션에만 쓰입니다.
 - 기본값처럼 모든 단계가 Opus 면 동시에 3개를 돌릴 때 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나, `sessions 2` 처럼 이 PC 의 동시 세션 제한을 낮추거나(모든 실행에 적용), 이 저장소만 `parallel` 을 낮춥니다. 분할의 effort 가 높으면 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
 - am 과 한쪽만 업데이트하면 위 표와 설치된 am 스킬의 값이 다를 수 있습니다. 함께 업데이트하세요. 스킬에 값이 없는 예전 am(0.1.9 이하)에서는 위 표대로 넘깁니다.
 

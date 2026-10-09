@@ -191,7 +191,7 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 다섯 단계를 각각 새
 - 요청 파일(`request.md`)은 사용자의 말 그대로라 크기에 세지도 줄이지도 않으며, 압축 세션이 건드리면 그 압축을 통째로 되돌립니다.
 - 원본은 `.am/<slug>/plan.orig-1.md` 처럼 남고, 다음 세션과 마지막 답에 줄인 파일과 원본 위치를 알립니다. 줄인 결과가 규모 줄·완료 표시·결정 표시·제목 같은 구조를 잃거나 여전히 크면 원본으로 되돌리고 그대로 진행합니다.
 - 단계 세션은 확인 창을 띄울 수 없어서 단계마다 허용할 도구가 정해져 있습니다. 계획·메모리 정리는 읽기와 `.am/` 쓰기만, 구현·점검은 편집과 셸(단 커밋·push·reset·브랜치 전환·stash 는 막음), 커밋은 git add·commit·restore 와 그 작업의 `commits.md` 쓰기, `push` 를 붙였을 때만 push 입니다.
-- 각 단계는 그 스킬의 모델·effort 로 돌아, 계획·점검은 `high` 입니다.
+- 각 단계는 그 스킬의 모델·effort 로 돌아, 계획·점검은 `high` 입니다(사용자 설정 파일로 바꿀 수 있음, 아래 "모델과 effort 기본값").
 - 구현·메모리 정리·커밋 단계와 압축 세션은 프롬프트 캐시(이미 보낸 앞부분을 잠시 저장해 다시 보낼 때 비용을 줄이는 기능)를 5분 보관으로 써 비용을 줄이고(`FORCE_PROMPT_CACHING_5M`), 검토자와 게이트를 오래 기다리는 계획·점검은 1시간 보관 그대로입니다.
 - 이 프로젝트의 메모리 폴더(git worktree, 곧 같은 저장소를 다른 폴더에 하나 더 꺼내 둔 작업 폴더에서는 저장소 본체와 함께 쓰는 폴더까지)에 메모리 파일(`.md`)이 없고 메모리 폴더를 옮기는 설정(`autoMemoryDirectory`)도 없으면 메모리 정리 세션을 띄우지 않고 "정리할 것 없음"으로 바로 넘어가며, 그 이유 한 줄을 `compactmem.md` 에 남깁니다.
 
@@ -349,7 +349,7 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 - 스킬을 실행한 세션이 준비·분할·실행·재개를 알아서 하고, 사용자만 답할 수 있는 것이 생겼을 때만 멈추고 결정 카드로 묻습니다. 묻고 멈추는 기준은 `am:auto` 와 같습니다.
 - 작업마다 세션을 따로 띄워 단계별로 권한을 달리 주고, 단계 사이에 게이트(`am-gate.json`)와 작업 트리를 직접 확인합니다. 실행용 브랜치에 커밋만 쌓고 push 는 하지 않습니다.
-- 띄우는 세션의 모델과 effort 도 단계별로 정해져 있습니다(값은 [orchestrator/README.md](orchestrator/README.md) 의 "모델과 effort" 표). 대상 저장소의 `.orchestrator/config.json` 에서 바꿉니다.
+- 띄우는 세션의 모델과 effort 도 단계별로 정해져 있습니다(값은 [orchestrator/README.md](orchestrator/README.md) 의 "모델과 effort" 표). 대상 저장소의 `.orchestrator/config.json` 에서 바꿉니다. PC 의 모든 저장소에 쓰려면 아래 "모델과 effort 기본값" 의 사용자 설정 파일에도 적을 수 있고, 저장소의 설정이 그보다 우선합니다.
 - 띄우는 세션은 이 PC 의 모든 실행을 합쳐 최대 3개까지만 함께 돕니다. `/am-orchestrator:run sessions 2` 처럼 바꾸고, 값은 업데이트해도 남습니다(자세한 것은 [orchestrator/README.md](orchestrator/README.md) 의 "동시 세션 제한").
 - `am` 플러그인은 그대로 작게 둡니다. 오케스트레이터는 am 의 스킬과 게이트를 복사하지 않고 설치된 것을 부릅니다.
 - 이 플러그인이 설치돼 있으면 `am:auto` 도 큰 작업의 구현을 여기에 넘깁니다. 이때는 `am:auto` 가 쓴 계획 문서를 설계 문서로 쓰고, 다 끝나면 실행용 브랜치를 시작한 브랜치로 합칩니다(위 "`am:auto`" 의 "큰 작업은 오케스트레이터에 넘김" 참고).
@@ -358,7 +358,7 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 ## 모델과 effort 기본값
 
-Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모델과 effort 로 돕니다. 설치만 하면 적용되고 따로 설정할 것은 없습니다.
+Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모델과 effort 로 돕니다. 설치만 하면 적용되고 따로 설정할 것은 없습니다. `am:auto` 와 오케스트레이터가 띄우는 세션은 아래 사용자 설정 파일로 바꿀 수 있습니다.
 
 <!-- am:models:start -->
 
@@ -384,12 +384,49 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 <details>
 <summary>값이 적힌 곳, <code>am:auto</code> 에서의 적용, 환경 변수로 바꾸기</summary>
 
-- 값은 각 `SKILL.md` 머리말(frontmatter)의 `model`, `effort` 에 있습니다. 설치한 플러그인의 값을 사용자가 따로 바꾸는 방법은 Claude Code 에 없습니다.
+- 값은 각 `SKILL.md` 머리말(frontmatter)의 `model`, `effort` 에 있습니다. 직접 부른 스킬의 차례는 사용자가 바꿀 수 없고, `am:auto` 와 오케스트레이터가 띄우는 단계 세션은 아래 사용자 설정 파일로 바꿉니다.
 - Claude Code 의 `am:auto` 는 단계마다 그 스킬을 부르는 새 세션을 띄우므로 단계별 값이 적용되고, 원래 대화에는 `am:auto` 의 값만 적용됩니다. Codex 처럼 한 세션으로 진행하면 다른 스킬을 부르지 않고 파일을 읽어 따르므로 `am:auto` 의 값만 적용됩니다.
 - 모델은 별칭(`opus`)으로 적었습니다. 쓰는 Claude Code 버전과 공급자의 Opus 로 풀리고, 환경 변수 `ANTHROPIC_DEFAULT_OPUS_MODEL` 로 다른 모델에 연결할 수 있습니다. effort 는 환경 변수 `CLAUDE_CODE_EFFORT_LEVEL` 이 우선합니다.
 - 2차 의견 서브에이전트의 모델과 effort 는 따로 고정돼 있습니다(위 "기술 선택은 누가 정하나" 절).
 
 </details>
+
+### 단계 세션의 모델과 effort 바꾸기 (사용자 설정 파일)
+
+`am:auto` 와 오케스트레이터가 띄우는 단계 세션의 모델과 effort 는 PC 마다 둔 파일 하나로 바꿀 수 있습니다. Claude Code 전용입니다.
+
+- 위치: `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json`(Windows 예: `C:\Users\<이름>\.claude\am\models.json`). 저절로 생기지 않으니 직접 만듭니다. 플러그인 폴더 밖이라 업데이트해도 남고, 이 PC 의 모든 저장소에 적용됩니다.
+- 예시: 계획은 Opus, 나머지 세션은 Sonnet 으로 돌리고 점검의 effort 만 `medium` 으로 낮춥니다.
+
+```json
+{
+  "model": { "default": "sonnet", "plan": "opus" },
+  "effort": { "check": "medium" },
+  "_note": "_ 로 시작하는 키는 메모로, 무시됩니다"
+}
+```
+
+- `model` 과 `effort` 는 둘 다 생략할 수 있고, 적을 때는 키별 값을 담은 객체로 적습니다. `_` 로 시작하는 키는 맨 위와 `model`·`effort` 안 어디에나 메모로 둘 수 있습니다.
+- 값: 모델은 별칭(`sonnet`, `opus`, `haiku`)이나 전체 모델 ID, effort 는 `low`·`medium`·`high`·`xhigh`·`max` 중 하나입니다.
+
+| 키 | `am:auto` 가 띄우는 세션 | 오케스트레이터가 띄우는 세션 |
+|---|---|---|
+| `default` | 아래 키를 적지 않은 모든 세션 | 같음 |
+| `plan` | 계획 | 계획, 결정 답변, `doctor` 의 시험 호출 |
+| `do` | 구현, 고치는 구현 | 구현, 수정(`implement` 로 적으면 오류) |
+| `check` | 점검 | 점검 |
+| `compactmem` | 메모리 정리 | 쓰지 않음 |
+| `commit` | 커밋 | 커밋 |
+| `compact` | 단계 사이 맥락 압축 | 쓰지 않음 |
+| `run` | 큰 작업을 오케스트레이터에 넘기는 세션 | 쓰지 않음 |
+| `split` | 쓰지 않음 | 분할 |
+
+- 정하는 순서: 모델과 effort 따로, 그 세션의 키 → `default` → 위 "모델과 effort 기본값" 표의 값입니다. 오케스트레이터에서는 대상 저장소의 `.orchestrator/config.json` 이 이 파일보다 먼저입니다(자세한 순서는 [orchestrator/README.md](orchestrator/README.md) 의 "모델과 effort").
+- 적용 방식: 정해진 값이 그 스킬의 기본값(위 표)과 다른 단계만 스킬 본문을 머리말 없이 넘기는 inline 으로 부르고 `--model`·`--effort` 를 붙입니다. 슬래시로 부르면 스킬 머리말의 값도 함께 실리는데, 넘긴 플래그와 어느 쪽이 쓰이는지 Claude Code 문서에 없기 때문입니다. 이때 `am:auto` 는 진행 소식에 `model …, effort … from the user's setting <파일>` 한 줄을 남기고, 오케스트레이터는 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계를 보여 줍니다. 값이 같거나 파일에 적지 않은 단계는 지금과 똑같이 돕니다.
+- `am:auto` 는 단계 명령마다 파일을 다시 읽으므로, 실행 도중 고치면 다음 단계 세션부터 고친 값이 쓰입니다.
+- 쓰이지 않는 곳: 직접 부른 스킬의 차례(`am:auto` 를 부른 대화 자체, 손으로 부른 `am:plan` 등, 손으로 부른 `am-orchestrator:run`), 2차 의견 서브에이전트, Codex 2차 의견(위 표와 "기술 선택은 누가 정하나" 절의 환경 변수를 참고), Codex 안에서 쓰는 am, 세션을 띄우지 못해 한 세션으로 진행하는 경우.
+- 잘못 적으면: 깨진 JSON, 모르는 키, 빈 모델 이름, 목록에 없는 effort, 읽을 수 없는 파일이면 세션을 하나도 띄우지 않고 파일 경로와 문제를 알리며 멈춥니다(`am:auto` 는 영어 한 줄, 오케스트레이터는 한국어 안내). 파일을 고치거나 지우면 예전처럼 돕니다.
+- 확인하지 못한 점: 고른 모델에서 쓸 수 없는 effort(예: 일부 모델의 `xhigh`·`max`)나 조직이 막은 모델을 적었을 때 Claude Code 가 어떻게 하는지는 확인하지 못했습니다. 모델 이름은 파일 검사에서 확인하지 않으므로(빈 이름만 막음) 오타는 세션이 뜬 뒤에야 드러납니다.
 
 ## 우회와 한계
 
