@@ -160,6 +160,7 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 | `skillMode` | `auto` | `slash`, `inline`, 또는 doctor 결과에 따름 |
 | `branch` | `orch/{run}` | 실행용 브랜치. `""` 이면 현재 브랜치 |
 | `parallel` | `3` | 동시에 돌릴 작업 수. `1` 이면 예전처럼 하나씩. 이 PC 의 동시 세션 제한보다 크면 그 제한까지만. 아래 "동시 진행" 참고 |
+| `minFreeMemoryMB` | 기본 기준(3072) | 다른 세션이나 오케스트레이터의 게이트가 도는 중 PC 의 남은 메모리(MB)가 이보다 적으면 다음 세션 시작을 미룸. `0` 이면 끔. 기본 기준은 Windows 에서만 쓰고, 직접 적은 양수는 모든 OS 에서 씀. 아래 "동시 세션 제한" 참고 |
 | `worktreeSetup` | 없음 | 새 작업 공간 안에서 먼저 돌릴 셸 명령. 예: `["npm ci"]`. 환경 변수 `ORCH_MAIN_REPO` 에 원래 저장소 경로 |
 | `requireGate` | `true` | `am-gate.json` 이 없으면 시작하지 않음 |
 | `orchestratorGate` | `true` | 점검 뒤 게이트를 직접 한 번 더 실행 |
@@ -218,7 +219,8 @@ node <경로>/orchestrator.mjs sessions 2   스킬 없이(저장소 밖에서도
 - 바꾼 값은 돌고 있는 실행에도 그다음 세션부터 적용됩니다. `sessions` 는 실행 중에도 부를 수 있습니다(저장소 잠금을 잡지 않음).
 - 한 실행 안에서는 `parallel` 과 이 제한 중 작은 수만큼 작업을 함께 돌립니다. 다른 실행이 자리를 다 쓰고 있으면 진행 줄에 "이 PC 에서 오케스트레이터 세션 N개가 돌고 있어 자리가 날 때까지 기다립니다"가 나오고, 자리가 나면 이어 갑니다. 기다린 시간은 단계 제한 시간에 들어가지 않고, 기다림에 상한은 없습니다(Ctrl+C 로 끝냄). 기다리는 순서는 정해져 있지 않습니다.
 - 돌고 있는 세션마다 `<Claude 설정 폴더>/am-orchestrator/sessions/` 에 기록이 하나 생기고 세션이 끝나면 지워집니다. 오케스트레이터가 강제로 끝나 기록이 남아도, 30초마다 새로 고치지 않은 기록은 5분 뒤 빈 자리로 봅니다(PC 가 잠자기에서 막 깨어났을 때는 2분 더 기다림). 같은 호스트 이름이고 프로세스가 없으면 바로 빈 자리입니다.
-- `doctor` 의 시험 호출, 게이트(빌드·테스트), 계획 세션 안의 Codex 2차 의견은 세지 않습니다.
+- `doctor` 의 시험 호출, 게이트(빌드·테스트), 계획 세션 안의 Codex 2차 의견은 세지 않습니다. 오케스트레이터가 직접 돌리는 게이트와 `worktreeSetup` 은 도는 동안 따로 기록(`….gate.json`)을 남겨 아래 메모리 확인에서만 셉니다.
+- 남은 메모리: Claude Code 는 PC 메모리가 매우 부족하면 쉬고 있는 세션의 백그라운드 실행을 끕니다. `am:auto` 가 넘긴 구현이라면 오케스트레이터와 돌던 작업이 모두 함께 꺼집니다. 그래서 새 세션을 띄우기 직전, 이 PC 에서 다른 오케스트레이터 세션이나 오케스트레이터의 게이트가 이미 돌고 있고 남은 메모리가 기준(`minFreeMemoryMB`, 기본 3072MB, 기본 기준은 Windows 만)보다 적으면 시작을 미룹니다. 진행 줄에 "PC 의 남은 메모리가 …MB 로 기준 …MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다"가 나오고, 진행 소식에도 한 줄 남습니다. 혼자 도는 세션은 메모리와 상관없이 바로 시작합니다. 결과는 같고, 메모리가 빠듯할 때 작업이 하나씩 돌아 느려질 수만 있습니다. 이미 돌고 있는 세션의 메모리가 치솟는 것은 막지 못합니다. 끄려면 `config.json` 에 `"minFreeMemoryMB": 0`.
 - 기록 폴더에 쓸 수 없으면(샌드박스, 읽기 전용 폴더 등) 실행 로그에 한 번 알리고 다른 실행과 함께 세지 않은 채 진행합니다. 한 실행 안의 제한은 그대로 지킵니다. `doctor` 가 써 볼 수 있는지 확인하고, `status --json` 의 `sessions` 는 `max`(제한), `inUse`(지금 도는 수), `shared`(doctor 가 확인한 쓰기 가능 여부)를 알려 줍니다.
 - 같은 홈 폴더를 여러 PC 가 함께 쓰거나(네트워크 홈) 실행마다 `CLAUDE_CONFIG_DIR` 이 다르면, 제한도 그 폴더 단위로 셉니다.
 
@@ -348,7 +350,7 @@ tests/orchestrator-doctor.test.mjs        doctor, 게이트 설정, 시작 조�
 tests/orchestrator-parallel.test.mjs      별도 작업 공간에서의 동시 진행
 tests/orchestrator-volatile.test.mjs      volatilePaths, 커밋 세션의 빌드 산출물 되돌림
 tests/orchestrator-rewrite.test.mjs       설정 없이 빌드가 다시 쓴 파일, git add -N
-tests/orchestrator-sessions.test.mjs      PC 전체의 동시 세션 제한, 같은 초 스냅샷
+tests/orchestrator-sessions.test.mjs      PC 전체의 동시 세션 제한·남은 메모리 대기, 같은 초 스냅샷
 tests/orchestrator-progress.test.mjs      진행 소식 이벤트, 잠금 파일의 실행 이름, progress 명령
 
 대상 저장소에 생기는 것 (모두 git 제외)

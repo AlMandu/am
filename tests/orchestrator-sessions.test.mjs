@@ -1,11 +1,11 @@
 // Run: node --test tests/orchestrator-sessions.test.mjs
-// 이 PC 전체의 동시 세션 제한과 같은 초 스냅샷 테스트. 공통 도우미·전체 명령은 tests/orchestrator-helpers.mjs
+// 이 PC 전체의 동시 세션 제한·남은 메모리 대기와 같은 초 스냅샷 테스트. 공통 도우미·전체 명령은 tests/orchestrator-helpers.mjs
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { snapshot } from '../orchestrator/scripts/orchestrator.mjs';
+import { DEFAULT_MIN_FREE_MEMORY_MB, memoryShortMB, snapshot } from '../orchestrator/scripts/orchestrator.mjs';
 import { task, planOf, PAR, sleep, makeRepo, prepared, statusJson } from './orchestrator-helpers.mjs';
 
 // ------------------------------------------------------------------ 이 PC 전체의 동시 세션 수
@@ -94,6 +94,71 @@ test('다른 실행이 이 PC 의 세션 자리를 모두 쓰고 있으면 기�
   assert.equal(await exited, 0, proc.out);
   assert.equal(r.statusOf().T01, 'done');
   assert.deepEqual(r.records(), [], '주인 없는 기록도 정리된다');
+});
+
+// ------------------------------------------------------------------ 남은 메모리
+
+test('memoryShortMB: 다른 세션·게이트가 돌 때만, 남은 메모리가 기준보다 적으면 기다리게 한다', { timeout: 10000 }, () => {
+  const MB = 1048576;
+  const short = (o) => memoryShortMB({ busy: 1, freeBytes: 100 * MB, setting: 500, platform: 'linux', ...o });
+  assert.deepEqual(short({}), { freeMB: 100, needMB: 500 });
+  assert.equal(short({ busy: 0 }), null, '혼자면 바로 시작');
+  assert.equal(short({ setting: 0 }), null);
+  assert.equal(short({ setting: '0' }), null);
+  assert.equal(short({ freeBytes: 500 * MB }), null);
+  assert.deepEqual(short({ setting: '500', platform: 'darwin' }), { freeMB: 100, needMB: 500 }, '직접 적은 값은 어느 OS 에서나');
+  assert.equal(DEFAULT_MIN_FREE_MEMORY_MB, 3072);
+  for (const setting of [null, undefined, '', 'abc', -5]) {
+    assert.equal(short({ setting }), null, `기본 기준은 win32 에서만: ${setting}`);
+    assert.deepEqual(short({ setting, platform: 'win32', freeBytes: 3071 * MB }), { freeMB: 3071, needMB: 3072 }, String(setting));
+    assert.equal(short({ setting, platform: 'win32', freeBytes: 3072 * MB }), null, String(setting));
+  }
+});
+
+/** 다른 호스트의 기록 하나를 둔 채 run 을 띄워 메모리 대기 줄을 기다린다. 기록을 지우면 이어서 끝난다. */
+async function waitsForMemory(r, name, record) {
+  const dir = path.join(r.home, 'am-orchestrator', 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const other = path.join(dir, name);
+  writeFileSync(other, JSON.stringify(record));
+  const proc = r.start('run');
+  const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
+  try {
+    for (let i = 0; i < 200 && !/시작을 미룹니다/.test(proc.out); i += 1) await sleep(50);
+    assert.match(proc.out, /\n {4}T01 plan: PC 의 남은 메모리가 \d+MB 로 기준 1000000000MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다 \(끄려면 config\.json 의 minFreeMemoryMB: 0\)/);
+    await sleep(1500);
+    assert.equal(r.calls().filter((c) => c.prompt.startsWith('/am:plan Plan task')).length, 0, '메모리가 생길 때까지 세션을 띄우지 않는다');
+    assert.equal(statusJson(r).next, 'wait');
+  } finally {
+    rmSync(other, { force: true });
+  }
+  assert.equal(await exited, 0, proc.out);
+  assert.equal(r.statusOf().T01, 'done');
+  assert.deepEqual(r.records(), [], '세션·게이트 기록이 남지 않는다');
+  const notes = readFileSync(path.join(r.runDir(), 'progress.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(notes.some((e) => e.ev === 'note' && e.task === 'T01' && /^waiting for free memory \(\d+ MB free, needs 1000000000 MB\)$/.test(e.text)), JSON.stringify(notes));
+}
+
+test('다른 세션이 돌고 남은 메모리가 기준보다 적으면 세션 시작을 미루고, 그 세션이 끝나면 이어 간다', { timeout: 60000 }, async () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1, minFreeMemoryMB: 1e9 } });
+  await waitsForMemory(r, 'other-host~4242~1.json', { repo: '/elsewhere', phase: 'implement' });
+});
+
+test('게이트 기록은 동시 세션 수에는 세지 않고 메모리 확인에서만 센다', { timeout: 60000 }, async () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1 } });
+  const dir = path.join(r.home, 'am-orchestrator', 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const gate = path.join(dir, 'other-host~4243~1.gate.json');
+  writeFileSync(gate, JSON.stringify({ repo: '/elsewhere', phase: 'gate' }));
+  assert.match(r.orch('sessions').out, /지금 도는 세션 0개/);
+  assert.equal(statusJson(r).sessions.inUse, 0);
+  const run = r.orch('run'); // minFreeMemoryMB 0: 바로 진행
+  assert.equal(run.code, 0, run.out);
+  assert.doesNotMatch(run.out, /시작을 미룹니다/);
+  assert.equal(r.statusOf().T01, 'done');
+  rmSync(gate, { force: true });
+  const r2 = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1, minFreeMemoryMB: 1e9 } });
+  await waitsForMemory(r2, 'other-host~4243~1.gate.json', { repo: '/elsewhere', phase: 'gate' });
 });
 
 // ------------------------------------------------------------------ 흐름

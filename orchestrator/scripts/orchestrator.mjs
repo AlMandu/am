@@ -41,6 +41,7 @@ export function defaults() {
     skillMode: 'auto', // auto | slash(/am:plan 호출) | inline(SKILL.md 를 읽어 지시문으로 전달)
     branch: 'orch/{run}', // 실행용 브랜치. '' 이면 현재 브랜치에서 진행
     parallel: 3, // 동시에 진행할 작업 수. 함께 도는 작업은 저마다 별도 작업 공간(git worktree)에서 구현한다. 1 이면 하나씩
+    minFreeMemoryMB: null, // 다른 세션·게이트가 돌 때 남은 메모리(MB)가 이보다 적으면 새 세션을 미룬다. null 은 기본 기준(Windows 만), 0 은 끔
     worktreeSetup: [], // 새 작업 공간 안에서 먼저 돌릴 셸 명령(예: "npm ci"). 환경 변수 ORCH_MAIN_REPO 에 원래 저장소 경로가 있다
     requireGate: true, // am-gate.json 이 없으면 실행을 시작하지 않는다
     orchestratorGate: true, // check 뒤, commit 전에 오케스트레이터가 gate.mjs 를 직접 한 번 더 돌린다
@@ -567,11 +568,19 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
     writeFileSync(`${base}.system.md`, system);
   }
   const [bin, ...pre] = ctx.cfg.claudeCommand;
-  // 이 PC 의 세션 자리를 잡은 뒤 띄운다. 기다린 시간은 제한 시간과 소요 분에 넣지 않는다
+  // 이 PC 의 세션 자리와 남은 메모리를 확인한 뒤 띄운다. 기다린 시간은 제한 시간과 소요 분에 넣지 않는다
   const who = ctx.tag || path.basename(dir).startsWith('_') ? '' : `${path.basename(dir)} `; // 함께 도는 작업이면 log 가 작업 ID 를 붙인다
-  const release = await takeSession({ repo: ctx.root || ctx.repo, phase, where: rel(ctx, dir) }, (n, max) => {
-    log(ctx, `    ${who}${phase}: 이 PC 에서 오케스트레이터 세션 ${n}개가 돌고 있어 자리가 날 때까지 기다립니다 (최대 ${max}개, 바꾸려면 \`sessions <N>\`)`);
-    event({ ev: 'note', stage: phase, text: `waiting for a free session slot (${n} in use, max ${max})` });
+  const task = path.basename(dir).startsWith('_') ? undefined : path.basename(dir);
+  const release = await takeSession({ repo: ctx.root || ctx.repo, phase, where: rel(ctx, dir) }, {
+    minFreeMemoryMB: ctx.cfg.minFreeMemoryMB,
+    onWait: (n, max) => {
+      log(ctx, `    ${who}${phase}: 이 PC 에서 오케스트레이터 세션 ${n}개가 돌고 있어 자리가 날 때까지 기다립니다 (최대 ${max}개, 바꾸려면 \`sessions <N>\`)`);
+      event({ ev: 'note', stage: phase, text: `waiting for a free session slot (${n} in use, max ${max})` });
+    },
+    onMemoryWait: (freeMB, needMB) => {
+      log(ctx, `    ${who}${phase}: PC 의 남은 메모리가 ${freeMB}MB 로 기준 ${needMB}MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다 (끄려면 config.json 의 minFreeMemoryMB: 0)`);
+      event({ ev: 'note', stage: phase, task, text: `waiting for free memory (${freeMB} MB free, needs ${needMB} MB)` });
+    },
   });
   const started = Date.now();
   let r;
@@ -600,7 +609,6 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   });
   const denials = denied.length;
   log(ctx, `    ${phase}: ${mins}분${denials ? `, 권한 거부 ${denials}건` : ''}`);
-  const task = path.basename(dir).startsWith('_') ? undefined : path.basename(dir);
   event({ ev: 'note', stage: phase, task, min: Math.floor((Date.now() - started) / 60000), text: `${phase} session ended${denials ? `, ${denials} permission denials` : ''}` });
   return { text: String(parsed.result ?? ''), sessionId: parsed.session_id || null, denials, denied };
 }
@@ -651,7 +659,7 @@ async function runGate(ctx, outFile) {
   let report;
   if (!ctx.pluginRoot || !existsSync(gate)) report = { status: 'error', reason: `gate.mjs 를 찾지 못했습니다 (${gate})`, commands: [] };
   else {
-    const r = await exec(process.execPath, [gate, '--run', '--json', '--cwd', ctx.repo], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin.gate * 60000 });
+    const r = await withGateRecord({ repo: ctx.root || ctx.repo, phase: 'gate', where: ctx.repo }, () => exec(process.execPath, [gate, '--run', '--json', '--cwd', ctx.repo], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin.gate * 60000 }));
     try {
       report = JSON.parse(r.stdout);
     } catch {
@@ -1195,7 +1203,7 @@ async function addWorktree(ctx, dir) {
   if (r.code !== 0) return { base, problem: `git worktree add 실패: ${(r.spawnError || r.stderr || r.stdout).trim().slice(-300)}` };
   ensureIgnored(dir, AM_DIR);
   for (const command of ctx.cfg.worktreeSetup || []) {
-    const s = await exec(command, null, { cwd: dir, timeoutMs: limit, env: { ...process.env, ORCH_MAIN_REPO: ctx.root } });
+    const s = await withGateRecord({ repo: ctx.root, phase: 'worktreeSetup', where: dir }, () => exec(command, null, { cwd: dir, timeoutMs: limit, env: { ...process.env, ORCH_MAIN_REPO: ctx.root } }));
     if (s.code !== 0) return { base, problem: `worktreeSetup 명령 "${command}" 실패 (${s.timedOut ? '시간 초과' : `종료 코드 ${s.code}`}): ${(s.spawnError || s.stderr || s.stdout).trim().slice(-300)}` };
   }
   return { base, problem: '' };
@@ -1636,6 +1644,24 @@ function acquireLock(repo, command, run) {
 // 기록은 세션이 도는 동안 주인이 30초마다 수정 시각을 새로 고친다. 5분 넘게 그대로인 기록은 주인이 사라진 것으로 본다
 // (강제 종료·터미널 닫힘·재부팅으로 지우지 못한 기록. pid 는 재사용될 수 있어 그것만으로는 가리지 못한다).
 export const DEFAULT_MAX_SESSIONS = 3;
+// Claude Code 는 메모리가 매우 부족하면 쉬는 세션의 백그라운드 실행을 끈다. 다른 세션·게이트가 돌 때 남은 메모리가 이보다 적으면 새 세션을 미룬다
+export const DEFAULT_MIN_FREE_MEMORY_MB = 3072;
+
+/**
+ * 새 세션을 메모리 때문에 미뤄야 하면 { freeMB, needMB }, 아니면 null. busy 는 자기 것을 뺀, 이 PC 에서 돌고 있는 세션·게이트 기록 수.
+ * setting(minFreeMemoryMB): null·없음·빈 문자열·잘못된 값은 기본 기준(win32 에서만), 0 은 끔, 양수는 어느 OS 에서나 그 값.
+ */
+export function memoryShortMB({ busy, freeBytes, setting, platform }) {
+  let needMB = DEFAULT_MIN_FREE_MEMORY_MB;
+  let custom = false;
+  if (typeof setting === 'number' || (typeof setting === 'string' && setting.trim() !== '')) {
+    const n = Number(setting);
+    if (Number.isFinite(n) && n >= 0) [needMB, custom] = [n, true];
+  }
+  if (busy <= 0 || needMB === 0 || (!custom && platform !== 'win32')) return null;
+  const freeMB = Math.floor(freeBytes / 1048576);
+  return freeMB < needMB ? { freeMB, needMB } : null;
+}
 const HEARTBEAT_MS = 30000;
 const STALE_MS = 5 * 60000;
 // 잠자기에서 깨면 모든 기록이 오래돼 보인다. 이 프로세스가 90초 넘게 멈춰 있었으면(잠자기·시계 변경) 2분 동안은 오래된 기록도 산다고 본다:
@@ -1701,8 +1727,8 @@ const noteAwake = () => {
 };
 
 /**
- * 이 PC 에서 돌고 있는 세션 기록(recordHeld 로 가림). clean 이면 자리를 쥐지 않은 기록을 지운다.
- * clean 이 아니면(보여 주기만 할 때) 아무것도 지우지 않는다.
+ * 이 PC 에서 돌고 있는 세션·게이트 기록(recordHeld 로 가림, 게이트는 gate: true). clean 이면 자리를 쥐지 않은 기록을 지운다.
+ * clean 이 아니면(보여 주기만 할 때) 아무것도 지우지 않는다. 세션 수 제한에는 세션 기록만 센다(sessionsOnly).
  */
 function liveSessions({ clean = true } = {}) {
   const dir = sessionsDir();
@@ -1716,7 +1742,7 @@ function liveSessions({ clean = true } = {}) {
   const opts = { now: Date.now(), myHost: hostName(), alive: pidAlive, woke: Boolean(wokeAt) && Date.now() - wokeAt < WAKE_GRACE_MS, young: clean && process.uptime() * 1000 < HEARTBEAT_MS + 15000 };
   const out = [];
   for (const name of names) {
-    const m = /^(.+)~(\d+)~\d+\.json$/.exec(name);
+    const m = /^(.+)~(\d+)~\d+(\.gate)?\.json$/.exec(name); // 게이트 기록 이름은 예전 버전의 규칙(~\d+\.json)에 맞지 않아 예전 버전은 세지 않는다
     if (!m) continue;
     const file = path.join(dir, name);
     if (leftover.has(file)) continue; // 이 프로세스가 놓았는데 지우지 못한 기록
@@ -1743,10 +1769,11 @@ function liveSessions({ clean = true } = {}) {
     } catch {
       /* 쓰는 중이거나 다시 만드는 중: 이름과 수정 시각만으로 센다 */
     }
-    out.push({ ...rec, file, pid });
+    out.push({ ...rec, file, pid, gate: Boolean(m[3]) });
   }
   return out;
 }
+const sessionsOnly = (live) => live.filter((s) => !s.gate);
 
 const heldSessions = new Map(); // 이 프로세스가 잡고 있는 자리 기록 → 내용. 끝날 때(Ctrl+C 포함) 지운다
 const leftover = new Set(); // 놓았지만 지우지 못한 기록(Windows 에서 백신 등이 잠깐 잡음). 세지 않고, 타이머와 끝날 때 다시 지운다
@@ -1789,46 +1816,81 @@ function startSessionHooks() {
 
 const FS_BUSY = ['EPERM', 'EBUSY', 'EACCES']; // 백신·색인 프로그램이 잠깐 잡는 경우(Windows)
 
-/**
- * 이 PC 의 세션 자리 하나를 잡고, 놓는 함수를 돌려준다. 내 기록을 먼저 쓰고 살아 있는 기록을 센 뒤 제한을 넘으면 지우고
- * 1~3초 뒤 다시 한다(세고 나서 쓰면 둘이 마지막 자리를 함께 잡을 수 있다). 자리가 날 때까지 기다리며, 처음 기다릴 때 onWait(쓰는 수, 제한).
- * 기록 폴더에 쓰지 못하면 한 번 알리고 이번 세션은 세지 않고 진행한다(한 실행 안의 제한은 작업을 고를 때 지킨다). 다음 세션 때 다시 시도한다.
- */
-async function takeSession(info, onWait) {
+/** 기록 하나를 새로 잡는다: 파일 경로와 놓는 함수. */
+function newRecord(kind = '') {
   if (!sessionSeq) startSessionHooks();
   sessionSeq += 1;
-  const dir = sessionsDir();
-  const file = path.join(dir, `${hostName()}~${process.pid}~${sessionSeq}.json`);
+  const file = path.join(sessionsDir(), `${hostName()}~${process.pid}~${sessionSeq}${kind}.json`);
   const release = () => {
     heldSessions.delete(file);
     removeRecord(file);
   };
+  return { file, release };
+}
+
+/** 기록을 쓰고 heldSessions 에 넣는다(다시 쓴 자기 기록은 leftover 에서 빼 다시 센다). 쓰지 못하면 그 오류. */
+async function writeRecord(file, info) {
+  const content = `${JSON.stringify({ pid: process.pid, host: os.hostname(), ...info, startedAt: now() })}\n`;
+  for (let i = 0; ; i += 1) {
+    try {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, content);
+      break;
+    } catch (err) {
+      if (i < 3 && FS_BUSY.includes(err.code)) {
+        await new Promise((res) => setTimeout(res, 50 * (i + 1)));
+        continue;
+      }
+      return err;
+    }
+  }
+  leftover.delete(file);
+  heldSessions.set(file, content);
+  return null;
+}
+
+/**
+ * 이 PC 의 세션 자리 하나를 잡고, 놓는 함수를 돌려준다. 내 기록을 먼저 쓰고 살아 있는 기록을 센 뒤 제한을 넘거나 메모리가 모자라면
+ * 지우고 1~3초 뒤 다시 한다(세고 나서 쓰면 둘이 마지막 자리를 함께 잡을 수 있다). 처음 기다릴 때 onWait(쓰는 수, 제한)·onMemoryWait(남은 MB, 기준 MB).
+ * 기록 폴더에 쓰지 못하면 한 번 알리고 이번 세션은 세지 않고 진행한다(한 실행 안의 제한은 작업을 고를 때 지킨다). 다음 세션 때 다시 시도한다.
+ */
+async function takeSession(info, { onWait, onMemoryWait, minFreeMemoryMB } = {}) {
+  const { file, release } = newRecord();
   let waited = false;
+  let memoryWaited = false;
   for (;;) {
     const max = sessionLimit();
-    const content = `${JSON.stringify({ pid: process.pid, host: os.hostname(), ...info, startedAt: now() })}\n`;
-    for (let i = 0; ; i += 1) {
-      try {
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(file, content);
-        break;
-      } catch (err) {
-        if (i < 3 && FS_BUSY.includes(err.code)) {
-          await new Promise((res) => setTimeout(res, 50 * (i + 1)));
-          continue;
-        }
-        if (!shareWarned) say(`  ! 세션 기록 폴더에 쓰지 못해 다른 실행과 함께 세지 못합니다(${err.code || err.message}): ${dir}\n    이 실행 안에서는 동시 세션 제한(${max}개)을 그대로 지킵니다. 다음 세션부터 다시 시도합니다.`);
-        shareWarned = true;
-        return () => {};
-      }
+    const err = await writeRecord(file, info);
+    if (err) {
+      if (!shareWarned) say(`  ! 세션 기록 폴더에 쓰지 못해 다른 실행과 함께 세지 못합니다(${err.code || err.message}): ${sessionsDir()}\n    이 실행 안에서는 동시 세션 제한(${max}개)을 그대로 지킵니다. 다음 세션부터 다시 시도합니다.`);
+      shareWarned = true;
+      return () => {};
     }
-    heldSessions.set(file, content);
-    const live = liveSessions().length;
-    if (live <= max) return release;
-    release();
-    if (!waited && onWait) onWait(live - 1, max);
-    waited = true;
+    const live = liveSessions();
+    const n = sessionsOnly(live).length;
+    if (n > max) {
+      release();
+      if (!waited && onWait) onWait(n - 1, max);
+      waited = true;
+    } else {
+      const short = memoryShortMB({ busy: live.length - 1, freeBytes: os.freemem(), setting: minFreeMemoryMB, platform: process.platform });
+      if (!short) return release;
+      release();
+      if (!memoryWaited && onMemoryWait) onMemoryWait(short.freeMB, short.needMB);
+      memoryWaited = true;
+    }
     await new Promise((res) => setTimeout(res, 1000 + Math.random() * 2000));
+  }
+}
+
+/** 오케스트레이터가 세션 밖에서 직접 돌리는 게이트·worktreeSetup 이 도는 동안 게이트 기록을 둔다: 메모리 확인에서만 센다. */
+async function withGateRecord(info, fn) {
+  const { file, release } = newRecord('.gate');
+  await writeRecord(file, info); // 쓰지 못하면 세지 않고 진행
+  try {
+    return await fn();
+  } finally {
+    release();
   }
 }
 
@@ -1898,7 +1960,7 @@ function cmdSessions(arg) {
   const cur = sessionSetting();
   say(`이 PC 에서 오케스트레이터가 동시에 돌리는 claude 세션: 최대 ${cur.max}개 (${SOURCE_KO[cur.source]}${cur.source === 'invalid' ? `: ${JSON.stringify(cur.raw)}` : ''})`);
   say(`설정 파일: ${file}`);
-  const live = liveSessions({ clean: false });
+  const live = sessionsOnly(liveSessions({ clean: false }));
   say(`지금 도는 세션 ${live.length}개`);
   for (const s of live) say(`  - ${s.repo || '?'}  ${s.phase || '?'}${s.where ? `  ${s.where}` : ''}  (${s.startedAt || '?'} 시작, pid ${s.pid})`);
   if (arg === undefined) say('바꾸려면 `sessions <N>` (1 이상), 기본값으로 되돌리려면 `sessions default`');
@@ -2165,7 +2227,7 @@ function statusData(repo, opt) {
   const base = baseContext(repo);
   const par = parallelOf(base);
   // 별도 작업 공간 확인이 없거나 낡았으면(stale) run 은 하나씩 돈다. next 는 바꾸지 않는다: 진행 중인 실행이 있을 때 doctor 로 돌려보내면 스킬이 새 실행을 만든다
-  const data = { ready: Boolean(base.env) && base.env.ok !== false, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: liveSessions({ clean: false }).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
+  const data = { ready: Boolean(base.env) && base.env.ok !== false, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: sessionsOnly(liveSessions({ clean: false })).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
   const current = path.join(repo, ORCH_DIR, 'current');
   const runId = opt.run || (existsSync(current) ? readText(current).trim() : '');
   let ctx = null;

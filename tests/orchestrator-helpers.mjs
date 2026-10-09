@@ -93,7 +93,7 @@ export function makeRepo({ plan = CHAIN(), scenario = {}, config = {}, fixtures,
   writeFileSync(scenarioFile, JSON.stringify(fixtures ? { ...scenario, split: files } : scenario));
   mkdirSync(path.join(repo, '.orchestrator'));
   writeFileSync(path.join(repo, '.orchestrator', '.gitignore'), '*\n');
-  writeFileSync(path.join(repo, '.orchestrator', 'config.json'), JSON.stringify({ claudeCommand: [process.execPath, FAKE], amPluginRoot: PLUGIN, ...config }));
+  writeFileSync(path.join(repo, '.orchestrator', 'config.json'), JSON.stringify({ claudeCommand: [process.execPath, FAKE], amPluginRoot: PLUGIN, minFreeMemoryMB: 0, ...config })); // 메모리 대기는 끔: 테스트가 이 PC 의 남은 메모리에 좌우되지 않게
   // 이 PC 의 동시 세션 제한과 돌고 있는 세션 기록은 Claude 설정 폴더 아래에 생긴다: 저장소마다 임시 폴더를 써 실제 홈 폴더와 다른 테스트를 건드리지 않는다
   const home = path.join(aux, 'claude-config');
   const env = { ...process.env, FAKE_SCENARIO: scenarioFile, FAKE_TASKS: files[0], FAKE_PLUGIN_ROOT: PLUGIN, AM_GATE: '', CLAUDE_CONFIG_DIR: home, FAKE_MAIN_REPO: repo };
