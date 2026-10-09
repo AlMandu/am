@@ -6,11 +6,13 @@
 - Codex 2차 의견이 이 파일의 `codex-opinion` 모델·노력 수준으로 돈다. 키가 없으면 지금과 같고, `default` 값은 따르지 않는다.
 - Codex 의 답 앞에 `Codex's answer:` 한 줄이 붙는다. `second-opinion` 값이 기본값과 다르면 그 앞 첫 줄에 `Claude reviewer: model …, effort … (from the user's setting …)` 이 나온다.
 - 파일이 깨졌으면 Codex 가 없는 PC 에서도 Codex 2차 의견이 파일 경로와 이유를 알리며 실패로 끝난다.
+- Claude Code 에서 기술 선택에 2차 의견을 받을 때, Codex 스크립트 출력의 첫 줄이 `Claude reviewer: …` 이면 Claude 2차 의견 서브에이전트가 그 모델·노력 수준으로 돈다. 직접 부른 스킬, `am:auto`, 오케스트레이터 세션 모두 같고, 줄이 없으면 정해진 기본값 그대로다.
 
 ## am-orchestrator 0.8.1 (2026-10-10)
 
 - 사용자 모델 설정 파일에 2차 의견 키 `second-opinion`·`codex-opinion` 을 적어도 오케스트레이터가 "모르는 키"로 멈추지 않는다. 오케스트레이터의 단계 세션 값에는 쓰이지 않는다.
 - 두 키의 값은 키별로 검사한다. 목록(opus, sonnet, haiku, fable) 밖의 별칭, 따옴표·공백·`&` 가 들었거나 숫자로 시작하는 Codex 모델 이름, Codex 에 없는 노력 수준(`max` 등)이면 지금처럼 세션을 띄우기 전에 파일 경로와 함께 멈춘다.
+- run 스킬의 공통 규칙도 am 스킬과 같은 문장으로 바뀌어, run 스킬이 2차 의견을 받을 때도 `Claude reviewer: …` 첫 줄의 모델·노력 수준을 따른다.
 
 ## am-orchestrator 0.8.0 (2026-10-09)
 

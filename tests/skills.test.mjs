@@ -150,3 +150,20 @@ test('with Codex installed, the common rules have Codex answer the same brief an
   assert.match(auto, /\n- The two reviewers of a technical choice still split on it after their rounds \(rules above\)\.\n/);
   assert.match(auto, /In the first five cases, ask with a decision card/);
 });
+
+test("the common rules pass the script's Claude reviewer line to the subagent, only from the first line", async () => {
+  const { reviewerLine } = await import('../plugin/scripts/codex-opinion.mjs');
+  const block = common(read('plan'));
+  const line = reviewerLine({ model: '<model>', effort: '<effort>' }, 'F');
+  const head = line.slice(0, line.indexOf(' (from'));
+  assert.ok(head.startsWith('Claude reviewer: model '));
+  assert.ok(block.includes(`\`${head} …\``));
+  // Only the first line counts: Codex's own text comes after `Codex's answer:` and could echo the pattern.
+  assert.match(block, /If the first line of the script's output is `Claude reviewer: model/);
+  assert.match(block, /pass that model and effort as the Agent call's `model` and `effort`; otherwise do not override the ones pinned in its definition/);
+  // The line exists only once the script has run, so the rule must run it before the subagent.
+  const run = block.indexOf('codex-opinion.mjs" <brief file>`');
+  const send = block.indexOf('Then send the brief to the am:second-opinion subagent');
+  const pass = block.indexOf('Claude reviewer: model');
+  assert.ok(run !== -1 && run < send && send < pass, 'script, then subagent, then the reviewer line');
+});
