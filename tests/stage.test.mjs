@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
-import { USER_EFFORTS, readUserModels, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
+import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -1258,6 +1258,10 @@ test('user models: a missing file is empty; notes are dropped and a BOM is allow
   const file = userModels(t, '﻿' + JSON.stringify({ _note: 'mine', model: { _why: 'cheap', default: 'sonnet', do: 'opus' }, effort: { _x: 1, ...efforts } }));
   assert.deepEqual(readUserModels(file), { model: { default: 'sonnet', do: 'opus' }, effort: efforts });
   assert.deepEqual(readUserModels(userModels(t, '{"model":{"run":"haiku"}}')), { model: { run: 'haiku' }, effort: {} });
+  const opinion = { model: { 'second-opinion': 'sonnet', 'codex-opinion': 'gpt-5.1-codex' }, effort: { 'second-opinion': 'max', 'codex-opinion': 'minimal' } };
+  assert.deepEqual(readUserModels(userModels(t, JSON.stringify(opinion))), opinion);
+  for (const m of OPINION_MODELS) assert.deepEqual(readUserModels(userModels(t, JSON.stringify({ model: { 'second-opinion': m } }))), { model: { 'second-opinion': m }, effort: {} });
+  for (const e of CODEX_EFFORTS) assert.deepEqual(readUserModels(userModels(t, JSON.stringify({ effort: { 'codex-opinion': e } }))), { model: {}, effort: { 'codex-opinion': e } });
 });
 
 test('user models: every broken file is one error line naming the file and the problem', (t) => {
@@ -1276,6 +1280,15 @@ test('user models: every broken file is one error line naming the file and the p
     ['{"model":{"plan":"  "}}', 'non-empty'],
     ['{"model":{"plan":4}}', 'model.plan'],
     ['{"effort":{"check":"huge"}}', 'huge'],
+    ['{"model":{"second-opinion":"sonet"}}', 'opus, sonnet, haiku, fable'],
+    ['{"model":{"second-opinion":"Opus"}}', 'opus, sonnet, haiku, fable'],
+    ['{"model":{"second-opinion":""}}', 'non-empty'],
+    ['{"model":{"codex-opinion":"gpt 5"}}', 'start with a letter'],
+    [JSON.stringify({ model: { 'codex-opinion': 'gpt"5' } }), 'start with a letter'],
+    ['{"model":{"codex-opinion":"a&calc"}}', 'start with a letter'],
+    ['{"model":{"codex-opinion":"5-codex"}}', 'start with a letter'],
+    ['{"model":{"codex-opinion":""}}', 'non-empty'],
+    ['{"effort":{"codex-opinion":"max"}}', 'minimal, low, medium, high, xhigh'],
   ];
   for (const [text, word] of cases) {
     const file = userModels(t, text);
@@ -1300,6 +1313,14 @@ test('user models: the stage key beats default, default beats the built-in, mode
   assert.deepEqual(resolveUser(cfg, 'do', builtin), { model: 'haiku', effort: 'low' });
   assert.deepEqual(resolveUser(cfg, 'check', builtin), { model: 'sonnet', effort: 'max' });
   assert.deepEqual(resolveUser({ model: { plan: 'opus' }, effort: {} }, 'plan', { model: 'x', effort: 'medium' }), { model: 'opus', effort: 'medium' });
+});
+
+test('user models: an opinion key takes its own value, else the built-in, never default', () => {
+  const builtin = { model: 'opus', effort: 'high' };
+  assert.deepEqual(resolveOwn({ model: { default: 'sonnet' }, effort: { default: 'low' } }, 'second-opinion', builtin), builtin);
+  const cfg = { model: { default: 'sonnet', 'second-opinion': 'haiku' }, effort: { default: 'low', 'codex-opinion': 'minimal' } };
+  assert.deepEqual(resolveOwn(cfg, 'second-opinion', builtin), { model: 'haiku', effort: 'high' });
+  assert.deepEqual(resolveOwn(cfg, 'codex-opinion', { model: '', effort: 'xhigh' }), { model: '', effort: 'minimal' });
 });
 
 const cfgEnv = (file) => ({ ...process.env, CLAUDE_CONFIG_DIR: path.dirname(path.dirname(file)) });
@@ -1460,6 +1481,15 @@ test('user values equal to the frontmatter keep the slash call; an unreadable fr
   assert.ok(!calls[0].includes('--model'));
   assert.ok(!existsSync(skillFile(dir, 'check')));
   assert.deepEqual(evs(events(dir)), ['start', 'end']);
+
+  // The opinion keys never change a stage session.
+  const opinion = userModels(t, '{"model":{"second-opinion":"sonnet","codex-opinion":"gpt-5"},"effort":{"second-opinion":"max","codex-opinion":"minimal"}}');
+  const op = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTE'] } });
+  const o = await run(op, ['check', 'demo'], { env: cfgEnv(opinion) });
+  assert.equal(o.result.status, 'NOTE');
+  assert.equal(o.calls[0][1], '/am:check demo');
+  assert.ok(!o.calls[0].includes('--model') && !o.calls[0].includes('--effort'));
+  assert.deepEqual(evs(events(op)), ['start', 'end']);
 
   // The values compared are read from the frontmatter, not from a table.
   const def = userModels(t, '{"model":{"default":"sonnet"}}');

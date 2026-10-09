@@ -373,8 +373,12 @@ function ensureIgnored(repo, dir) {
 // ------------------------------------------------------------------ 설정과 실행 문맥
 
 // PC 단위 사용자 모델 설정 파일 읽기. am 의 plugin/scripts/user-models.mjs 와 경로·검사·오류 문구가 같은 사본이다(플러그인끼리 import 하지 않음).
-export const USER_MODEL_KEYS = ['default', 'plan', 'do', 'check', 'compactmem', 'commit', 'compact', 'run', 'split'];
+export const USER_MODEL_KEYS = ['default', 'plan', 'do', 'check', 'compactmem', 'commit', 'compact', 'run', 'split', 'second-opinion', 'codex-opinion'];
 export const USER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+// 2차 의견 서브에이전트가 받는 별칭, 그리고 cmd /C 와 TOML -c 를 거치는 Codex 모델 이름·노력 수준.
+export const OPINION_MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
+export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+export const CODEX_MODEL = /^[A-Za-z][A-Za-z0-9._:-]*$/;
 
 /** 이 환경의 사용자 모델 설정 파일 경로. */
 export const userModelsFile = (env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am', 'models.json');
@@ -407,7 +411,10 @@ export function readUserModels(file) {
       if (isNote(k)) continue;
       if (!USER_MODEL_KEYS.includes(k)) return problem(`unknown key "${part}.${k}" (${k === 'implement' ? 'use "do"' : `use one of ${USER_MODEL_KEYS.join(', ')}`})`);
       if (part === 'model' && (typeof v !== 'string' || !v.trim())) return problem(`model.${k} must be a non-empty string (got ${JSON.stringify(v)})`);
-      if (part === 'effort' && !USER_EFFORTS.includes(v)) return problem(`effort.${k} must be one of ${USER_EFFORTS.join(', ')} (got ${JSON.stringify(v)})`);
+      if (part === 'model' && k === 'second-opinion' && !OPINION_MODELS.includes(v)) return problem(`model.${k} must be one of ${OPINION_MODELS.join(', ')} (got ${JSON.stringify(v)})`);
+      if (part === 'model' && k === 'codex-opinion' && !CODEX_MODEL.test(v)) return problem(`model.${k} must start with a letter and use only letters, digits and . _ : - (got ${JSON.stringify(v)})`);
+      const efforts = k === 'codex-opinion' ? CODEX_EFFORTS : USER_EFFORTS;
+      if (part === 'effort' && !efforts.includes(v)) return problem(`effort.${k} must be one of ${efforts.join(', ')} (got ${JSON.stringify(v)})`);
       result[part][k] = v;
     }
   }

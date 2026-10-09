@@ -1,5 +1,10 @@
 # Changelog
 
+## am-orchestrator 0.8.1 (2026-10-10)
+
+- 사용자 모델 설정 파일에 2차 의견 키 `second-opinion`·`codex-opinion` 을 적어도 오케스트레이터가 "모르는 키"로 멈추지 않는다. 오케스트레이터의 단계 세션 값에는 쓰이지 않는다.
+- 두 키의 값은 키별로 검사한다. 목록(opus, sonnet, haiku, fable) 밖의 별칭, 따옴표·공백·`&` 가 들었거나 숫자로 시작하는 Codex 모델 이름, Codex 에 없는 노력 수준(`max` 등)이면 지금처럼 세션을 띄우기 전에 파일 경로와 함께 멈춘다.
+
 ## am-orchestrator 0.8.0 (2026-10-09)
 
 - 단계 세션이 PC 별 사용자 모델 설정 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 을 저장소 `.orchestrator/config.json` 다음 순서로 읽는다(모델·노력 수준 따로). 구현 단계의 키는 `do` 이고, 수정·답변 세션은 구현·계획의 값을 물려받는다. 파일이 없으면 지금과 똑같다.

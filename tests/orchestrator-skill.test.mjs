@@ -417,6 +417,9 @@ test('the am user models module and the orchestrator copy read the same files al
   const orch = await import('../orchestrator/scripts/orchestrator.mjs');
   assert.deepEqual(orch.USER_MODEL_KEYS, am.USER_MODEL_KEYS);
   assert.deepEqual(orch.USER_EFFORTS, am.USER_EFFORTS);
+  assert.deepEqual(orch.OPINION_MODELS, am.OPINION_MODELS);
+  assert.deepEqual(orch.CODEX_EFFORTS, am.CODEX_EFFORTS);
+  assert.equal(String(orch.CODEX_MODEL), String(am.CODEX_MODEL));
   // Name, file content (null: no file), whether an error is expected.
   const cases = [
     ['valid', '﻿{"model":{"default":"sonnet","plan":"opus"},"effort":{"do":"low","check":"xhigh","default":"max"}}', false],
@@ -429,6 +432,13 @@ test('the am user models module and the orchestrator copy read the same files al
     ['blank model', '{"model":{"plan":"  "}}', true],
     ['bad effort', '{"effort":{"check":"huge"}}', true],
     ['notes', '{"_note":"x","model":{"_why":1,"do":"haiku"},"effort":{"_why":[],"commit":"medium"}}', false],
+    ['opinion keys', '{"model":{"second-opinion":"sonnet","codex-opinion":"gpt-5.1-codex"},"effort":{"second-opinion":"max","codex-opinion":"minimal"}}', false],
+    ['opinion alias typo', '{"model":{"second-opinion":"sonet"}}', true],
+    ['opinion alias case', '{"model":{"second-opinion":"Opus"}}', true],
+    ['codex model space', '{"model":{"codex-opinion":"gpt 5"}}', true],
+    ['codex model ampersand', '{"model":{"codex-opinion":"a&calc"}}', true],
+    ['codex model digit first', '{"model":{"codex-opinion":"5-codex"}}', true],
+    ['codex effort max', '{"effort":{"codex-opinion":"max"}}', true],
   ];
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-user-models-'));
   try {
