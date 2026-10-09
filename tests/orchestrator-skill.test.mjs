@@ -1,7 +1,7 @@
 // Run: node --test tests/orchestrator-skill.test.mjs
 // The am-orchestrator plugin (orchestrator/): its manifest, its one skill, and the parts of the am plugin its script relies on.
 // Also the other direction: what am:auto relies on when it hands a large task to the run skill.
-// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows.
+// And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows, the user models file reader.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -405,6 +405,51 @@ test('the same event lines give the same output from the am wait command and the
       }
       if (name.includes('handed over')) assert.equal(cursorOf(orch), String(Buffer.byteLength(bytes)));
     }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test('the am user models module and the orchestrator copy read the same files alike', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const am = await import('../plugin/scripts/user-models.mjs');
+  const orch = await import('../orchestrator/scripts/orchestrator.mjs');
+  assert.deepEqual(orch.USER_MODEL_KEYS, am.USER_MODEL_KEYS);
+  assert.deepEqual(orch.USER_EFFORTS, am.USER_EFFORTS);
+  // Name, file content (null: no file), whether an error is expected.
+  const cases = [
+    ['valid', '﻿{"model":{"default":"sonnet","plan":"opus"},"effort":{"do":"low","check":"xhigh","default":"max"}}', false],
+    ['no file', null, false],
+    ['broken JSON', '{"model":', true],
+    ['unknown top key', '{"models":{}}', true],
+    ['unknown stage key', '{"effort":{"review":"high"}}', true],
+    ['implement key', '{"model":{"implement":"opus"}}', true],
+    ['empty model', '{"model":{"plan":""}}', true],
+    ['blank model', '{"model":{"plan":"  "}}', true],
+    ['bad effort', '{"effort":{"check":"huge"}}', true],
+    ['notes', '{"_note":"x","model":{"_why":1,"do":"haiku"},"effort":{"_why":[],"commit":"medium"}}', false],
+  ];
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-user-models-'));
+  try {
+    assert.equal(orch.userModelsFile({ CLAUDE_CONFIG_DIR: base }), am.userModelsFile({ CLAUDE_CONFIG_DIR: base }));
+    assert.equal(orch.userModelsFile({}), am.userModelsFile({}));
+    for (const [name, content, broken] of cases) {
+      const file = am.userModelsFile({ CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(base, 'c-')) });
+      if (content !== null) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, content);
+      }
+      const a = am.readUserModels(file);
+      assert.deepEqual(orch.readUserModels(file), a, name);
+      assert.equal('error' in a, broken, name);
+      if (!broken) assert.ok(!JSON.stringify(a).includes('"_'), name);
+    }
+    const folder = am.userModelsFile({ CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(base, 'c-')) });
+    fs.mkdirSync(folder, { recursive: true });
+    const a = am.readUserModels(folder);
+    assert.deepEqual(orch.readUserModels(folder), a, 'a folder');
+    assert.ok('error' in a, 'a folder');
   } finally {
     fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
   }
