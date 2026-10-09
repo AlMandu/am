@@ -373,7 +373,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:merge` | `opus` | `high` |
 | 단계 사이 맥락 압축 세션(`am:auto`, Claude Code) | `opus` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
-| Codex 2차 의견 | `gpt-6-astra` | `high` |
+| Codex 2차 의견 | `gpt-6.1-sol` | `high` |
 
 <!-- am:models:end -->
 

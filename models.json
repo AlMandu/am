@@ -12,7 +12,7 @@
     "merge": { "model": "opus", "effort": "high" },
     "compact": { "model": "opus", "effort": "medium" },
     "second-opinion": { "model": "opus", "effort": "high" },
-    "codex-opinion": { "model": "gpt-6-astra", "effort": "high" }
+    "codex-opinion": { "model": "gpt-6.1-sol", "effort": "high" }
   },
   "orchestrator": {
     "run": { "model": "opus", "effort": "medium" },

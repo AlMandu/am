@@ -33,7 +33,7 @@ export const CODEX_ARGS = [
   'exec',
   '--sandbox', 'read-only',
   '-c', 'approval_policy=never',
-  '-c', 'model=gpt-6-astra',
+  '-c', 'model=gpt-6.1-sol',
   '-c', 'model_reasoning_effort=high',
   '-c', 'mcp_servers={}',
   '--ignore-rules',
