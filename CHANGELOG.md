@@ -4,7 +4,8 @@
 
 - PC 마다 단계별 모델·노력 수준을 적는 사용자 설정 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 을 Claude Code 의 `am:auto` 단계 명령이 읽는다. 파일이 없으면 지금과 똑같다.
 - 이 파일이 깨졌으면(JSON 이 아님, 모르는 키, 허용되지 않은 노력 수준) 세션을 띄우기 전에 모든 단계가 곧바로 멈추고, 파일 경로와 무엇이 잘못됐는지를 한 줄로 알린다. 고치거나 지우면 예전처럼 돈다.
-- 맥락 압축 세션은 이 파일의 `compact` 값(없으면 `default` 값)으로 돌고, 내장값과 다르면 진행 소식에 "model …, effort … from the user's setting …" 한 줄이 남는다. 계획·구현 같은 단계 세션에는 아직 적용되지 않으며 다음 변경에서 적용한다.
+- 맥락 압축 세션은 이 파일의 `compact` 값(없으면 `default` 값)으로 돌고, 내장값과 다르면 진행 소식에 "model …, effort … from the user's setting …" 한 줄이 남는다.
+- 계획·구현·점검·메모리 정리·커밋 세션도 이 파일의 `plan`·`do`·`check`·`compactmem`·`commit` 값(없으면 `default` 값)으로 돈다. 그 값이 스킬의 기본값과 다르면 진행 소식에 같은 모양의 한 줄이 남고, 같거나 적지 않았으면 지금과 똑같다. 큰 작업을 `am-orchestrator` 에 넘기는 세션에는 아직 적용되지 않는다.
 
 ## am-orchestrator 0.7.0 (2026-10-09)
 

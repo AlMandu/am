@@ -7,8 +7,9 @@
 // for the user and a later am:compactmem run. This script adds stage-<kind>.system.md (the
 // session's instructions) and stage-<kind>.reply.md (its last reply, which am:auto reads
 // for its final reply). Each stage gets its allowed tools up front (a stage session cannot
-// show a permission prompt), calls its am skill by slash command (so the skill's own model
-// and effort apply), and ends with one marker line that this script reads. Called by am:auto:
+// show a permission prompt), calls its am skill by slash command (the skill's own model and effort
+// apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
+// file gives the stage other values, and ends with one marker line that this script reads. Called by am:auto:
 //   node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
 // Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
@@ -21,7 +22,8 @@
 // (FORCE_PROMPT_CACHING_5M): they rarely wait that long, and the 5-minute write costs less.
 // The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
 // After the arguments the user models file (user-models.mjs) is read: broken, the stage ends `failed` with no session and
-// no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different.
+// no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different,
+// and its stage-key (else default) values the skill's frontmatter for the plan, do, check, compactmem and commit sessions.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models file is broken; `WAIT`: another run of this working tree kept going for
@@ -273,20 +275,21 @@ const STAGE_RULES = {
 - ${MARK('commit')}`,
 };
 
-/** The prompt and appended system prompt of one session. */
+/** The prompt and appended system prompt of one session, with the am skill it calls and that skill's arguments (skill null for a hand-over). */
 export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '', compacted = null } = {}) {
-  const prompts = {
-    plan: `/am:plan Read the request in .am/${slug}/request.md (slug ${slug})`,
-    do: `/am:do ${slug}`,
-    handover: resume ? '/am-orchestrator:run' : `/am-orchestrator:run .am/${slug}/plan.md`,
-    check: `/am:check ${slug}`,
-    compactmem: `/am:compactmem ${slug}`,
-    commit: push ? '/am:commit push' : '/am:commit',
+  const calls = {
+    plan: { skill: 'plan', args: `Read the request in .am/${slug}/request.md (slug ${slug})` },
+    do: { skill: 'do', args: slug },
+    check: { skill: 'check', args: slug },
+    compactmem: { skill: 'compactmem', args: slug },
+    commit: { skill: 'commit', args: push ? 'push' : '' },
   };
+  const { skill, args } = calls[stage] ?? { skill: null, args: '' };
+  const prompt = skill ? `/am:${skill}${args ? ` ${args}` : ''}` : resume ? '/am-orchestrator:run' : `/am-orchestrator:run .am/${slug}/plan.md`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && (stage === 'plan' || stage === 'handover') ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  return { prompt: prompts[stage], system: `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
+  return { prompt, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
 }
 
 /**
@@ -606,7 +609,32 @@ export function lastMark(text, values) {
   return found;
 }
 
-/** The claude arguments of one session. No --model or --effort for a stage: the slash call carries the skill's own. Only the compaction session, which runs no skill, passes `model`. */
+const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n/;
+
+/** The `model` and `effort` of an am skill's frontmatter, or {error} (one line naming the file) when they cannot be read. */
+export function skillDefaults(amRoot, skill) {
+  const file = path.join(amRoot, 'skills', skill, 'SKILL.md');
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    return { error: `${file}: cannot read the file (${String(err && err.message).replace(/\s+/g, ' ').trim()})` };
+  }
+  const head = FRONTMATTER.exec(text.replace(/^﻿/, ''));
+  if (!head) return { error: `${file}: no frontmatter block` };
+  const value = (key) => new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*\\r?$`, 'm').exec(head[0])?.[1].replace(/^(["'])(.*)\1$/, '$2').trim();
+  const found = { model: value('model'), effort: value('effort') };
+  const missing = Object.keys(found).filter((k) => !found[k]);
+  return missing.length ? { error: `${file}: no ${missing.join(' or ')} in the frontmatter` } : found;
+}
+
+/** A skill body for an inline call: frontmatter dropped, $ARGUMENTS and ${CLAUDE_PLUGIN_ROOT} filled (split/join, so a `$` in a path stays). */
+export const inlineSkill = (text, args, amRoot) => String(text).replace(FRONTMATTER, '').split('$ARGUMENTS').join(args || '').split('${CLAUDE_PLUGIN_ROOT}').join(amRoot.split(path.sep).join('/'));
+
+/** The prompt of an inline stage call, as the orchestrator words it. */
+export const inlinePrompt = (slug, kind, skill) => `Follow the instructions in .am/${slug}/skill-${kind}.md exactly. They are the am:${skill} skill, invoked by the user with the arguments already filled in.`;
+
+/** The claude arguments of one session. No --model or --effort for a slash call: it carries the skill's own. `model` for the compaction session and an inline stage call. */
 export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null }) {
   const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', perm.mode];
   if (model) args.push('--model', model.model, '--effort', model.effort);
@@ -843,6 +871,14 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       return done({ status: 'NOTHING', reason: skip });
     }
   }
+  // A stage the user models file gives other values than its skill's frontmatter runs inline with --model/--effort.
+  let stageModel = null;
+  if (STAGES.includes(kind) && (user.model[kind] ?? user.model.default ?? user.effort[kind] ?? user.effort.default)) {
+    const builtin = skillDefaults(amRoot, kind);
+    if (builtin.error) return done({ reason: `the skill's model and effort cannot be read: ${builtin.error}` });
+    const picked = resolveUser(user, kind, builtin);
+    if (picked.model !== builtin.model || picked.effort !== builtin.effort) stageModel = picked;
+  }
   const [bin, ...pre] = claude;
   // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
   const compactModel = resolveUser(user, 'compact', COMPACT_MODEL);
@@ -854,10 +890,16 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   result.costUsd = compaction.costUsd;
   const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
   const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug });
-  const { prompt, system } = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
+  const inst = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
+  let { prompt } = inst;
+  if (stageModel) {
+    const skillRel = `.am/${slug}/skill-${kind}.md`;
+    writeFileSync(path.join(cwd, skillRel), inlineSkill(readFileSync(path.join(amRoot, 'skills', inst.skill, 'SKILL.md'), 'utf8'), inst.args, amRoot));
+    prompt = inlinePrompt(slug, kind, inst.skill);
+  }
   const pluginDir = pluginDirFor(amRoot, env);
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;
-  writeFileSync(path.join(cwd, systemRel), system);
+  writeFileSync(path.join(cwd, systemRel), inst.system);
   const timeoutMs = limits[kind] * 60000;
 
   const call = async (args) => {
@@ -883,7 +925,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       relay();
     };
   }
-  const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir }));
+  if (stageModel) event({ ev: 'note', text: `model ${stageModel.model}, effort ${stageModel.effort} from the user's setting ${userFile}` });
+  const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir, model: stageModel }));
   if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
   const problem = (x) => {
     if (x.r.timedOut) return `no end within ${limits[kind]} minutes; the session was stopped`;
@@ -902,7 +945,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     : !why && !mark ? `Reply with exactly one line and nothing else: ${marks}` : null;
   if (ask && result.sessionId) {
     event({ ev: 'note', text: unsaved ? 'asking the session again to save plan.md' : 'asking the session again for its end line' });
-    const again = await call(claudeArgs(perm, { prompt: ask, resume: result.sessionId, pluginDir }));
+    const again = await call(claudeArgs(perm, { prompt: ask, resume: result.sessionId, pluginDir, model: stageModel }));
     why = problem(again);
     mark = why ? null : lastMark(again.parsed.result, MARKS[kind]);
   }
