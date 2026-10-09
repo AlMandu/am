@@ -91,6 +91,15 @@ test('스킬의 절차(status --json 의 next 만 보고 다음 명령을 정함
   assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
 });
 
+test('진행 소식: 세션이 2차 의견으로 정한 선택은 한 번만 알리고, "(no second opinion)" 줄은 알리지 않는다', () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { opinions: ['t01-a'] } });
+  assert.equal(r.orch('run').code, 0);
+  const events = readFileSync(path.join(r.runDir(), 'progress.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const opinions = events.filter((e) => e.ev === 'step' && e.text.startsWith('second opinion:'));
+  assert.deepEqual(opinions.map((e) => [e.text, e.task, e.stage]), [['second opinion: C1 저장 방식: 파일 - 이유 (second opinion, Codex agreed)', 'T01', 'plan']]);
+  assert.equal(events.filter((e) => e.text.includes('no second opinion')).length, 0);
+});
+
 // Windows 에서는 끝에서 보내는 SIGINT 를 검사할 수 없다(위 Ctrl+C 테스트와 같은 이유).
 test('잠금: 실행 중에는 다른 명령이 끼어들지 못하고, status 는 무엇이 돌고 있는지 알려 준다', { skip: process.platform === 'win32' }, async () => {
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });

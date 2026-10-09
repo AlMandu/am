@@ -98,6 +98,9 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   // The mark for choices made on the user's behalf, which the report collects.
   assert.match(amSkill('auto'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
   assert.match(SCRIPT, /auto-decided\|자동 결정/);
+  // The second-opinion marks of the common rules, which progress news reads.
+  for (const mark of ['(second opinion)', '(second opinion, Codex agreed)', '(no second opinion)']) assert.ok(amSkill('plan').includes(mark), mark);
+  assert.match(SCRIPT, /\\\(second opinion/);
   // The gate's command line and the fields of its report.
   const gate = read('plugin', 'hooks', 'gate.mjs');
   assert.match(gate, /node gate\.mjs --run \[--json\] \[--cwd <dir>\]/);

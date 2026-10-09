@@ -1084,15 +1084,59 @@ function stageHint(t, stage) {
   return `직접 고친 뒤 ${again('check')}. 손으로 커밋까지 끝냈으면 \`done ${t.id}\``;
 }
 
+/** 글에서 re 에 맞는 줄만, 앞의 목록 기호를 떼고 돌려준다. */
+function markedLines(text, re) {
+  return text
+    .split('\n')
+    .filter((l) => re.test(l))
+    .map((l) => l.replace(/^[\s\-*>]+/, '').trim());
+}
+
 const AUTO_MARK = /\((?:auto-decided|자동 결정)\)/i;
 /** 계획 문서에서 "(자동 결정)" 표시가 붙은 줄: 세션이 사용자 대신 정한 화면·범위 선택. */
 function autoDecided(ctx, t) {
   const file = amPath(ctx, t, 'plan.md');
   if (!existsSync(file)) return [];
-  return readText(file)
-    .split('\n')
-    .filter((l) => AUTO_MARK.test(l))
-    .map((l) => l.replace(/^[\s\-*>]+/, '').trim());
+  return markedLines(readText(file), AUTO_MARK);
+}
+
+// am 공통 규칙의 2차 의견 표시: "(second opinion)", "(second opinion, Codex agreed)". "(no second opinion)" 은 맞지 않는다
+const SECOND_MARK = /\(second opinion/i;
+/** 계획 문서에서 2차 의견으로 정한 기술 선택 줄. */
+function secondOpinions(ctx, t) {
+  const file = amPath(ctx, t, 'plan.md');
+  if (!existsSync(file)) return [];
+  return markedLines(readText(file), SECOND_MARK);
+}
+
+const OPINION_POLL_MS = 5000;
+/** 세션 동안 plan.md 를 지켜 새로 생기거나 바뀐 2차 의견 줄마다 소식을 남긴다. 돌려주는 함수로 멈추고 마지막으로 한 번 더 읽는다. */
+function watchOpinions(ctx, t, stage) {
+  const seen = new Set(secondOpinions(ctx, t));
+  const scan = (whole) => {
+    try {
+      const file = amPath(ctx, t, 'plan.md');
+      if (!existsSync(file)) return;
+      let text = readText(file);
+      if (!whole && !text.endsWith('\n')) text = text.slice(0, text.lastIndexOf('\n') + 1); // 쓰는 중인 마지막 줄은 다음 읽기로
+      for (const line of markedLines(text, SECOND_MARK)) {
+        if (seen.has(line)) continue;
+        seen.add(line);
+        event({ ev: 'step', task: t.id, stage, text: `second opinion: ${line}` });
+      }
+    } catch {
+      /* 읽기 실패(EBUSY 등)는 다음 읽기로 */
+    }
+  };
+  const timer = setInterval(() => scan(false), OPINION_POLL_MS);
+  timer.unref();
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    scan(true);
+  };
 }
 
 function writeReport(ctx) {
@@ -1450,6 +1494,15 @@ async function runTask(ctx, t) {
     if (r.denials) s.notes.push(`${name} 단계에서 권한 규칙에 걸린 명령 ${r.denials}건: ${r.denied.slice(0, 3).join(' | ')}${r.denials > 3 ? ' …' : ''}`);
     return r;
   };
+  // 세션 하나를 2차 의견 감시로 감싼다(ctx 는 그 시점의 작업 트리)
+  const watched = async (name, run) => {
+    const stopWatch = watchOpinions(ctx, t, name);
+    try {
+      return await run();
+    } finally {
+      stopWatch();
+    }
+  };
 
   // 1) 계획: am:plan 이 .am/<slug>/plan.md 를 쓴다
   if (s.status === 'pending') {
@@ -1463,15 +1516,21 @@ async function runTask(ctx, t) {
     bump('plan');
     const args = `Plan task ${t.id} described in ${AM_DIR}/${t.slug}/brief.md (slug ${t.slug})`;
     const marks = ['READY', 'NEEDS_DECISION', 'TOO_BIG'];
-    let r = noteDenied('plan', await step(ctx, 'plan', { dir, system: SYSTEM.plan(ctx, t), prompt: skillPrompt(ctx, 'plan', args, dir) }, 'ORCH_STATUS', marks));
-    s.sessions.plan = r.sessionId;
     // 세션이 남겨야 하는 파일: 보통은 plan.md, "너무 크다"면 split.json
     const saved = (mark) => existsSync(amPath(ctx, t, mark === 'TOO_BIG' ? 'split.json' : 'plan.md'));
-    if (!saved(r.mark) && r.sessionId) {
-      // 계획은 세웠는데 파일로 남기지 못한 경우(대개 권한 규칙에 걸림): 같은 세션에 저장만 한 번 다시 시킨다
-      log(ctx, '    계획이 파일로 저장되지 않음: 같은 세션에 저장을 다시 요청');
-      const again = noteDenied('plan(저장 재시도)', await step(ctx, 'plan', { dir, prompt: planSavePrompt(t), resume: r.sessionId }, 'ORCH_STATUS', marks));
-      r = { ...again, mark: again.mark || r.mark, text: `${r.text}\n\n---\n\n${again.text}` };
+    let r;
+    const stopWatch = watchOpinions(ctx, t, 'plan'); // 저장 재시도까지 한 감시로 덮는다
+    try {
+      r = noteDenied('plan', await step(ctx, 'plan', { dir, system: SYSTEM.plan(ctx, t), prompt: skillPrompt(ctx, 'plan', args, dir) }, 'ORCH_STATUS', marks));
+      s.sessions.plan = r.sessionId;
+      if (!saved(r.mark) && r.sessionId) {
+        // 계획은 세웠는데 파일로 남기지 못한 경우(대개 권한 규칙에 걸림): 같은 세션에 저장만 한 번 다시 시킨다
+        log(ctx, '    계획이 파일로 저장되지 않음: 같은 세션에 저장을 다시 요청');
+        const again = noteDenied('plan(저장 재시도)', await step(ctx, 'plan', { dir, prompt: planSavePrompt(t), resume: r.sessionId }, 'ORCH_STATUS', marks));
+        r = { ...again, mark: again.mark || r.mark, text: `${r.text}\n\n---\n\n${again.text}` };
+      }
+    } finally {
+      stopWatch();
     }
     const touched = dirtyFiles(ctx);
     if (touched.length) return block(`계획 단계가 ${AM_DIR}/ 밖의 파일을 바꿨습니다(되돌리지 않고 그대로 뒀습니다): ${touched.slice(0, 5).join(', ')}`);
@@ -1504,7 +1563,7 @@ async function runTask(ctx, t) {
   if (s.status === 'planned') {
     begin('implement');
     const again = bump('implement');
-    const r = noteDenied('implement', await step(ctx, 'implement', { dir, system: SYSTEM.implement(ctx, t, again), prompt: skillPrompt(ctx, 'do', t.slug, dir, 'implement') }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
+    const r = noteDenied('implement', await watched('implement', () => step(ctx, 'implement', { dir, system: SYSTEM.implement(ctx, t, again), prompt: skillPrompt(ctx, 'do', t.slug, dir, 'implement') }, 'ORCH_STATUS', ['DONE', 'BLOCKED'])));
     s.sessions.implement = r.sessionId;
     if (r.mark !== 'DONE') {
       writeText(path.join(dir, 'blocked.md'), r.text);
@@ -1542,7 +1601,7 @@ async function runTask(ctx, t) {
         s.fixRounds += 1;
         begin('fix');
         const fix = `am:check blocked this task. Read ${AM_DIR}/${t.slug}/check.md and ${sessionPath(ctx, path.join(dir, 'gate.json'))}, fix only what they report, log it under Change log in the plan, and do not commit. End with exactly one line: ORCH_STATUS: DONE or ORCH_STATUS: BLOCKED`;
-        const f = noteDenied('fix', await step(ctx, 'fix', { dir, prompt: fix, resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
+        const f = noteDenied('fix', await watched('fix', () => step(ctx, 'fix', { dir, prompt: fix, resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED'])));
         if (f.mark !== 'DONE') {
           writeText(path.join(dir, 'blocked.md'), f.text);
           return block(`수정 세션이 끝내지 못했습니다. 설명: ${rel(ctx, path.join(dir, 'blocked.md'))}`);
@@ -1598,7 +1657,7 @@ async function runTask(ctx, t) {
         log(ctx, '    커밋 훅이 커밋을 거부함: 구현 세션에 넘겨 고친 뒤 다시 점검');
         s.fixRounds += 1;
         begin('fix');
-        const f = noteDenied('fix', await step(ctx, 'fix', { dir, prompt: commitRejectedPrompt(sessionPath(ctx, reply)), resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED']));
+        const f = noteDenied('fix', await watched('fix', () => step(ctx, 'fix', { dir, prompt: commitRejectedPrompt(sessionPath(ctx, reply)), resume: s.sessions.implement }, 'ORCH_STATUS', ['DONE', 'BLOCKED'])));
         if (f.mark !== 'DONE') {
           writeText(path.join(dir, 'blocked.md'), f.text);
           return block(`커밋 훅이 거부한 것을 고치지 못했습니다. 설명: ${rel(ctx, path.join(dir, 'blocked.md'))}`);
@@ -2378,7 +2437,13 @@ async function cmdAnswer(repo, id, answer, opt) {
   // 답은 파일로 넘긴다: 한글·따옴표가 명령줄을 거치지 않게
   appendFileSync(amPath(ctx, t, 'answers.md'), `\n## ${now()}\n${answer}\n`);
   const prompt = `The user answered the open decisions in ${AM_DIR}/${t.slug}/answers.md. Record the answers under Decisions in the plan, finish ${AM_DIR}/${t.slug}/plan.md, and do not implement. End with exactly one line: ORCH_STATUS: READY, ORCH_STATUS: NEEDS_DECISION or ORCH_STATUS: TOO_BIG`;
-  const r = await step(ctx, 'answer', { dir: taskDir(ctx, t), prompt, resume: s.sessions.plan }, 'ORCH_STATUS', ['READY', 'NEEDS_DECISION', 'TOO_BIG']);
+  let r;
+  const stopWatch = watchOpinions(ctx, t, 'answer');
+  try {
+    r = await step(ctx, 'answer', { dir: taskDir(ctx, t), prompt, resume: s.sessions.plan }, 'ORCH_STATUS', ['READY', 'NEEDS_DECISION', 'TOO_BIG']);
+  } finally {
+    stopWatch();
+  }
   if (r.mark === 'READY' && existsSync(amPath(ctx, t, 'plan.md'))) {
     Object.assign(s, { status: 'planned', baseSha: head(repo), reason: undefined, updatedAt: now() });
     say(`${id}: 계획이 완성됐습니다. \`run\` 으로 이어 가세요.`);

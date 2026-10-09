@@ -3,7 +3,7 @@
 // 시나리오(FAKE_SCENARIO 가 가리키는 JSON)로 단계별 결과를 순서대로 지정할 수 있다:
 //   { "plan": { "<slug>": ["NEEDS_DECISION", "READY"] }, "check": { "<slug>": ["BLOCK", "NOTE"] },
 //     "implement": { "<slug>": ["CRASH", "DONE"] }, "breakGate": ["<slug>"], "split": ["<fixture>", ...],
-//     "answer": { "<slug>": ["TOO_BIG"] } }
+//     "answer": { "<slug>": ["TOO_BIG"] }, "opinions": ["<slug>"] }
 // "snapshotLock": true 면 split 세션이 그 순간의 lock.json 과 current 를 fake-split-lock.json·fake-split-current.txt 로 복사해 둔다.
 // 동시 진행: 단계가 끝날 때마다 "<단계>:<slug>" 표시를 남기고, "waitFor": { "implement:t01-a": "plan:t03-c" } 처럼
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
@@ -118,7 +118,7 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
   } else if (outcome === 'STRAY') {
     write('stray.txt', 'plan phase must not do this\n');
     write(`.am/${slug}/plan.md`, '# plan\n');
-  } else write(`.am/${slug}/plan.md`, `# ${slug}\n## Decisions\n${outcome === 'NEEDS_DECISION' ? 'OPEN: which screen first?\n' : 'Defaults applied: none\n'}${(scenario.autoDecide || []).includes(slug) ? '- 첫 화면은 목록으로 한다 - 지금 화면과 가장 비슷함 (자동 결정)\n' : ''}## Steps\n1. write the file. Check: gate\n`);
+  } else write(`.am/${slug}/plan.md`, `# ${slug}\n## Decisions\n${outcome === 'NEEDS_DECISION' ? 'OPEN: which screen first?\n' : 'Defaults applied: none\n'}${(scenario.autoDecide || []).includes(slug) ? '- 첫 화면은 목록으로 한다 - 지금 화면과 가장 비슷함 (자동 결정)\n' : ''}${(scenario.opinions || []).includes(slug) ? '- C1 저장 방식: 파일 - 이유 (second opinion, Codex agreed)\n- C2 로그 위치: 실행 폴더 - 이유 (no second opinion)\n' : ''}## Steps\n1. write the file. Check: gate\n`);
   if (outcome === 'NOSAVE') text = `# ${slug}\n(plan body that could not be saved)\nORCH_STATUS: NEEDS_DECISION`;
   else text = `${outcome === 'NEEDS_DECISION' ? 'Decision card: which screen first? 1) list 2) detail\n' : ''}ORCH_STATUS: ${outcome === 'STRAY' ? 'READY' : outcome}`;
 } else if ((m = /^The plan was not saved: \.am\/([a-z0-9-]+)\/plan\.md does not exist/.exec(prompt))) {
