@@ -1,6 +1,6 @@
 {
   "name": "am",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "가벼운 plan → do → check → compactmem → commit 워크플로와, 끝난 작업의 커밋을 다른 브랜치에 합치는 merge. 커밋 직전에 프로젝트의 빌드·테스트 명령(am-gate.json)을 돌려 실패하면 막는다. Claude Code·Codex 공용.",
   "author": { "name": "Seonghun" },
   "homepage": "https://github.com/AlMandu/am",

@@ -20,9 +20,11 @@
 // The do, compactmem and commit sessions and the compaction session write the prompt cache for 5 minutes, not 1 hour
 // (FORCE_PROMPT_CACHING_5M): they rarely wait that long, and the 5-minute write costs less.
 // The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
+// After the arguments the user models file (user-models.mjs) is read: broken, the stage ends `failed` with no session and
+// no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
-// started but did not finish with a marker; `WAIT`: another run of this working tree kept going for
+// started but did not finish with a marker, or the user models file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait (no session, no start or end line; am:auto starts the stage again). Exit codes: 0 result printed, 1 bad input.
 // Node only, no dependencies.
 
@@ -34,6 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
 import { findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
+import { readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,7 +59,8 @@ export const MARKS = {
 // End markers of the compaction session. Kept apart from MARKS: they never reach am:auto as a stage status.
 export const COMPACT_MARKS = ['COMPACTED', 'BLOCKED'];
 const TAIL_CHARS = 600;
-// The compaction session runs no skill, so it gets its model and effort as arguments (written by scripts/models.mjs).
+// The compaction session runs no skill, so it gets its model and effort as arguments (written by scripts/models.mjs);
+// the user models file's compact/default value replaces it.
 export const COMPACT_MODEL = { model: 'opus', effort: 'medium' };
 // Session kinds whose prompt cache is written for 5 minutes. Plan and check wait on reviewers and gates for longer, so they keep 1 hour.
 export const CACHE_5M_KINDS = ['do', 'compactmem', 'commit', 'compact'];
@@ -676,10 +680,10 @@ function originalName(slug, name, taken) {
  * Shortens the task files a stage of this kind reads when they hold more than the limit, in a short claude session of
  * their own. Each shortened file keeps its original as `<name>.orig-<n>.md`. A failed check, a session without its marker
  * or over its time puts every original back and removes the new copies; so does a session that touched request.md, which
- * is put back as well. Returns {compacted, costUsd}; `compacted` is
+ * is put back as well. The session runs on `model` ({model, effort}); `modelNote`, when set, is noted as it starts. Returns {compacted, costUsd}; `compacted` is
  * null (nothing to do), {files, before, after, originals}, or {files, failed}.
  */
-async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, note = () => {} } = {}) {
+async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', note = () => {} } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
   const texts = {};
@@ -708,8 +712,9 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   const systemRel = `.am/${slug}/stage-compact.system.md`;
   writeFileSync(abs(systemRel), system);
   note(`shortening ${files.join(', ')} before the stage`);
+  if (modelNote) note(modelNote);
   const [bin, ...pre] = claude;
-  const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model: COMPACT_MODEL })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000 });
+  const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000 });
   const parsed = parseResult(r.stdout);
   const costUsd = parsed && Number.isFinite(parsed.total_cost_usd) ? parsed.total_cost_usd : 0;
 
@@ -765,6 +770,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     out.write(`${JSON.stringify(result)}\n`);
     return 0;
   };
+  const userFile = userModelsFile(env);
+  const user = readUserModels(userFile);
+  if (user.error) return done({ reason: `the user model settings cannot be used (fix or remove the file): ${user.error}` });
   if (stage === 'plan' && !existsSync(path.join(dir, 'request.md'))) return done({ reason: `no .am/${slug}/request.md: write the request there first` });
   if (stage !== 'plan' && !existsSync(planFile)) return done({ reason: `no .am/${slug}/plan.md: run the plan stage first` });
   ensureIgnored(cwd);
@@ -837,7 +845,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   const [bin, ...pre] = claude;
   // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
-  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, note: (text) => event({ ev: 'note', text }) });
+  const compactModel = resolveUser(user, 'compact', COMPACT_MODEL);
+  const modelNote = compactModel.model !== COMPACT_MODEL.model || compactModel.effort !== COMPACT_MODEL.effort ? `model ${compactModel.model}, effort ${compactModel.effort} from the user's setting ${userFile}` : '';
+  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, model: compactModel, modelNote, note: (text) => event({ ev: 'note', text }) });
   result.compacted = compaction.compacted;
   const c = compaction.compacted;
   if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });

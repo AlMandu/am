@@ -1,7 +1,7 @@
 // Run: node --test tests/stage.test.mjs
 // The am:auto stage runner (what each stage session may do, what it is told, how its end is read)
 // and the user models module it will use.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -48,10 +48,15 @@ function makeRepo(t, { plan, request = 'Fix the typo', fake } = {}) {
   return dir;
 }
 
+// An empty Claude config folder, so no test reads the user models file of this PC.
+const NO_USER_CFG = mkdtempSync(path.join(os.tmpdir(), 'am-stage-nocfg-'));
+after(() => rmSync(NO_USER_CFG, { recursive: true, force: true }));
+const isolatedEnv = { ...process.env, CLAUDE_CONFIG_DIR: NO_USER_CFG };
+
 async function run(dir, argv, opts = {}) {
   let text = '';
   const out = { write: (s) => (text += s) };
-  const code = await main(argv, { cwd: dir, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, out, ...opts });
+  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, out, ...opts });
   const calls = existsSync(path.join(dir, 'calls.jsonl')) ? readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
@@ -1005,7 +1010,7 @@ test('relay: the real command ends by itself and prints the same result line', (
   const stage = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
   writeFileSync(path.join(dir, 'wrapper.mjs'), `import { main } from ${JSON.stringify(stage)};\nprocess.exitCode = await main(['do', 'demo'], { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => '/orch', relayMs: 60000 });\n`);
   // A timer that is neither unref'd nor cleared would keep the process alive past the limit.
-  const r = spawnSync(process.execPath, ['wrapper.mjs'], { cwd: dir, encoding: 'utf8', timeout: 20000 });
+  const r = spawnSync(process.execPath, ['wrapper.mjs'], { cwd: dir, env: isolatedEnv, encoding: 'utf8', timeout: 20000 });
   assert.equal(r.error, undefined);
   assert.equal(r.signal, null);
   assert.equal(r.status, 0, r.stderr);
@@ -1295,4 +1300,77 @@ test('user models: the stage key beats default, default beats the built-in, mode
   assert.deepEqual(resolveUser(cfg, 'do', builtin), { model: 'haiku', effort: 'low' });
   assert.deepEqual(resolveUser(cfg, 'check', builtin), { model: 'sonnet', effort: 'max' });
   assert.deepEqual(resolveUser({ model: { plan: 'opus' }, effort: {} }, 'plan', { model: 'x', effort: 'medium' }), { model: 'opus', effort: 'medium' });
+});
+
+const cfgEnv = (file) => ({ ...process.env, CLAUDE_CONFIG_DIR: path.dirname(path.dirname(file)) });
+const COMPACTING = { replies: ['Shortened.\nAM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] };
+
+test('a broken user models file ends every stage before any session or start line', async (t) => {
+  const cases = [
+    ['{"model":', 'JSON'],
+    ['{"model":{"implement":"opus"}}', '"do"'],
+    ['{"effort":{"check":"huge"}}', 'huge'],
+  ];
+  for (const [text, word] of cases) {
+    for (const [stage, opts] of [['check', { plan: SMALL }], ['plan', { fake: PLANNED }]]) {
+      const file = userModels(t, text);
+      const dir = makeRepo(t, opts);
+      const { code, result, calls } = await run(dir, [stage, 'demo'], { env: cfgEnv(file) });
+      assert.equal(code, 0);
+      assert.equal(calls.length, 0, `${stage} ${text}`);
+      assert.equal(result.status, 'failed');
+      assert.ok(result.reason.startsWith('the user model settings cannot be used (fix or remove the file): '), result.reason);
+      assert.ok(result.reason.includes(file) && result.reason.includes(word), result.reason);
+      assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'progress.jsonl')), 'no start line');
+    }
+  }
+});
+
+test('without a user models file the compaction session keeps COMPACT_MODEL and leaves no setting note', async (t) => {
+  const file = userModels(t, null);
+  const dir = makeRepo(t, { plan: BIG, fake: COMPACTING });
+  const { result, calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(file) });
+  assert.equal(result.status, 'DONE');
+  assert.equal(flag(calls[0], '--model'), COMPACT_MODEL.model);
+  assert.equal(flag(calls[0], '--effort'), COMPACT_MODEL.effort);
+  assert.ok(!calls[1].includes('--model') && !calls[1].includes('--effort'));
+  assert.ok(!events(dir).some((e) => e.text.includes("from the user's setting")));
+});
+
+test("the compaction session runs on the user file's compact value, else its default, and notes it", async (t) => {
+  const file = userModels(t, '{"model":{"compact":"sonnet"}}');
+  const dir = makeRepo(t, { plan: BIG, fake: COMPACTING });
+  const { result, calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(file) });
+  assert.equal(result.status, 'DONE');
+  assert.equal(flag(calls[0], '--model'), 'sonnet');
+  assert.equal(flag(calls[0], '--effort'), COMPACT_MODEL.effort);
+  assert.ok(!calls[1].includes('--model') && !calls[1].includes('--effort'));
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'note', 'note', 'note', 'end']);
+  assert.equal(list[1].text, 'shortening .am/demo/plan.md before the stage');
+  assert.equal(list[2].text, `model sonnet, effort ${COMPACT_MODEL.effort} from the user's setting ${file}`);
+  assert.match(list[3].text, /^shortened /);
+
+  const def = userModels(t, '{"model":{"default":"haiku"},"effort":{"default":"low"}}');
+  const d = makeRepo(t, { plan: BIG, fake: COMPACTING });
+  const r = await run(d, ['do', 'demo'], { env: cfgEnv(def) });
+  assert.equal(flag(r.calls[0], '--model'), 'haiku');
+  assert.equal(flag(r.calls[0], '--effort'), 'low');
+  assert.ok(events(d).some((e) => e.text === `model haiku, effort low from the user's setting ${def}`));
+});
+
+test('a user value equal to COMPACT_MODEL leaves no note; without a compaction there is no session and no note', async (t) => {
+  const same = userModels(t, JSON.stringify({ model: { compact: COMPACT_MODEL.model }, effort: { compact: COMPACT_MODEL.effort } }));
+  const dir = makeRepo(t, { plan: BIG, fake: COMPACTING });
+  const { calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(same) });
+  assert.equal(flag(calls[0], '--model'), COMPACT_MODEL.model);
+  assert.deepEqual(evs(events(dir)), ['start', 'note', 'note', 'end']);
+
+  const file = userModels(t, '{"model":{"compact":"sonnet"}}');
+  const small = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  const r = await run(small, ['do', 'demo'], { env: cfgEnv(file) });
+  assert.equal(r.result.status, 'DONE');
+  assert.equal(r.calls.length, 1);
+  assert.ok(!r.calls[0].includes('--model'));
+  assert.deepEqual(evs(events(small)), ['start', 'end']);
 });
