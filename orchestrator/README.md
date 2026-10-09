@@ -198,6 +198,7 @@ Ctrl+C 로 멈추면 돌고 있던 세션을 모두 함께 끝냅니다. 상태�
 - 계획·구현·점검·커밋의 값은 그 단계가 부르는 am 스킬에 정해 둔 값과 같습니다. 분할은 한 세션이 모든 작업을 정하고 뒤에 형식 검사만 있어 따로 정합니다.
 - 바꾸려면 `.orchestrator/config.json` 의 `model`, `effort` 에 적습니다. 예: `{ "model": { "default": "sonnet", "implement": "opus" }, "effort": { "commit": "low" } }`. 둘 다 객체로 적어야 하고, `"model": "sonnet"` 처럼 문자열 하나로 적으면 세션을 띄우기 전에 멈추고 알려 줍니다.
 - PC 의 모든 저장소에 같은 값을 쓰려면 사용자 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 에 적습니다. 예: `{ "model": { "default": "sonnet" }, "effort": { "check": "medium" } }`. 형식과 키는 am README 의 ["모델과 effort 기본값"](../README.md#모델과-effort-기본값) 절에 있습니다. 이 파일이 깨졌으면 `status --json`·`doctor` 를 포함해 세션을 띄우기 전에 멈추고 알려 줍니다.
+- 사용자 파일의 `second-opinion`·`codex-opinion` 키는 단계 세션이 아니라 계획 세션 안의 두 2차 의견에 쓰입니다(값 규칙은 am README). 이 키를 쓰려면 am-orchestrator 0.8.1 이상이 필요하고, 옛 버전은 모르는 키로 보고 멈춥니다.
 - 정하는 순서는 모델과 effort 따로, 저장소 `.orchestrator/config.json` 의 사슬(단계에 적은 값 → 물려받는 단계의 값(`fix` 는 `implement`, `answer` 는 `plan`) → `default`) → 사용자 파일의 같은 사슬(구현 키는 `do`) → 위 표입니다. 그래서 `config.json` 의 `default` 도 사용자 파일의 단계 키보다 먼저입니다.
 - 이어 가는 세션(`fix`, `answer`, 표시 줄을 되묻는 호출)에도 처음과 같은 `--model`·`--effort` 를 넘깁니다. 실행 도중 설정이나 사용자 파일을 고치면 그다음 호출부터(이어 가는 호출 포함) 고친 값이 쓰입니다.
 - 그 단계의 `extraArgs` 에 `--model` 이나 `--effort` 가 있으면 그 값만 넘깁니다. effort 를 `extraArgs` 로 적어 둔 예전 설정은 그대로 동작합니다.

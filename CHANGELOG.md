@@ -7,6 +7,7 @@
 - Codex 의 답 앞에 `Codex's answer:` 한 줄이 붙는다. `second-opinion` 값이 기본값과 다르면 그 앞 첫 줄에 `Claude reviewer: model …, effort … (from the user's setting …)` 이 나온다.
 - 파일이 깨졌으면 Codex 가 없는 PC 에서도 Codex 2차 의견이 파일 경로와 이유를 알리며 실패로 끝난다.
 - Claude Code 에서 기술 선택에 2차 의견을 받을 때, Codex 스크립트 출력의 첫 줄이 `Claude reviewer: …` 이면 Claude 2차 의견 서브에이전트가 그 모델·노력 수준으로 돈다. 직접 부른 스킬, `am:auto`, 오케스트레이터 세션 모두 같고, 줄이 없으면 정해진 기본값 그대로다.
+- README 의 "단계 세션의 모델과 effort 바꾸기" 절에 2차 의견 키 두 개의 적용 범위·값 규칙·필요한 버전을 적고, 2차 의견이 "고정"이라던 설명을 고쳤다. orchestrator/README.md 의 "모델과 effort" 절에도 한 줄 더했다.
 
 ## am-orchestrator 0.8.1 (2026-10-10)
 
