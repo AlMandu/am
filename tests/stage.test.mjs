@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -56,7 +56,7 @@ const isolatedEnv = { ...process.env, CLAUDE_CONFIG_DIR: NO_USER_CFG };
 async function run(dir, argv, opts = {}) {
   let text = '';
   const out = { write: (s) => (text += s) };
-  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, out, ...opts });
+  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, am: () => [], out, ...opts });
   const calls = existsSync(path.join(dir, 'calls.jsonl')) ? readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
@@ -122,6 +122,21 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   // The compaction session reads and writes only under .am/: no shell at all.
   const compact = permissions('compact');
   assert.equal(compact.mode, 'dontAsk');
+  // Only the plan and memory stages may run the Codex script: of the runner's am and of every installed am, in both quote forms.
+  assert.deepEqual(CODEX_STAGES, ['plan', 'compactmem']);
+  for (const s of CODEX_STAGES) {
+    const p = permissions(s, { amRoot: '/am', installedAm: ['/inst/a', '/inst/b', '/am'] });
+    for (const root of ['/am', '/inst/a', '/inst/b']) {
+      assert.ok(p.allow.includes(`Bash(node "${root}/scripts/codex-opinion.mjs" *)`) && p.allow.includes(`Bash(node ${root}/scripts/codex-opinion.mjs *)`), `${s}: ${root}`);
+    }
+    assert.equal(p.allow.length, new Set(p.allow).size, `${s}: no duplicate rule`);
+    assert.ok(!p.allow.includes('Bash') && !p.allow.includes('Edit') && !p.allow.includes('PowerShell'), s);
+  }
+  for (const s of ['do', 'check', 'commit', 'handover', 'compact']) {
+    const p = permissions(s, { amRoot: '/am', installedAm: ['/inst/a'], orchRoot: '/orch', slug: 'demo' });
+    assert.ok(!p.allow.some((r) => r.includes('codex-opinion')), s);
+  }
+  assert.ok(!permissions('commit', { amRoot: '/am', installedAm: ['/inst/a'] }).allow.some((r) => r.includes('node')), 'commit runs no node script');
   assert.deepEqual(compact.allow, ['Read', 'Glob', 'Grep', 'Edit(/.am/**)', 'Edit(.am/**)']);
   assert.deepEqual(compact.deny, ['AskUserQuestion']);
   // With the slug, the request is denied in both path forms: a deny rule wins over the .am/ allowance.
@@ -182,7 +197,10 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   // Through cmd.exe (claude.cmd) only the unquoted rules for node scripts survive; those sessions are told the form.
   assert.match(instructions('handover', 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/);
   assert.doesNotMatch(instructions('handover', 'demo').system, /path unquoted/);
-  assert.doesNotMatch(instructions('check', 'demo', { unquoted: true }).system, /path unquoted/);
+  for (const s of ['plan', 'compactmem']) assert.match(instructions(s, 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/, s);
+  for (const s of ['check', 'commit', 'do']) assert.doesNotMatch(instructions(s, 'demo', { unquoted: true }).system, /path unquoted/, s);
+  // The memory stage may run the Codex second opinion of the am:compactmem skill's rules.
+  assert.match(instructions('compactmem', 'demo').system, /run read-only git commands \(including git show\) and the Codex second-opinion command of the skill's rules\./);
   assert.match(instructions('plan', 'demo').system, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
   // The size of one implementation run, word for word as in am:auto.
   const oneRun = AUTO.match(/One implementation run is [^\n]*? separately\./);
@@ -1434,14 +1452,18 @@ test('skillDefaults reads the frontmatter exactly; inlineSkill drops it and fill
   assert.equal(inlinePrompt('demo', 'check', 'am:check'), 'Follow the instructions in .am/demo/skill-check.md exactly. They are the am:check skill, invoked by the user with the arguments already filled in.');
 });
 
-test('the plan stage allows the Codex command exactly as an inline plan body writes it', () => {
+test('the plan and memory stages allow the Codex command exactly as an inline skill body writes it', () => {
   const roots = [AM, ...(process.platform === 'win32' ? ['C:\\Users\\me\\.claude\\plugins\\cache\\am-workflow\\am\\0.1.28'] : [])];
-  for (const root of roots) {
-    const body = inlineSkill(skillText('plan'), 'x', root);
-    const file = /node "([^"]+codex-opinion\.mjs)"/.exec(body)[1];
-    assert.equal(file, `${root.split(path.sep).join('/')}/scripts/codex-opinion.mjs`);
-    const { allow } = permissions('plan', { amRoot: root });
-    assert.ok(allow.includes(`Bash(node "${file}" *)`) && allow.includes(`Bash(node ${file} *)`), root);
+  for (const stage of ['plan', 'compactmem']) {
+    for (const root of roots) {
+      const body = inlineSkill(skillText(stage), 'x', root);
+      const file = /node "([^"]+codex-opinion\.mjs)"/.exec(body)[1];
+      assert.equal(file, `${root.split(path.sep).join('/')}/scripts/codex-opinion.mjs`);
+      for (const opts of [{ amRoot: root }, { amRoot: path.join(os.tmpdir(), 'other-am'), installedAm: [root] }]) {
+        const { allow } = permissions(stage, opts);
+        assert.ok(allow.includes(`Bash(node "${file}" *)`) && allow.includes(`Bash(node ${file} *)`), `${stage}: ${root}`);
+      }
+    }
   }
 });
 
@@ -1613,4 +1635,57 @@ test('run values equal to the run skill, or values for other stages only, keep t
   const r = await run(o, ['do', 'demo'], { env: cfgEnv(other), orchestrator: () => '/orch' });
   assert.equal(r.calls[0][1], '/am-orchestrator:run .am/demo/plan.md');
   assert.ok(!r.calls[0].includes('--model'));
+});
+
+// ------------------------------------------------------------------ the installed am of a new session
+
+test('the plan and memory stages also allow the Codex script of the installed am, and note a different folder', async (t) => {
+  const cfg = mkdtempSync(path.join(os.tmpdir(), 'am-stage-inst-'));
+  t.after(() => rmSync(cfg, { recursive: true, force: true }));
+  const env = { ...isolatedEnv, CLAUDE_CONFIG_DIR: cfg };
+  const amRoot = path.join(cfg, 'plugins', 'cache', 'am-workflow', 'am', '0.1.26');
+  const installed = path.join(cfg, 'plugins', 'cache', 'am-workflow', 'am', '0.1.30');
+  const script = (root) => `${root.split(path.sep).join('/')}/scripts/codex-opinion.mjs`;
+  const notes = (dir) => events(dir).filter((e) => e.ev === 'note');
+
+  const dir = makeRepo(t, { fake: PLANNED });
+  const { result, calls } = await run(dir, ['plan', 'demo'], { env, amRoot, am: () => [installed] });
+  assert.equal(result.status, 'READY');
+  const allow = flag(calls[0], '--allowedTools').split(',');
+  for (const root of [amRoot, installed]) assert.ok(allow.includes(`Bash(node "${script(root)}" *)`) && allow.includes(`Bash(node ${script(root)} *)`), root);
+  assert.ok(!calls[0].includes('--plugin-dir'), 'an installed copy');
+  assert.deepEqual(notes(dir).map((e) => e.text), [`this am:auto session runs am from ${amRoot}, but stage sessions load the installed am from ${installed}; the Codex second opinion is allowed for both. Restart the session that runs am:auto to use one version.`]);
+
+  // The same folder (on Windows also in other letter case) gives no note.
+  for (const same of [amRoot, ...(process.platform === 'win32' ? [amRoot.toUpperCase()] : [])]) {
+    const d = makeRepo(t, { fake: PLANNED });
+    await run(d, ['plan', 'demo'], { env, amRoot, am: () => [same] });
+    assert.deepEqual(notes(d), [], same);
+  }
+
+  // The memory stage gets the same rules.
+  const m = makeRepo(t, { plan: SMALL, fake: { replies: ['Proposal saved.\nAM_STAGE: PROPOSED'] } });
+  const memCfg = { ...memEnv(t, m), CLAUDE_CONFIG_DIR: cfg };
+  mkdirSync(memoryDir(m, memCfg), { recursive: true });
+  writeFileSync(path.join(memoryDir(m, memCfg), 'MEMORY.md'), '- [a](a.md)\n');
+  const mr = await run(m, ['compactmem', 'demo'], { env: memCfg, amRoot, am: () => [installed] });
+  assert.equal(mr.result.status, 'PROPOSED');
+  assert.ok(flag(mr.calls[0], '--allowedTools').split(',').includes(`Bash(node ${script(installed)} *)`));
+  assert.equal(notes(m).length, 1);
+
+  // No lookup for other stages, for a development copy, or when the memory stage ends without a session; none found keeps the runner's rule only.
+  const looked = [];
+  const spy = () => (looked.push(1), [installed]);
+  await run(makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } }), ['do', 'demo'], { env, amRoot, am: spy });
+  await run(makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: PASS'] } }), ['check', 'demo'], { env, amRoot, am: spy });
+  const devDir = makeRepo(t, { fake: PLANNED });
+  const dev = await run(devDir, ['plan', 'demo'], { env, am: spy });
+  assert.ok(!flag(dev.calls[0], '--allowedTools').includes(script(installed)));
+  const empty = makeRepo(t, { plan: SMALL });
+  assert.equal((await run(empty, ['compactmem', 'demo'], { env, amRoot, am: spy })).result.status, 'NOTHING');
+  assert.deepEqual(looked, []);
+  const noneDir = makeRepo(t, { fake: PLANNED });
+  const none = await run(noneDir, ['plan', 'demo'], { env, amRoot, am: () => [] });
+  assert.deepEqual(flag(none.calls[0], '--allowedTools').split(',').filter((r) => r.includes('codex-opinion')), permissions('plan', { amRoot }).allow.filter((r) => r.includes('codex-opinion')));
+  assert.deepEqual(notes(noneDir), []);
 });

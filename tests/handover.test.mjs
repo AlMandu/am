@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { countDone, decide, handedRun, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
+import { countDone, decide, findAm, findOrchestrator, handedRun, installedPaths, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
 
 const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
 const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';
@@ -251,4 +251,40 @@ test('lets through edits in the run\'s task worktrees, which have their own .git
   assert.equal(hook(env, 'Edit', path.join(wt, 'src', 'a.js')), null);
   assert.equal(hook(env, 'Edit', path.join(wt, '.am', 'task-1', 'plan.md')), null);
   assert.ok(hook(env, 'Edit', path.join(env.repo, 'src', 'a.js')));
+});
+
+test('findAm gives every enabled am with the Codex script; findOrchestrator only a path with the run skill', () => {
+  const base = mkdtempSync(path.join(tmpdir(), 'am-installed-'));
+  bases.push(base);
+  const install = (name, file) => {
+    const dir = path.join(base, name);
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), '');
+    return dir;
+  };
+  const a1 = install('am1', 'scripts/codex-opinion.mjs');
+  const a2 = install('am2', 'scripts/codex-opinion.mjs');
+  const bare = install('am3', 'README.md');
+  const orch = install('orch', 'skills/run/SKILL.md');
+  const noRun = install('orch2', 'README.md');
+  const list = [
+    { id: 'am@x', enabled: true, installPath: a1 },
+    { id: 'am@y', enabled: true, installPath: a2 },
+    { id: 'am@z', enabled: false, installPath: a1 },
+    { id: 'am@w', enabled: true, installPath: bare },
+    { id: 'am@v', enabled: true },
+    null,
+    { id: 'am-orchestrator@x', enabled: true, installPath: noRun },
+    { id: 'am-orchestrator@y', enabled: true, installPath: orch },
+  ];
+  assert.deepEqual(findAm(() => list), [a1, a2]);
+  assert.equal(findOrchestrator(() => list), orch);
+  assert.deepEqual(findAm(() => [{ id: 'am@z', enabled: false, installPath: a1 }, { id: 'am@w', enabled: true, installPath: bare }]), []);
+  // am-orchestrator@ does not start with am@, even where its folder holds the script.
+  assert.deepEqual(findAm(() => [{ id: 'am-orchestrator@x', enabled: true, installPath: a1 }]), []);
+  for (const bad of [null, {}, 'x', 3]) {
+    assert.deepEqual(findAm(() => bad), []);
+    assert.equal(findOrchestrator(() => bad), null);
+    assert.deepEqual(installedPaths(() => true, () => bad), []);
+  }
 });

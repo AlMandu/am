@@ -37,7 +37,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
-import { findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
+import { findAm, findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
 import { FRONTMATTER, frontmatterModels, readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
 
@@ -180,9 +180,16 @@ export function memorySkip(cwd, env) {
 /** An Edit rule for everything under an absolute folder: `//` starts a path from the file system root, a Windows drive as `/c` (measured on Windows). */
 export const absEdit = (dir) => `Edit(/${path.resolve(dir).split(path.sep).join('/').replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`)}/**)`;
 
-/** Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root. */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', memDir = '', slug = '' } = {}) {
+/** The stages whose skill runs the Codex second opinion and whose session may write its brief under .am/. */
+export const CODEX_STAGES = ['plan', 'compactmem'];
+
+/**
+ * Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root.
+ * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
+ */
+export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', memDir = '', slug = '', installedAm = [] } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
+  const codex = CODEX_STAGES.includes(stage) ? [...new Set([amRoot, ...installedAm].flatMap((root) => nodeScript(path.join(root, 'scripts', 'codex-opinion.mjs'))))] : [];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
   const edit = (dir) => [`Edit(/${dir}/**)`, `Edit(${dir}/**)`];
   const pushRules = ['Bash(git push)', 'Bash(git push *)'];
@@ -191,13 +198,13 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
   const noHistory = ['Bash(git commit *)', ...pushRules, 'Bash(git reset *)', 'Bash(git checkout *)', 'Bash(git switch *)', 'Bash(git stash)', 'Bash(git stash -*)', ...stashWrites];
   switch (stage) {
     case 'plan':
-      return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, ...nodeScript(path.join(amRoot, 'scripts', 'codex-opinion.mjs'))]), deny: noHuman };
+      return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, ...codex]), deny: noHuman };
     case 'do':
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
     case 'compactmem':
       // Reads the memory folder outside the repository; writes only the proposal under .am/. A deny rule wins over any allowance, so memory is never changed here.
-      return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)']), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
+      return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)', ...codex]), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
     case 'commit':
       // The only file it may write is the task's commit record, which the am:merge skill reads.
       return { mode: 'dontAsk', allow: sh([...read, ...gitRead, ...(slug ? [`Edit(/.am/${slug}/commits.md)`, `Edit(.am/${slug}/commits.md)`] : []), 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
@@ -264,7 +271,7 @@ const STAGE_RULES = {
 - The memory folder of this project is ${memDir}, unless your system prompt names another one; this session cannot read environment variables, so use this path for the skill's fallback.` : ''}
 - This run is unattended: write the proposal to .am/${slug}/compactmem.md and stop there. Never change, create or delete a file in the memory folder; the user applies the proposal later.
 - Do not settle open items by asking, and never end with AM_STAGE: NEEDS_DECISION here, even when the two reviewers of a choice stay split: keep that memory in the proposal, with both picks and reasons, for the user to decide when applying it.
-- What this session can do: read anything, including the memory folder outside the repository; create or change files only under .am/${slug}/ with the Write or Edit tool; run read-only git commands (including git show). Everything else is refused.
+- What this session can do: read anything, including the memory folder outside the repository; create or change files only under .am/${slug}/ with the Write or Edit tool; run read-only git commands (including git show) and the Codex second-opinion command of the skill's rules. Everything else is refused.
 - This stage cannot finish when the proposal cannot be written: end with AM_STAGE: BLOCKED and say why. NOTHING means no memory folder, no memory file, or no memory about this task.
 - ${MARK('compactmem')}`,
   commit: (slug, { push }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
@@ -294,7 +301,7 @@ export function instructions(stage, slug, { push = false, fix = false, resume = 
   const { plugin, skill, args } = skillCall(stage, slug, { push, resume });
   const prompt = `/${plugin}:${skill}${args ? ` ${args}` : ''}`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
-  const note = unquoted && (stage === 'plan' || stage === 'handover') ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
+  const note = unquoted && [...CODEX_STAGES, 'handover'].includes(stage) ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
   return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
 }
@@ -769,7 +776,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive } = {}) {
   const [stage, slug, ...flags] = argv;
   if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
     out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
@@ -883,7 +890,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });
   result.costUsd = compaction.costUsd;
   const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
-  const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug });
+  // A new session loads the installed am, which may be newer than this runner's folder: allow its Codex script too.
+  const installedAm = CODEX_STAGES.includes(kind) && !pluginDirFor(amRoot, env) ? am().map((p) => path.resolve(p)) : [];
+  const same = (a, b) => (WIN ? a.toLowerCase() === b.toLowerCase() : a === b);
+  if (installedAm.length && !installedAm.some((p) => same(p, path.resolve(amRoot)))) {
+    event({ ev: 'note', text: `this am:auto session runs am from ${amRoot}, but stage sessions load the installed am from ${installedAm.join(', ')}; the Codex second opinion is allowed for both. Restart the session that runs am:auto to use one version.` });
+  }
+  const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug, installedAm });
   const inst = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
   let { prompt } = inst;
   if (stageModel) {

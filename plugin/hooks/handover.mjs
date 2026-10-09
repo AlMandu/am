@@ -69,18 +69,34 @@ export function withinOneRun(scale) {
   return scale && scale[0] <= 1 && scale[1] <= 1;
 }
 
-/** The install path of an enabled am-orchestrator with its run skill, from `claude plugin list --json`, or null. Any failure counts as not installed. */
-export function findOrchestrator() {
+/** The entries of `claude plugin list --json`, or null on any failure. */
+export function pluginList() {
   try {
     // One command string through the shell, so Windows finds claude.cmd as well as claude.exe.
     const r = spawnSync('claude plugin list --json', { encoding: 'utf8', timeout: 30000, shell: true, windowsHide: true });
     if (r.status !== 0) return null;
     const list = JSON.parse(r.stdout);
-    const hit = Array.isArray(list) && list.find((p) => String(p.id).startsWith('am-orchestrator@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'skills', 'run', 'SKILL.md')));
-    return hit ? hit.installPath : null;
+    return Array.isArray(list) ? list : null;
   } catch {
     return null;
   }
+}
+
+/** The install paths of the listed plugins that match, in list order; none when the list cannot be read. */
+export function installedPaths(match, list = pluginList) {
+  const entries = list();
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((p) => p && typeof p === 'object' && match(p)).map((p) => p.installPath);
+}
+
+/** The install path of an enabled am-orchestrator with its run skill, or null. Any failure counts as not installed. */
+export function findOrchestrator(list = pluginList) {
+  return installedPaths((p) => String(p.id).startsWith('am-orchestrator@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'skills', 'run', 'SKILL.md')), list)[0] ?? null;
+}
+
+/** The install paths of every enabled am with the Codex second-opinion script: what a new stage session loads. */
+export function findAm(list = pluginList) {
+  return installedPaths((p) => String(p.id).startsWith('am@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'scripts', 'codex-opinion.mjs')), list);
 }
 
 /** True when an enabled am-orchestrator with its run skill is installed. */
