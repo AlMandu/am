@@ -7,8 +7,8 @@
 // for the user and a later am:compactmem run. This script adds stage-<kind>.system.md (the
 // session's instructions) and stage-<kind>.reply.md (its last reply, which am:auto reads
 // for its final reply). Each stage gets its allowed tools up front (a stage session cannot
-// show a permission prompt), calls its am skill by slash command (the skill's own model and effort
-// apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
+// show a permission prompt), calls its am skill (the run skill for a hand-over) by slash command (the skill's own model
+// and effort apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
 // file gives the stage other values, and ends with one marker line that this script reads. Called by am:auto:
 //   node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
@@ -23,7 +23,8 @@
 // The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
 // After the arguments the user models file (user-models.mjs) is read: broken, the stage ends `failed` with no session and
 // no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different,
-// and its stage-key (else default) values the skill's frontmatter for the plan, do, check, compactmem and commit sessions.
+// its stage-key (else default) values the skill's frontmatter for the plan, do, check, compactmem and commit sessions, and
+// its run (else default) values the run skill's frontmatter for the hand-over.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models file is broken; `WAIT`: another run of this working tree kept going for
@@ -275,21 +276,27 @@ const STAGE_RULES = {
 - ${MARK('commit')}`,
 };
 
-/** The prompt and appended system prompt of one session, with the am skill it calls and that skill's arguments (skill null for a hand-over). */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '', compacted = null } = {}) {
+/** The skill one session calls: {plugin, skill, args}, or null for an unknown stage. The hand-over calls the am-orchestrator run skill. */
+export function skillCall(stage, slug, { push = false, resume = false } = {}) {
   const calls = {
-    plan: { skill: 'plan', args: `Read the request in .am/${slug}/request.md (slug ${slug})` },
-    do: { skill: 'do', args: slug },
-    check: { skill: 'check', args: slug },
-    compactmem: { skill: 'compactmem', args: slug },
-    commit: { skill: 'commit', args: push ? 'push' : '' },
+    plan: { plugin: 'am', skill: 'plan', args: `Read the request in .am/${slug}/request.md (slug ${slug})` },
+    do: { plugin: 'am', skill: 'do', args: slug },
+    check: { plugin: 'am', skill: 'check', args: slug },
+    compactmem: { plugin: 'am', skill: 'compactmem', args: slug },
+    commit: { plugin: 'am', skill: 'commit', args: push ? 'push' : '' },
+    handover: { plugin: 'am-orchestrator', skill: 'run', args: resume ? '' : `.am/${slug}/plan.md` },
   };
-  const { skill, args } = calls[stage] ?? { skill: null, args: '' };
-  const prompt = skill ? `/am:${skill}${args ? ` ${args}` : ''}` : resume ? '/am-orchestrator:run' : `/am-orchestrator:run .am/${slug}/plan.md`;
+  return calls[stage] ?? null;
+}
+
+/** The prompt and appended system prompt of one session, with the plugin and skill it calls and that skill's arguments. */
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '', compacted = null } = {}) {
+  const { plugin, skill, args } = skillCall(stage, slug, { push, resume });
+  const prompt = `/${plugin}:${skill}${args ? ` ${args}` : ''}`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && (stage === 'plan' || stage === 'handover') ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  return { prompt, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
+  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
 }
 
 /**
@@ -632,7 +639,7 @@ export function skillDefaults(amRoot, skill) {
 export const inlineSkill = (text, args, amRoot) => String(text).replace(FRONTMATTER, '').split('$ARGUMENTS').join(args || '').split('${CLAUDE_PLUGIN_ROOT}').join(amRoot.split(path.sep).join('/'));
 
 /** The prompt of an inline stage call, as the orchestrator words it. */
-export const inlinePrompt = (slug, kind, skill) => `Follow the instructions in .am/${slug}/skill-${kind}.md exactly. They are the am:${skill} skill, invoked by the user with the arguments already filled in.`;
+export const inlinePrompt = (slug, kind, name) => `Follow the instructions in .am/${slug}/skill-${kind}.md exactly. They are the ${name} skill, invoked by the user with the arguments already filled in.`;
 
 /** The claude arguments of one session. No --model or --effort for a slash call: it carries the skill's own. `model` for the compaction session and an inline stage call. */
 export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null }) {
@@ -856,7 +863,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     if (k.error) return done({ reason: k.error });
     kind = k.kind;
     opts = { ...opts, resume: k.resume };
-    orchRoot = k.orchRoot || '';
+    // Resolved like the allow rules (path.join), so the inline file names the same path.
+    orchRoot = k.orchRoot ? path.resolve(k.orchRoot) : '';
     if (kind === 'handover' && !orchRoot) return done({ stage: kind, reason: 'the plan records a hand-over, but the am-orchestrator run skill is not installed or not enabled' });
   }
   result.stage = kind;
@@ -873,10 +881,12 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   // A stage the user models file gives other values than its skill's frontmatter runs inline with --model/--effort.
   let stageModel = null;
-  if (STAGES.includes(kind) && (user.model[kind] ?? user.model.default ?? user.effort[kind] ?? user.effort.default)) {
-    const builtin = skillDefaults(amRoot, kind);
+  const sc = skillCall(kind, slug, opts);
+  const skillRoot = sc?.plugin === 'am' ? amRoot : orchRoot;
+  if (sc && (user.model[sc.skill] ?? user.model.default ?? user.effort[sc.skill] ?? user.effort.default)) {
+    const builtin = skillDefaults(skillRoot, sc.skill);
     if (builtin.error) return done({ reason: `the skill's model and effort cannot be read: ${builtin.error}` });
-    const picked = resolveUser(user, kind, builtin);
+    const picked = resolveUser(user, sc.skill, builtin);
     if (picked.model !== builtin.model || picked.effort !== builtin.effort) stageModel = picked;
   }
   const [bin, ...pre] = claude;
@@ -894,8 +904,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   let { prompt } = inst;
   if (stageModel) {
     const skillRel = `.am/${slug}/skill-${kind}.md`;
-    writeFileSync(path.join(cwd, skillRel), inlineSkill(readFileSync(path.join(amRoot, 'skills', inst.skill, 'SKILL.md'), 'utf8'), inst.args, amRoot));
-    prompt = inlinePrompt(slug, kind, inst.skill);
+    writeFileSync(path.join(cwd, skillRel), inlineSkill(readFileSync(path.join(skillRoot, 'skills', inst.skill, 'SKILL.md'), 'utf8'), inst.args, skillRoot));
+    prompt = inlinePrompt(slug, kind, `${inst.plugin}:${inst.skill}`);
   }
   const pluginDir = pluginDirFor(amRoot, env);
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;

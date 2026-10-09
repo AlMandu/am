@@ -197,6 +197,22 @@ test('the am stage runner hands a large plan to the run skill only through what 
   assert.match(system, /Its rule never to merge or push covers its own flow only/);
 });
 
+test('an inline hand-over reads the run skill frontmatter and fills a command path its permissions allow', async () => {
+  const { skillDefaults, inlineSkill, permissions } = await import('../plugin/scripts/stage.mjs');
+  const root = path.join(REPO, 'orchestrator');
+  const line = (key) => new RegExp(`^${key}: (.+)$`, 'm').exec(SKILL)[1].trim();
+  assert.deepEqual(skillDefaults(root, 'run'), { model: line('model'), effort: line('effort') });
+  assert.ok(SKILL.includes('Request: $ARGUMENTS'));
+  assert.ok(SKILL.includes('node "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrator.mjs"'));
+  const roots = [root, ...(process.platform === 'win32' ? ['C:\\Users\\me\\.claude\\plugins\\cache\\am-workflow\\am-orchestrator\\0.8.0'] : [])];
+  for (const r of roots) {
+    const file = /node "([^"]+orchestrator\.mjs)"/.exec(inlineSkill(SKILL, '.am/x/plan.md', r))[1];
+    assert.equal(file, `${r.split(path.sep).join('/')}/scripts/orchestrator.mjs`);
+    const { allow } = permissions('handover', { orchRoot: r });
+    assert.ok(allow.includes(`Bash(node "${file}" *)`) && allow.includes(`Bash(node ${file} *)`), r);
+  }
+});
+
 test('the am stage runner copies the events a real split writes, from the path the orchestrator uses', async () => {
   const { runRelay, instructions } = await import('../plugin/scripts/stage.mjs');
   const { readFrom } = await import('../plugin/scripts/progress.mjs');

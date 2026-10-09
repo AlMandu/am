@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { USER_EFFORTS, readUserModels, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -1410,7 +1410,7 @@ test('skillDefaults reads the frontmatter exactly; inlineSkill drops it and fill
   const plan = inlineSkill(skillText('plan'), 'Read the request in .am/demo/request.md (slug demo)', AM);
   assertInline(plan);
   assert.ok(plan.includes('Request: Read the request in .am/demo/request.md (slug demo)'));
-  assert.equal(inlinePrompt('demo', 'check', 'check'), 'Follow the instructions in .am/demo/skill-check.md exactly. They are the am:check skill, invoked by the user with the arguments already filled in.');
+  assert.equal(inlinePrompt('demo', 'check', 'am:check'), 'Follow the instructions in .am/demo/skill-check.md exactly. They are the am:check skill, invoked by the user with the arguments already filled in.');
 });
 
 test('the plan stage allows the Codex command exactly as an inline plan body writes it', () => {
@@ -1430,7 +1430,7 @@ test('a stage the user file gives another value runs inline with --model and --e
   const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTE'] } });
   const { result, calls } = await run(dir, ['check', 'demo'], { env: cfgEnv(def) });
   assert.equal(result.status, 'NOTE');
-  assert.equal(calls[0][1], inlinePrompt('demo', 'check', 'check'));
+  assert.equal(calls[0][1], inlinePrompt('demo', 'check', 'am:check'));
   assert.equal(flag(calls[0], '--model'), 'sonnet');
   assert.equal(flag(calls[0], '--effort'), skillDefaults(AM, 'check').effort);
   assert.ok(readFileSync(skillFile(dir, 'check'), 'utf8').includes('Target: demo'));
@@ -1487,7 +1487,7 @@ test('the second ask of an inline stage carries the same flags', async (t) => {
   assert.equal(flag(calls[1], '--resume'), 'sess-1');
 });
 
-test('the inline file is written after a compaction; --fix and commit run inline too; a hand-over does not', async (t) => {
+test('the inline file is written after a compaction; --fix and commit run inline too; a hand-over without its run skill fails', async (t) => {
   const file = userModels(t, '{"model":{"do":"sonnet","commit":"sonnet"}}');
   const dir = makeRepo(t, { plan: BIG, fake: { ...COMPACTING, writes: [{ '.am/demo/plan.md': SHORT, '.am/demo/skill-do.md': 'stale' }] } });
   const { result, calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(file) });
@@ -1504,13 +1504,13 @@ test('the inline file is written after a compaction; --fix and commit run inline
   const fixed = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
   writeFileSync(path.join(fixed, '.am', 'demo', 'check.md'), 'Verdict: BLOCK\n');
   const fx = await run(fixed, ['do', 'demo', '--fix'], { env: cfgEnv(file) });
-  assert.equal(fx.calls[0][1], inlinePrompt('demo', 'do', 'do'));
+  assert.equal(fx.calls[0][1], inlinePrompt('demo', 'do', 'am:do'));
   assert.equal(flag(fx.calls[0], '--model'), 'sonnet');
 
   for (const [flags, notes] of [[[], /^Notes: \r?$/m], [['--push'], /^Notes: push\r?$/m]]) {
     const c = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: COMMITTED'] } });
     const r = await run(c, ['commit', 'demo', ...flags], { env: cfgEnv(file) });
-    assert.equal(r.calls[0][1], inlinePrompt('demo', 'commit', 'commit'));
+    assert.equal(r.calls[0][1], inlinePrompt('demo', 'commit', 'am:commit'));
     assert.match(readFileSync(skillFile(c, 'commit'), 'utf8'), notes);
   }
 
@@ -1518,6 +1518,69 @@ test('the inline file is written after a compaction; --fix and commit run inline
   const hand = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
   const h = await run(hand, ['do', 'demo'], { env: cfgEnv(def), orchestrator: () => '/orch' });
   assert.equal(h.result.stage, 'handover');
-  assert.equal(h.calls[0][1], '/am-orchestrator:run .am/demo/plan.md');
-  assert.ok(!h.calls[0].includes('--model'));
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.result.status, 'failed');
+  assert.ok(h.result.reason.startsWith("the skill's model and effort cannot be read: ") && h.result.reason.includes(path.join(path.resolve('/orch'), 'skills', 'run', 'SKILL.md')), h.result.reason);
+});
+
+// ------------------------------------------------------------------ the hand-over on the user's run value
+
+const ORCH_ROOT = path.join(REPO, 'orchestrator');
+
+test('skillCall names the plugin, skill and arguments of every stage', () => {
+  assert.deepEqual(skillCall('handover', 'demo'), { plugin: 'am-orchestrator', skill: 'run', args: '.am/demo/plan.md' });
+  assert.deepEqual(skillCall('handover', 'demo', { resume: true }), { plugin: 'am-orchestrator', skill: 'run', args: '' });
+  assert.equal(skillCall('commit', 'demo', { push: true }).args, 'push');
+  assert.equal(skillCall('nope', 'demo'), null);
+});
+
+test('a hand-over the user file gives another run value runs the run skill inline with both flags', async (t) => {
+  const file = userModels(t, '{"model":{"run":"sonnet"}}');
+  const effort = skillDefaults(ORCH_ROOT, 'run').effort;
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const { result, calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(file), orchestrator: () => ORCH_ROOT + path.sep });
+  assert.equal(result.stage, 'handover');
+  assert.equal(calls[0][1], inlinePrompt('demo', 'handover', 'am-orchestrator:run'));
+  assert.equal(flag(calls[0], '--model'), 'sonnet');
+  assert.equal(flag(calls[0], '--effort'), effort);
+  const body = readFileSync(skillFile(dir, 'handover'), 'utf8');
+  assertInline(body);
+  assert.match(body, /^Request: \.am\/demo\/plan\.md\r?$/m);
+  const script = `${ORCH_ROOT.split(path.sep).join('/')}/scripts/orchestrator.mjs`;
+  assert.ok(body.includes(`node "${script}"`), 'the filled command path');
+  assert.ok(flag(calls[0], '--allowedTools').split(',').includes(`Bash(node ${script} *)`));
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'note', 'note', 'end']);
+  assert.equal(list[1].text, 'handed to the am-orchestrator run skill');
+  assert.equal(list[2].text, `model sonnet, effort ${effort} from the user's setting ${file}`);
+
+  // A hand-over that goes on calls the run skill with no arguments.
+  const resumed = makeRepo(t, { plan: HANDED_PLAN, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const r = await run(resumed, ['do', 'demo'], { env: cfgEnv(file), orchestrator: () => ORCH_ROOT });
+  assert.equal(r.calls[0][1], inlinePrompt('demo', 'handover', 'am-orchestrator:run'));
+  assert.match(readFileSync(skillFile(resumed, 'handover'), 'utf8'), /^Request: \r?$/m);
+
+  // The second ask carries the same flags.
+  const again = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.', 'AM_STAGE: HANDED'] } });
+  const a = await run(again, ['do', 'demo'], { env: cfgEnv(file), orchestrator: () => ORCH_ROOT });
+  assert.equal(a.calls.length, 2);
+  for (const c of a.calls) assert.equal(flag(c, '--model'), 'sonnet');
+  assert.equal(flag(a.calls[1], '--resume'), 'sess-1');
+});
+
+test('run values equal to the run skill, or values for other stages only, keep the slash hand-over', async (t) => {
+  const own = skillDefaults(ORCH_ROOT, 'run');
+  const same = userModels(t, JSON.stringify({ model: { run: own.model }, effort: { run: own.effort } }));
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const { calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(same), orchestrator: () => ORCH_ROOT });
+  assert.equal(calls[0][1], '/am-orchestrator:run .am/demo/plan.md');
+  assert.ok(!calls[0].includes('--model'));
+  assert.ok(!existsSync(skillFile(dir, 'handover')));
+
+  // The run skill's frontmatter is not read when no run or default value is given.
+  const other = userModels(t, '{"model":{"check":"sonnet"}}');
+  const o = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const r = await run(o, ['do', 'demo'], { env: cfgEnv(other), orchestrator: () => '/orch' });
+  assert.equal(r.calls[0][1], '/am-orchestrator:run .am/demo/plan.md');
+  assert.ok(!r.calls[0].includes('--model'));
 });
