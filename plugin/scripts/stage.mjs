@@ -17,13 +17,16 @@
 // Each stage appends to .am/<slug>/progress.jsonl: `start` (pid, stage), a `note` for a compaction, a second ask or a
 // hand-over, and one `end` (status, min) on every way out; write errors are dropped (see progress.mjs). During a hand-over
 // the news of the orchestrator run (.orchestrator/runs/<run>/progress.jsonl) is copied in as lines with `src: "run"`.
+// The do, compactmem and commit sessions and the compaction session write the prompt cache for 5 minutes, not 1 hour
+// (FORCE_PROMPT_CACHING_5M): they rarely wait that long, and the 5-minute write costs less.
+// The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker. Exit codes: 0 result printed, 1 bad input.
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -54,6 +57,10 @@ export const COMPACT_MARKS = ['COMPACTED', 'BLOCKED'];
 const TAIL_CHARS = 600;
 // The compaction session runs no skill, so it gets its model and effort as arguments (written by scripts/models.mjs).
 export const COMPACT_MODEL = { model: 'opus', effort: 'medium' };
+// Session kinds whose prompt cache is written for 5 minutes. Plan and check wait on reviewers and gates for longer, so they keep 1 hour.
+export const CACHE_5M_KINDS = ['do', 'compactmem', 'commit', 'compact'];
+/** The environment of a session of this kind: env plus the 5-minute cache setting where it applies, else env as given. */
+export const sessionEnv = (kind, env) => (CACHE_5M_KINDS.includes(kind) ? { ...env, FORCE_PROMPT_CACHING_5M: '1' } : env);
 
 // ------------------------------------------------------------------ context size
 
@@ -110,6 +117,57 @@ const nodeScript = (file) => [...new Set([file, file.replace(/[\\/]scripts[\\/]/
 
 /** Claude Code's auto memory folder of the project at root: what the am:compactmem skill falls back to when no folder is named. */
 export const memoryDir = (root, env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects', path.resolve(root).replace(/[^A-Za-z0-9]/g, '-'), 'memory');
+
+/**
+ * The main checkout of the git repository at cwd: Claude Code shares one memory folder across a repository's worktrees.
+ * '' outside any repository, null when git cannot tell (missing, failing, bare, or before 2.31: echoes --path-format back).
+ */
+export function mainCheckout(cwd, env, git = (args) => spawnSync('git', args, { encoding: 'utf8', env, windowsHide: true, timeout: 30000 })) {
+  const r = git(['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (r.error) return null;
+  if (r.status === 128 && /not a git repository/i.test(r.stderr || '')) return '';
+  const common = String(r.stdout || '').trim();
+  if (r.status !== 0 || /[\r\n]/.test(common) || !path.isAbsolute(common) || !/[\\/]\.git$/.test(common)) return null;
+  return path.resolve(path.dirname(common));
+}
+
+/**
+ * Why the memory stage needs no session, or null: the memory folder (of cwd and of the main checkout) has no .md file
+ * and none of the settings files names autoMemoryDirectory. Any doubt (a read error other than a missing file, git
+ * unable to tell) means null, so the session runs as before.
+ */
+export function memorySkip(cwd, env) {
+  const main = mainCheckout(cwd, env);
+  if (main === null) return null;
+  const roots = [...new Set([path.resolve(cwd), ...(main ? [main] : [])])];
+  const dirs = [...new Set(roots.map((r) => memoryDir(r, env)))];
+  const settings = [path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json'), ...roots.flatMap((r) => [path.join(r, '.claude', 'settings.json'), path.join(r, '.claude', 'settings.local.json')])];
+  try {
+    for (const d of dirs) {
+      let names;
+      try {
+        names = readdirSync(d);
+      } catch (err) {
+        if (err && err.code === 'ENOENT') continue;
+        throw err;
+      }
+      if (names.some((f) => /\.md$/i.test(f))) return null;
+    }
+    for (const file of settings) {
+      let text;
+      try {
+        text = readFileSync(file, 'utf8');
+      } catch (err) {
+        if (err && err.code === 'ENOENT') continue;
+        throw err;
+      }
+      if (text.includes('autoMemoryDirectory')) return null;
+    }
+  } catch {
+    return null;
+  }
+  return `no memory file in ${dirs.join(' or ')}: the memory stage was skipped without a session`;
+}
 
 /** An Edit rule for everything under an absolute folder: `//` starts a path from the file system root, a Windows drive as `/c` (measured on Windows). */
 export const absEdit = (dir) => `Edit(/${path.resolve(dir).split(path.sep).join('/').replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`)}/**)`;
@@ -510,7 +568,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   writeFileSync(abs(systemRel), system);
   note(`shortening ${files.join(', ')} before the stage`);
   const [bin, ...pre] = claude;
-  const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model: COMPACT_MODEL })], { cwd, env, timeoutMs: timeoutMin.compact * 60000 });
+  const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model: COMPACT_MODEL })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000 });
   const parsed = parseResult(r.stdout);
   const costUsd = parsed && Number.isFinite(parsed.total_cost_usd) ? parsed.total_cost_usd : 0;
 
@@ -595,6 +653,16 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   result.stage = kind;
   if (kind === 'handover') event({ ev: 'note', text: 'handed to the am-orchestrator run skill', stage: 'handover' });
+  if (kind === 'compactmem') {
+    const skip = memorySkip(cwd, env);
+    if (skip) {
+      // Appended, like the skill's own record: an earlier proposal in the file stays.
+      const file = path.join(dir, 'compactmem.md');
+      const prev = existsSync(file) ? readFileSync(file, 'utf8') : '';
+      appendFileSync(file, `${prev && !prev.endsWith('\n') ? '\n' : ''}${skip}\n`);
+      return done({ status: 'NOTHING', reason: skip });
+    }
+  }
   const [bin, ...pre] = claude;
   // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
   const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, note: (text) => event({ ev: 'note', text }) });
@@ -611,7 +679,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const timeoutMs = limits[kind] * 60000;
 
   const call = async (args) => {
-    const r = await exec(bin, [...pre, ...args], { cwd, env, timeoutMs });
+    const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env), timeoutMs });
     const parsed = parseResult(r.stdout);
     if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + parsed.total_cost_usd; // a resumed session reports the whole conversation
     if (parsed?.session_id) result.sessionId = parsed.session_id;

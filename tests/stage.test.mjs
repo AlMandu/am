@@ -3,24 +3,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
 
-// A fake claude: records its arguments in calls.jsonl and answers as fake.json in the working folder says.
+// A fake claude: records its arguments in calls.jsonl (and its FORCE_PROMPT_CACHING_5M in env.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const argv = process.argv.slice(2);
 appendFileSync('calls.jsonl', JSON.stringify(argv) + '\\n');
+appendFileSync('env.jsonl', JSON.stringify(process.env.FORCE_PROMPT_CACHING_5M ?? null) + '\\n');
 const s = existsSync('fake.json') ? JSON.parse(readFileSync('fake.json', 'utf8')) : {};
 const n = readFileSync('calls.jsonl', 'utf8').trim().split('\\n').length;
 if ((s.hang || []).includes(n)) setTimeout(() => {}, 60000);
@@ -53,6 +54,20 @@ async function run(dir, argv, opts = {}) {
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
 const flag = (args, name) => args[args.indexOf(name) + 1];
+/** An env with its own Claude config folder (no 5-minute cache setting from outside), holding the memory folder of dir with the given files. */
+function memEnv(t, dir, files = { 'MEMORY.md': '- [a](a.md)\n' }) {
+  const cfg = mkdtempSync(path.join(os.tmpdir(), 'am-stage-cfg-'));
+  t.after(() => rmSync(cfg, { recursive: true, force: true }));
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: cfg };
+  delete env.FORCE_PROMPT_CACHING_5M;
+  if (files) {
+    const mem = memoryDir(dir, env);
+    mkdirSync(mem, { recursive: true });
+    for (const [name, text] of Object.entries(files)) writeFileSync(path.join(mem, name), text);
+  }
+  return env;
+}
+const cacheEnv = (dir) => readFileSync(path.join(dir, 'env.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const SMALL = '# p\n## Summary\n- Scale: 1 implementation runs, 1 commits\n## Steps\n1. a. Check: x\n';
 const LARGE = '# p\n## Summary\n- 규모: 구현 2회, 커밋 2개\n## Steps\n1. a. Check: x\n';
 
@@ -291,13 +306,96 @@ test('a missing marker is asked for once in the same session', async (t) => {
 test('the memory stage runs between check and commit and reports PROPOSED or NOTHING', async (t) => {
   assert.deepEqual(STAGES, ['plan', 'do', 'check', 'compactmem', 'commit']);
   const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Proposal saved.\nAM_STAGE: PROPOSED'] } });
-  const { result, calls } = await run(dir, ['compactmem', 'demo']);
+  const { result, calls } = await run(dir, ['compactmem', 'demo'], { env: memEnv(t, dir) });
   assert.equal(result.stage, 'compactmem');
   assert.equal(result.status, 'PROPOSED');
   assert.equal(flag(calls[0], '-p'), '/am:compactmem demo');
   assert.equal(flag(calls[0], '--permission-mode'), 'dontAsk');
   const none = makeRepo(t, { plan: SMALL, fake: { replies: ['No memory.\nAM_STAGE: NOTHING'] } });
-  assert.equal((await run(none, ['compactmem', 'demo'])).result.status, 'NOTHING');
+  const r2 = await run(none, ['compactmem', 'demo'], { env: memEnv(t, none) });
+  assert.equal(r2.result.status, 'NOTHING');
+  assert.equal(r2.calls.length, 1);
+});
+
+test('the memory stage starts no session when the memory folder has no memory file', async (t) => {
+  const lines = (dir) => readFileSync(path.join(dir, '.am', 'demo', 'progress.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  // No memory folder, and an empty one (a non-.md file does not count).
+  for (const files of [null, {}, { 'notes.txt': 'x' }]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: PROPOSED'] } });
+    const env = memEnv(t, dir, files);
+    const { result, calls } = await run(dir, ['compactmem', 'demo'], { env });
+    assert.equal(calls.length, 0, JSON.stringify(files));
+    assert.equal(result.status, 'NOTHING');
+    assert.equal(result.costUsd, 0);
+    assert.equal(result.reason, `no memory file in ${memoryDir(dir, env)}: the memory stage was skipped without a session`);
+    assert.equal(memorySkip(dir, env), result.reason);
+    assert.equal(readFileSync(path.join(dir, '.am', 'demo', 'compactmem.md'), 'utf8'), `${result.reason}\n`);
+    const end = lines(dir).at(-1);
+    assert.deepEqual([end.ev, end.status, end.text], ['end', 'NOTHING', result.reason.slice(0, 200)]);
+  }
+  // An earlier proposal stays in front of the new line.
+  const kept = makeRepo(t, { plan: SMALL });
+  writeFileSync(path.join(kept, '.am', 'demo', 'compactmem.md'), '# Earlier proposal');
+  const { result } = await run(kept, ['compactmem', 'demo'], { env: memEnv(t, kept, null) });
+  assert.equal(readFileSync(path.join(kept, '.am', 'demo', 'compactmem.md'), 'utf8'), `# Earlier proposal\n${result.reason}\n`);
+});
+
+test('the memory stage still runs when a settings file may move the memory folder', async (t) => {
+  for (const where of ['user', 'project', 'local']) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTHING'] } });
+    const env = memEnv(t, dir, {});
+    const file = { user: path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), project: path.join(dir, '.claude', 'settings.json'), local: path.join(dir, '.claude', 'settings.local.json') }[where];
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, '{ "autoMemoryDirectory": "D:/mem" }');
+    const { result, calls } = await run(dir, ['compactmem', 'demo'], { env });
+    assert.equal(calls.length, 1, where);
+    assert.equal(result.status, 'NOTHING');
+    assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'compactmem.md')), where);
+  }
+  // A settings file without that key changes nothing.
+  const dir = makeRepo(t, { plan: SMALL });
+  const env = memEnv(t, dir, null);
+  writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), '{ "model": "opus" }');
+  assert.match(memorySkip(dir, env), /^no memory file in /);
+});
+
+test('in a git worktree the memory stage also looks at the main checkout, which shares its memory folder', (t) => {
+  const base = mkdtempSync(path.join(os.tmpdir(), 'am-stage-git-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const main = realpathSync.native(base);
+  const wt = path.join(main, 'wt');
+  const git = (...args) => {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd: main, encoding: 'utf8' });
+    assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', wt);
+  assert.equal(mainCheckout(wt, process.env), main);
+  assert.equal(mainCheckout(main, process.env), main);
+  assert.equal(mainCheckout(os.tmpdir(), process.env), '', 'outside a repository');
+  // Memory only in the main checkout's folder: the worktree runs the session.
+  const env = memEnv(t, main);
+  assert.equal(memorySkip(wt, env), null);
+  // The main checkout's untracked local settings may move the folder.
+  const empty = memEnv(t, main, null);
+  assert.equal(memorySkip(wt, empty), `no memory file in ${memoryDir(wt, empty)} or ${memoryDir(main, empty)}: the memory stage was skipped without a session`);
+  mkdirSync(path.join(main, '.claude'), { recursive: true });
+  writeFileSync(path.join(main, '.claude', 'settings.local.json'), '{ "autoMemoryDirectory": "D:/mem" }');
+  assert.equal(memorySkip(wt, empty), null);
+});
+
+test('mainCheckout: when git cannot tell, the memory stage runs its session', () => {
+  const fake = (r) => () => ({ status: 0, stdout: '', stderr: '', ...r });
+  const abs = path.resolve('/repo/.git');
+  assert.equal(mainCheckout('.', process.env, fake({ stdout: `${abs}\n` })), path.resolve('/repo'));
+  // A git before 2.31 echoes the unknown --path-format back and prints a relative path.
+  assert.equal(mainCheckout('.', process.env, fake({ stdout: '--path-format=absolute\n../.git\n' })), null);
+  assert.equal(mainCheckout('.', process.env, fake({ stdout: '../.git\n' })), null);
+  assert.equal(mainCheckout('.', process.env, fake({ status: 1, stdout: `${abs}\n` })), null);
+  assert.equal(mainCheckout('.', process.env, fake({ error: new Error('ENOENT') })), null);
+  assert.equal(mainCheckout('.', process.env, fake({ stdout: path.resolve('/repo/.git/modules/sub') })), null, 'a submodule');
+  assert.equal(mainCheckout('.', process.env, fake({ status: 128, stderr: 'fatal: not a git repository' })), '');
 });
 
 test('the do stage becomes a hand-over for a large plan, with push only in push mode', async (t) => {
@@ -473,6 +571,26 @@ test('within the limit no compaction session runs', async (t) => {
   assert.equal(calls.length, 1);
   assert.equal(result.compacted, null);
   assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'stage-compact.system.md')));
+});
+
+test('do, compactmem, commit and the compaction session write the cache for 5 minutes; plan, check and a hand-over do not', async (t) => {
+  assert.deepEqual(CACHE_5M_KINDS, ['do', 'compactmem', 'commit', 'compact']);
+  const cases = [
+    [['plan', 'demo'], { replies: ['AM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } }, undefined, [null]],
+    // The second call asks the same session again for its end line.
+    [['do', 'demo'], { replies: ['Implemented.', 'AM_STAGE: DONE'] }, SMALL, ['1', '1']],
+    [['check', 'demo'], { replies: ['AM_STAGE: NOTE'] }, SMALL, [null]],
+    [['compactmem', 'demo'], { replies: ['AM_STAGE: PROPOSED'] }, SMALL, ['1']],
+    [['commit', 'demo'], { replies: ['AM_STAGE: COMMITTED'] }, SMALL, ['1']],
+    [['do', 'demo'], { replies: ['AM_STAGE: HANDED'] }, LARGE, [null], { orchestrator: () => '/orch' }],
+    // The compaction session before a check: 5 minutes for it, 1 hour for the check.
+    [['check', 'demo'], { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] }, BIG, ['1', null]],
+  ];
+  for (const [argv, fake, planText, want, opts = {}] of cases) {
+    const dir = makeRepo(t, { plan: planText, fake });
+    await run(dir, argv, { env: memEnv(t, dir), ...opts });
+    assert.deepEqual(cacheEnv(dir), want, `${argv[0]} ${planText === LARGE ? 'hand-over' : ''}`);
+  }
 });
 
 test('compactionProblem: check.md keeps its verdict', () => {
