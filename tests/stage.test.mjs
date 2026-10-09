@@ -1,5 +1,6 @@
 // Run: node --test tests/stage.test.mjs
-// The am:auto stage runner: what each stage session may do, what it is told, and how its end is read.
+// The am:auto stage runner (what each stage session may do, what it is told, how its end is read)
+// and the user models module it will use.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -10,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
+import { USER_EFFORTS, readUserModels, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -1219,4 +1221,78 @@ test('wait: when the start line cannot be written the lock is kept until the sta
   }
   assert.equal(code, 1);
   assert.ok(!existsSync(LOCK(dir)), 'released at the end');
+});
+
+// A temporary config folder holding am/models.json with text (or nothing when text is null); returns the file's path.
+function userModels(t, text) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-user-models-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = userModelsFile({ CLAUDE_CONFIG_DIR: dir });
+  mkdirSync(path.dirname(file), { recursive: true });
+  if (text !== null) writeFileSync(file, text);
+  return file;
+}
+
+test('user models: the file lives under the config folder, else under ~/.claude', () => {
+  const dir = path.join(os.tmpdir(), 'cfg');
+  assert.equal(userModelsFile({ CLAUDE_CONFIG_DIR: dir }), path.join(dir, 'am', 'models.json'));
+  assert.equal(userModelsFile({}), path.join(os.homedir(), '.claude', 'am', 'models.json'));
+});
+
+test('user models: the module reads no environment variable and imports only node built-ins', () => {
+  const src = readFileSync(path.join(REPO, 'plugin', 'scripts', 'user-models.mjs'), 'utf8');
+  assert.ok(!src.includes('process.env'));
+  const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.ok(imports.length > 0);
+  for (const name of imports) assert.ok(name.startsWith('node:'), name);
+});
+
+test('user models: a missing file is empty; notes are dropped and a BOM is allowed', (t) => {
+  assert.deepEqual(readUserModels(userModels(t, null)), { model: {}, effort: {} });
+  const efforts = Object.fromEntries(USER_EFFORTS.map((e, i) => [['plan', 'do', 'check', 'commit', 'split'][i], e]));
+  const file = userModels(t, '﻿' + JSON.stringify({ _note: 'mine', model: { _why: 'cheap', default: 'sonnet', do: 'opus' }, effort: { _x: 1, ...efforts } }));
+  assert.deepEqual(readUserModels(file), { model: { default: 'sonnet', do: 'opus' }, effort: efforts });
+  assert.deepEqual(readUserModels(userModels(t, '{"model":{"run":"haiku"}}')), { model: { run: 'haiku' }, effort: {} });
+});
+
+test('user models: every broken file is one error line naming the file and the problem', (t) => {
+  const cases = [
+    ['{"model":', 'JSON'],
+    ['{"models":{}}', '"models"'],
+    ['{"model":["opus"]}', '"model"'],
+    ['{"effort":"high"}', '"effort"'],
+    ['{"model":"opus"}', '"model"'],
+    ['{"effort":["high"]}', '"effort"'],
+    ['{"model":null}', '"model"'],
+    ['[]', 'object'],
+    ['{"model":{"implement":"opus"}}', '"do"'],
+    ['{"effort":{"review":"high"}}', 'effort.review'],
+    ['{"model":{"plan":""}}', 'model.plan'],
+    ['{"model":{"plan":"  "}}', 'non-empty'],
+    ['{"model":{"plan":4}}', 'model.plan'],
+    ['{"effort":{"check":"huge"}}', 'huge'],
+  ];
+  for (const [text, word] of cases) {
+    const file = userModels(t, text);
+    const r = readUserModels(file);
+    assert.equal(typeof r.error, 'string', text);
+    assert.ok(!r.error.includes('\n'), text);
+    assert.ok(r.error.startsWith(`${file}: `), text);
+    assert.ok(r.error.includes(word), `${text}: ${r.error}`);
+    assert.ok(!('model' in r) && !('effort' in r), text);
+  }
+  const folder = userModels(t, null);
+  mkdirSync(folder);
+  const r = readUserModels(folder);
+  assert.ok(r.error.startsWith(`${folder}: `) && r.error.includes('read') && !r.error.includes('\n'), r.error);
+  assert.ok(!('model' in r));
+});
+
+test('user models: the stage key beats default, default beats the built-in, model and effort apart', () => {
+  const builtin = { model: 'opus', effort: 'high' };
+  assert.deepEqual(resolveUser({ model: {}, effort: {} }, 'do', builtin), builtin);
+  const cfg = { model: { default: 'sonnet', do: 'haiku' }, effort: { default: 'low', check: 'max' } };
+  assert.deepEqual(resolveUser(cfg, 'do', builtin), { model: 'haiku', effort: 'low' });
+  assert.deepEqual(resolveUser(cfg, 'check', builtin), { model: 'sonnet', effort: 'max' });
+  assert.deepEqual(resolveUser({ model: { plan: 'opus' }, effort: {} }, 'plan', { model: 'x', effort: 'medium' }), { model: 'opus', effort: 'medium' });
 });
