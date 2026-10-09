@@ -50,6 +50,8 @@ export const STAGES = ['plan', 'do', 'check', 'compactmem', 'commit'];
 export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compactmem: 20, commit: 25, compact: 15 };
 // How often a hand-over copies the run's new event lines into the task's event file.
 export const RELAY_MS = 5000;
+// How often a plan or do session's plan.md is read for new second-opinion lines.
+export const OPINION_MS = 5000;
 // End markers each session may give; anything else is `failed`.
 export const MARKS = {
   plan: ['READY', 'NEEDS_DECISION'],
@@ -317,8 +319,8 @@ Files to shorten (token counts are this runner's estimate: 4 ASCII characters, o
 ${list}
 - Change only these files, in place, with the Edit or Write tool. Change nothing else. The runner keeps a copy of each original and tells the next session where it is.
 - Never change .am/${slug}/request.md: it is the user's request in their own words. This session cannot edit that file, and if the runner finds it changed it puts everything back.
-- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
-- Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), and the word OPEN.
+- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
+- Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), (second opinion, and the word OPEN.
 - Shorten: explanations and background, long reasons (one line each), examples, Change log lines that repeat or were superseded.
 - Do not add anything, and do not change what a kept line says.
 - The runner checks the result mechanically (the marks, numbered lines and headings above, and the total size) and puts the originals back if a check fails.
@@ -387,6 +389,53 @@ export function runRelay(cwd, slug, { resume = false, now = Date.now } = {}) {
       if (r.failed) return;
       for (const { pid, ...line } of r.events) appendEvent(cwd, slug, { ...line, ev: line.ev === 'start' || line.ev === 'end' ? 'step' : line.ev, src: 'run' }, { now });
       pos = r.next;
+    } catch {
+      // Dropped on purpose, like a failed event write.
+    }
+  };
+}
+
+// A choice the second opinion settled. `(no second opinion)` does not match: the open paren must come right before "second".
+export const SECOND_MARK = /\(second opinion/i;
+
+/** The lines of `text` that carry a second-opinion mark, without list markers, trimmed. */
+export function secondOpinionLines(text) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .filter((l) => SECOND_MARK.test(l))
+    .map((l) => l.replace(/^[\s\-*>]+/, '').trim());
+}
+
+/**
+ * Takes the second-opinion lines of .am/<slug>/plan.md as they are now and returns `scan(whole)`, which writes a `step`
+ * event for each new one. Without `whole` a last line with no newline yet is left for later. `scan` never throws.
+ */
+export function opinionWatch(cwd, slug, kind, { now = Date.now } = {}) {
+  const file = path.join(cwd, '.am', slug, 'plan.md');
+  // null: the lines that were there are not known yet (a read error other than a missing file).
+  const read = () => {
+    try {
+      return readFileSync(file, 'utf8');
+    } catch (err) {
+      return err && err.code === 'ENOENT' ? '' : null;
+    }
+  };
+  const first = read();
+  let seen = first === null ? null : new Set(secondOpinionLines(first));
+  return (whole) => {
+    try {
+      const text = read();
+      if (text === null) return;
+      if (!seen) {
+        seen = new Set(secondOpinionLines(text));
+        return;
+      }
+      const complete = whole ? text : text.slice(0, text.lastIndexOf('\n') + 1);
+      for (const line of secondOpinionLines(complete)) {
+        if (seen.has(line)) continue;
+        seen.add(line);
+        appendEvent(cwd, slug, { ev: 'step', stage: kind, text: `second opinion: ${line}` }, { now });
+      }
     } catch {
       // Dropped on purpose, like a failed event write.
     }
@@ -667,6 +716,7 @@ const count = (text, re) => (String(text).match(re) || []).length;
 const COUNTED = [
   [/\((?:done|완료)\)/gi, 'done marks'],
   [/\((?:auto-decided|자동 결정)\)/gi, 'auto-decided marks'],
+  [/\(second opinion/gi, 'second opinion marks'],
   [/\bOPEN\b/g, 'OPEN marks'],
   [/^\d+\.\s/gm, 'numbered lines'],
 ];
@@ -776,7 +826,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive } = {}) {
   const [stage, slug, ...flags] = argv;
   if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
     out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
@@ -836,10 +886,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   const startedAt = now();
   let stopRelay = null; // set while a hand-over copies the run's events
-  finish = ({ status, reason }) => {
+  let stopOpinions = null; // set while a plan or do session's plan.md is watched
+  finish = ({ status, reason, stopped = false }) => {
     if (!finishers.has(finish)) return;
     finishers.delete(finish);
     stopRelay?.();
+    // A stop signal comes while the session may still be writing a line.
+    stopOpinions?.(!stopped);
     const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
     event({ ev: 'end', text: first || `${result.stage} stage ended`, stage: result.stage, status, min: Math.max(0, Math.floor((now() - startedAt) / 60000)) });
     held?.release();
@@ -932,6 +985,16 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       relay();
     };
   }
+  if (kind === 'plan' || kind === 'do') {
+    // Stopped in finish, which reads once more so that every second-opinion line comes before the end event.
+    const scan = opinionWatch(cwd, slug, kind, { now });
+    const timer = setInterval(() => scan(false), opinionMs);
+    timer.unref();
+    stopOpinions = (whole) => {
+      clearInterval(timer);
+      scan(whole);
+    };
+  }
   if (stageModel) event({ ev: 'note', text: `model ${stageModel.model}, effort ${stageModel.effort} from the user's setting ${userFile}` });
   const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir, model: stageModel }));
   if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
@@ -978,7 +1041,7 @@ const isMain = () => {
 
 /** What a stop signal does: write the end event of every running stage, take the stage sessions down, exit 1. */
 export function interrupt(sig, { exit = process.exit } = {}) {
-  for (const finish of [...finishers]) finish({ status: 'failed', reason: `stopped by ${sig}` });
+  for (const finish of [...finishers]) finish({ status: 'failed', reason: `stopped by ${sig}`, stopped: true });
   for (const child of active) killTree(child);
   exit(1);
 }

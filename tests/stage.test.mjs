@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -156,7 +156,7 @@ test('the compaction session: its own model and markers, a prompt cmd.exe can pa
   const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
   assert.ok(!/["%]/.test(prompt), prompt);
   assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
-  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back']) assert.ok(system.includes(keep), keep);
+  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), or the user\'s answer', '(자동 결정), (second opinion, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back']) assert.ok(system.includes(keep), keep);
 });
 
 test('instructions: slash call of the stage skill, unattended rules written out in every stage', () => {
@@ -1688,4 +1688,118 @@ test('the plan and memory stages also allow the Codex script of the installed am
   const none = await run(noneDir, ['plan', 'demo'], { env, amRoot, am: () => [] });
   assert.deepEqual(flag(none.calls[0], '--allowedTools').split(',').filter((r) => r.includes('codex-opinion')), permissions('plan', { amRoot }).allow.filter((r) => r.includes('codex-opinion')));
   assert.deepEqual(notes(noneDir), []);
+});
+
+// ------------------------------------------------------------------ second-opinion news
+
+const OPINION_LINE = 'C1 저장 방식: 파일 - 이유 (second opinion, Codex agreed)';
+const DECISIONS = `## Decisions\n- ${OPINION_LINE}\n- C2 로그 위치: 실행 폴더 - 이유 (no second opinion)\n`;
+const opinionSteps = (list) => list.filter((e) => e.ev === 'step');
+const planFile = (dir) => path.join(dir, '.am', 'demo', 'plan.md');
+
+test('secondOpinionLines: marked lines without list markers; (no second opinion) is not one', () => {
+  assert.ok(SECOND_MARK.test('(Second Opinion)') && !SECOND_MARK.test('(no second opinion)'));
+  const text = `# p\n- C1 저장 (second opinion)\n  * C2 형식 (Second Opinion, Codex agreed)\r\n> - C3 위치 (no second opinion)\nplain\n`;
+  assert.deepEqual(secondOpinionLines(text), ['C1 저장 (second opinion)', 'C2 형식 (Second Opinion, Codex agreed)']);
+  assert.deepEqual(secondOpinionLines(undefined), []);
+  assert.equal(OPINION_MS, 5000);
+});
+
+test('opinionWatch: lines already there stay quiet, a half line waits for the last read, each line once', (t) => {
+  const dir = makeRepo(t, { plan: `# p\n- C0 old (second opinion)\n` });
+  const scan = opinionWatch(dir, 'demo', 'do');
+  scan(false);
+  assert.deepEqual(events(dir), []);
+  appendFileSync(planFile(dir), '- C1 new (second opinion)\n- C2 half (second opin');
+  scan(false);
+  scan(false);
+  assert.deepEqual(texts(events(dir)), ['second opinion: C1 new (second opinion)']);
+  appendFileSync(planFile(dir), 'ion)');
+  scan(false);
+  assert.equal(events(dir).length, 1, 'still no newline after the half line');
+  scan(true);
+  scan(true);
+  const list = events(dir);
+  assert.deepEqual(texts(list), ['second opinion: C1 new (second opinion)', 'second opinion: C2 half (second opinion)']);
+  assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['step', 'do'], ['step', 'do']]);
+});
+
+test('opinionWatch: a failed first read only takes the lines at the next read; a missing plan is an empty start', (t) => {
+  const dir = makeRepo(t);
+  mkdirSync(planFile(dir));
+  const scan = opinionWatch(dir, 'demo', 'plan');
+  scan(false);
+  rmSync(planFile(dir), { recursive: true });
+  writeFileSync(planFile(dir), '- C1 before (second opinion)\n');
+  scan(false);
+  assert.deepEqual(events(dir), [], 'the first good read only takes the lines');
+  appendFileSync(planFile(dir), '- C2 after (second opinion)\n');
+  scan(false);
+  assert.deepEqual(texts(events(dir)), ['second opinion: C2 after (second opinion)']);
+  const fresh = makeRepo(t);
+  const scanFresh = opinionWatch(fresh, 'demo', 'plan');
+  writeFileSync(planFile(fresh), '- C1 (second opinion)\n');
+  scanFresh(true);
+  assert.deepEqual(texts(events(fresh)), ['second opinion: C1 (second opinion)']);
+});
+
+test('a plan stage writes one step per second-opinion line of its plan, before its end', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': `${SMALL}${DECISIONS}` } } });
+  const { result } = await run(dir, ['plan', 'demo']);
+  assert.equal(result.status, 'READY');
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['start', 'step', 'end']);
+  const [step] = opinionSteps(list);
+  assert.equal(step.text, `second opinion: ${OPINION_LINE}`);
+  assert.equal(step.stage, 'plan');
+  assert.equal(formatEvent(step), `step: second opinion: ${OPINION_LINE} [stage=plan]`);
+});
+
+test('a do stage does not repeat the lines its plan already had', async (t) => {
+  const dir = makeRepo(t, { plan: `${SMALL}${DECISIONS}`, fake: { replies: ['AM_STAGE: DONE'] } });
+  const { result } = await run(dir, ['do', 'demo']);
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual(evs(events(dir)), ['start', 'end']);
+});
+
+test('a compaction that drops a second-opinion mark is undone; one that keeps it stands', async (t) => {
+  const short = SHORT.replace('## 결정\n', `## 결정\n- ${OPINION_LINE}\n`);
+  const big = short.replace('## 결정', `- ${FILLER}\n## 결정`);
+  const dropped = makeRepo(t, { plan: big, fake: { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  const r1 = (await run(dropped, ['do', 'demo'])).result;
+  assert.match(r1.compacted.failed, /second opinion marks 1 -> 0/);
+  assert.equal(plan(dropped), big);
+  const kept = makeRepo(t, { plan: big, fake: { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': short }] } });
+  const r2 = (await run(kept, ['do', 'demo'])).result;
+  assert.ok(r2.compacted.originals, JSON.stringify(r2.compacted));
+  assert.equal(plan(kept), short);
+  // The line was there before the compaction: no news for it.
+  assert.deepEqual(opinionSteps(events(kept)), []);
+});
+
+test('second-opinion lines are told while the session runs; a stop signal ends the reading without a half line', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const running = run(dir, ['do', 'demo'], { opinionMs: 20 });
+  let code = null;
+  try {
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    appendFileSync(planFile(dir), `${DECISIONS}`);
+    await until(() => opinionSteps(events(dir)).length >= 1);
+    const live = events(dir);
+    assert.deepEqual(texts(opinionSteps(live)), [`second opinion: ${OPINION_LINE}`]);
+    assert.equal(ends(live).length, 0, 'the session is still running');
+    appendFileSync(planFile(dir), '- C3 half (second opinion');
+  } finally {
+    interrupt('SIGTERM', { exit: (c) => (code = c) });
+    await running;
+  }
+  assert.equal(code, 1);
+  const list = events(dir);
+  oneEndLast(list);
+  assert.equal(opinionSteps(list).length, 1, 'the half line is not told');
+  // The timer is gone: a later line stays untold.
+  const before = slugBytes(dir);
+  appendFileSync(planFile(dir), ')\n- C4 late (second opinion)\n');
+  await pause(100);
+  assert.equal(slugBytes(dir), before);
 });
