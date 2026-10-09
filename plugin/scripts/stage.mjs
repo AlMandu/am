@@ -39,7 +39,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
 import { findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
-import { readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
+import { FRONTMATTER, frontmatterModels, readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -616,24 +616,8 @@ export function lastMark(text, values) {
   return found;
 }
 
-const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n/;
-
 /** The `model` and `effort` of an am skill's frontmatter, or {error} (one line naming the file) when they cannot be read. */
-export function skillDefaults(amRoot, skill) {
-  const file = path.join(amRoot, 'skills', skill, 'SKILL.md');
-  let text;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch (err) {
-    return { error: `${file}: cannot read the file (${String(err && err.message).replace(/\s+/g, ' ').trim()})` };
-  }
-  const head = FRONTMATTER.exec(text.replace(/^﻿/, ''));
-  if (!head) return { error: `${file}: no frontmatter block` };
-  const value = (key) => new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*\\r?$`, 'm').exec(head[0])?.[1].replace(/^(["'])(.*)\1$/, '$2').trim();
-  const found = { model: value('model'), effort: value('effort') };
-  const missing = Object.keys(found).filter((k) => !found[k]);
-  return missing.length ? { error: `${file}: no ${missing.join(' or ')} in the frontmatter` } : found;
-}
+export const skillDefaults = (amRoot, skill) => frontmatterModels(path.join(amRoot, 'skills', skill, 'SKILL.md'));
 
 /** A skill body for an inline call: frontmatter dropped, $ARGUMENTS and ${CLAUDE_PLUGIN_ROOT} filled (split/join, so a `$` in a path stays). */
 export const inlineSkill = (text, args, amRoot) => String(text).replace(FRONTMATTER, '').split('$ARGUMENTS').join(args || '').split('${CLAUDE_PLUGIN_ROOT}').join(amRoot.split(path.sep).join('/'));

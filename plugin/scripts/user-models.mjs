@@ -7,6 +7,7 @@
 // second-opinion takes OPINION_MODELS; codex-opinion takes CODEX_MODEL names and CODEX_EFFORTS.
 // A broken file is an error (one English line `<file>: <problem>`), never a silent fallback.
 // Reads no environment variable itself (the caller passes env). Node only, no dependencies.
+// frontmatterModels reads a plugin file's (agent, skill) built-in values; the orchestrator's copy lacks it (it uses STAGE_DEFAULTS).
 
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -64,6 +65,24 @@ export function readUserModels(file) {
     }
   }
   return result;
+}
+
+export const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n/;
+
+/** The `model` and `effort` of a plugin file's frontmatter, or {error} (one line naming the file) when they cannot be read. */
+export function frontmatterModels(file) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    return { error: `${file}: cannot read the file (${oneLine(err && err.message)})` };
+  }
+  const head = FRONTMATTER.exec(text.replace(/^﻿/, ''));
+  if (!head) return { error: `${file}: no frontmatter block` };
+  const value = (key) => new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*\\r?$`, 'm').exec(head[0])?.[1].replace(/^(["'])(.*)\1$/, '$2').trim();
+  const found = { model: value('model'), effort: value('effort') };
+  const missing = Object.keys(found).filter((k) => !found[k]);
+  return missing.length ? { error: `${file}: no ${missing.join(' or ')} in the frontmatter` } : found;
 }
 
 /** Model and effort of one stage key: the key's value, then default, then builtin, each decided apart. */

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.29 (2026-10-10)
+
+- `am:auto` 의 단계 명령도 사용자 모델 설정 파일에 적은 2차 의견 키 `second-opinion`·`codex-opinion` 을 받아들이고, 두 키의 값을 키별로 검사한다.
+- Codex 2차 의견이 이 파일의 `codex-opinion` 모델·노력 수준으로 돈다. 키가 없으면 지금과 같고, `default` 값은 따르지 않는다.
+- Codex 의 답 앞에 `Codex's answer:` 한 줄이 붙는다. `second-opinion` 값이 기본값과 다르면 그 앞 첫 줄에 `Claude reviewer: model …, effort … (from the user's setting …)` 이 나온다.
+- 파일이 깨졌으면 Codex 가 없는 PC 에서도 Codex 2차 의견이 파일 경로와 이유를 알리며 실패로 끝난다.
+
 ## am-orchestrator 0.8.1 (2026-10-10)
 
 - 사용자 모델 설정 파일에 2차 의견 키 `second-opinion`·`codex-opinion` 을 적어도 오케스트레이터가 "모르는 키"로 멈추지 않는다. 오케스트레이터의 단계 세션 값에는 쓰이지 않는다.

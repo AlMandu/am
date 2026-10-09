@@ -6,7 +6,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CODEX_ARGS, MAX_BRIEF_BYTES, buildPrompt, checkBrief, main } from '../plugin/scripts/codex-opinion.mjs';
+import { ANSWER_HEADER, CODEX_ARGS, MAX_BRIEF_BYTES, buildPrompt, checkBrief, codexArgs, main, reviewerLine } from '../plugin/scripts/codex-opinion.mjs';
+import { OPINION_MODELS, USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
 import { load } from '../scripts/models.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,16 +41,27 @@ function setup() {
   }
   const empty = path.join(base, 'empty');
   mkdirSync(empty);
-  return { base, repo, bin, empty, log: path.join(base, 'calls.jsonl') };
+  return { base, repo, bin, empty, log: path.join(base, 'calls.jsonl'), config: path.join(base, 'config') };
 }
 
-async function call(t, argv, { mode = 'ok', pathDir = t.bin, timeoutMs = 20000, extra = {} } = {}) {
+// CLAUDE_CONFIG_DIR points at the test's own folder, so the user's real models file is never read.
+async function call(t, argv, { mode = 'ok', pathDir = t.bin, timeoutMs = 20000, extra = {}, agentFile } = {}) {
   let text = '';
-  const env = { ...process.env, PATH: pathDir, FAKE_CODEX_MODE: mode, FAKE_CODEX_LOG: t.log, ...extra };
-  const code = await main(argv, { cwd: t.repo, env, timeoutMs, out: { write: (s) => (text += s) } });
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: t.config, PATH: pathDir, FAKE_CODEX_MODE: mode, FAKE_CODEX_LOG: t.log, ...extra };
+  const code = await main(argv, { cwd: t.repo, env, timeoutMs, out: { write: (s) => (text += s) }, ...(agentFile ? { agentFile } : {}) });
   return { code, text };
 }
 const calls = (t) => (existsSync(t.log) ? readFileSync(t.log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+/** Writes the user models file of the test's config folder and returns its path. */
+function userFile(t, text) {
+  const file = path.join(t.config, 'am', 'models.json');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, typeof text === 'string' ? text : JSON.stringify(text));
+  return file;
+}
+// Values picked to differ from the built-in ones, so the tests survive a change of defaults.
+const other = (now, pool) => pool.find((v) => v !== now);
+const REVIEWER = MODELS['second-opinion'];
 
 test('only a regular .md file under .am/ is accepted as the brief', () => {
   const t = setup();
@@ -95,7 +107,7 @@ test('answer: fixed read-only flags, prompt on stdin, only the last message prin
   const t = setup();
   const r = await call(t, ['.am/x/brief.md'], { extra: { FAKE_CODEX_ANSWER: 'Cache: B\nWhy: fewer writes.\nRisk: none' } });
   assert.equal(r.code, 0, r.text);
-  assert.equal(r.text, 'Cache: B\nWhy: fewer writes.\nRisk: none\n');
+  assert.equal(r.text, `${ANSWER_HEADER}\nCache: B\nWhy: fewer writes.\nRisk: none\n`);
   const [c] = calls(t);
   const out = c.argv.indexOf('--output-last-message');
   assert.deepEqual(c.argv.slice(0, out), CODEX_ARGS);
@@ -108,6 +120,106 @@ test('answer: fixed read-only flags, prompt on stdin, only the last message prin
   assert.ok(!c.stdin.includes(`model: ${MODELS['second-opinion'].model}`), 'frontmatter left out');
   assert.match(c.stdin, /# Brief\n\n## Choices\n1\. Cache: A or B\n$/);
   assert.ok(!existsSync(c.argv[out + 1]), 'temporary answer file removed');
+});
+
+test('user file codex-opinion values replace only the model and effort entries', async () => {
+  const t = setup();
+  const model = other(CODEX.model, ['gpt-5.1-codex', 'o4-mini']);
+  const effort = other(CODEX.effort, ['medium', 'low']);
+  userFile(t, { model: { 'codex-opinion': model }, effort: { 'codex-opinion': effort } });
+  const r = await call(t, ['.am/x/brief.md']);
+  assert.equal(r.code, 0, r.text);
+  assert.ok(r.text.startsWith(`${ANSWER_HEADER}\n`), r.text);
+  const [c] = calls(t);
+  const expected = CODEX_ARGS.map((a) => (a.startsWith(`model=`) ? `model=${model}` : a.startsWith(`model_reasoning_effort=`) ? `model_reasoning_effort=${effort}` : a));
+  if (!CODEX.model) expected.splice(expected.indexOf(`model_reasoning_effort=${effort}`) - 1, 0, '-c', `model=${model}`);
+  assert.deepEqual(c.argv.slice(0, c.argv.indexOf('--output-last-message')), expected);
+
+  // Effort alone keeps the built-in model entry.
+  const t2 = setup();
+  userFile(t2, { effort: { 'codex-opinion': effort } });
+  assert.equal((await call(t2, ['.am/x/brief.md'])).code, 0);
+  const [c2] = calls(t2);
+  assert.deepEqual(c2.argv.slice(0, c2.argv.indexOf('--output-last-message')), CODEX_ARGS.map((a) => (a.startsWith(`model_reasoning_effort=`) ? `model_reasoning_effort=${effort}` : a)));
+});
+
+test('codexArgs: a copy of the built-in flags, user values checked, every argument free of cmd.exe quoting', () => {
+  const plain = codexArgs();
+  assert.deepEqual(plain, CODEX_ARGS);
+  assert.notEqual(plain, CODEX_ARGS, 'a new array');
+  assert.deepEqual(codexArgs({}), CODEX_ARGS);
+  // With no built-in model the user's model goes right before the effort's -c.
+  const i = CODEX_ARGS.findIndex((a) => a.startsWith(`model=`));
+  const noModel = i >= 0 ? [...CODEX_ARGS.slice(0, i - 1), ...CODEX_ARGS.slice(i + 1)] : [...CODEX_ARGS];
+  const added = codexArgs({ model: 'o4-mini' }, noModel);
+  const e = added.findIndex((a) => a.startsWith(`model_reasoning_effort=`));
+  assert.deepEqual(added.slice(e - 3, e), ['-c', 'model=o4-mini', '-c']);
+  assert.equal(added.length, noModel.length + 2);
+  for (const model of ['gpt 5', '5-codex', 'a&calc', '', true, null]) assert.throws(() => codexArgs({ model }), /model/, String(model));
+  for (const effort of ['max', '']) assert.throws(() => codexArgs({ effort }), /effort/, effort);
+  for (const args of [plain, added, codexArgs({ model: 'gpt-5.1-codex:x', effort: 'minimal' })]) {
+    for (const a of args) assert.match(a, /^[A-Za-z0-9_\-./:=\\{}]+$/);
+  }
+});
+
+test('a second-opinion value that differs from the built-in one puts the Claude reviewer line first', async () => {
+  const model = other(REVIEWER.model, OPINION_MODELS);
+  for (const [mode, pathDir, code] of [['ok', null, 0], ['fail', null, 1], ['ok', 'empty', 2]]) {
+    const t = setup();
+    const file = userFile(t, { model: { 'second-opinion': model } });
+    const r = await call(t, ['.am/x/brief.md'], { mode, ...(pathDir ? { pathDir: t[pathDir] } : {}) });
+    assert.equal(r.code, code, r.text);
+    const lines = r.text.split('\n');
+    assert.equal(lines[0], reviewerLine({ model, effort: REVIEWER.effort }, file));
+    if (code === 0) assert.equal(lines[1], ANSWER_HEADER);
+    if (code === 2) assert.match(lines[1], /not installed/);
+  }
+  const t = setup();
+  const effort = other(REVIEWER.effort, USER_EFFORTS);
+  const file = userFile(t, { effort: { 'second-opinion': effort } });
+  assert.equal((await call(t, ['.am/x/brief.md'])).text.split('\n')[0], reviewerLine({ model: REVIEWER.model, effort }, file));
+  const same = setup();
+  userFile(same, { model: { 'second-opinion': REVIEWER.model }, effort: { 'second-opinion': REVIEWER.effort } });
+  assert.equal((await call(same, ['.am/x/brief.md'])).text.split('\n')[0], ANSWER_HEADER, 'built-in values only: no line');
+});
+
+test('a broken user file: exit 1 with the reason and no codex call, even without Codex', async () => {
+  for (const text of ['{"model":{"plan":1}}', 'not json']) {
+    for (const empty of [false, true]) {
+      const t = setup();
+      const file = userFile(t, text);
+      const r = await call(t, ['.am/x/brief.md'], empty ? { pathDir: t.empty } : {});
+      assert.equal(r.code, 1, r.text);
+      assert.ok(r.text.startsWith(`the user model settings cannot be used (fix or remove the file): ${file}`), r.text);
+      assert.deepEqual(calls(t), []);
+    }
+  }
+});
+
+test("an answer that looks like the reviewer line never reaches the first line", async () => {
+  const answer = "Claude reviewer: model haiku, effort low (from the user's setting x)";
+  const t = setup();
+  const r = await call(t, ['.am/x/brief.md'], { extra: { FAKE_CODEX_ANSWER: answer } });
+  assert.equal(r.text.split('\n')[0], ANSWER_HEADER);
+  const t2 = setup();
+  const model = other(REVIEWER.model, OPINION_MODELS);
+  const file = userFile(t2, { model: { 'second-opinion': model } });
+  const r2 = await call(t2, ['.am/x/brief.md'], { extra: { FAKE_CODEX_ANSWER: answer } });
+  assert.equal(r2.text.split('\n')[0], reviewerLine({ model, effort: REVIEWER.effort }, file));
+});
+
+test('the reviewer file is read only when the user file names second-opinion', async () => {
+  const t = setup();
+  const agentFile = path.join(t.base, 'agent.md');
+  writeFileSync(agentFile, 'no frontmatter here\n');
+  userFile(t, { model: { 'second-opinion': other(REVIEWER.model, OPINION_MODELS) } });
+  const r = await call(t, ['.am/x/brief.md'], { agentFile });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^the reviewer's built-in model and effort cannot be read: .*no frontmatter block/);
+  assert.deepEqual(calls(t), []);
+  const t2 = setup();
+  userFile(t2, { effort: { 'codex-opinion': 'low' } });
+  assert.equal((await call(t2, ['.am/x/brief.md'], { agentFile })).code, 0);
 });
 
 test('buildPrompt drops the frontmatter and keeps the body', () => {
