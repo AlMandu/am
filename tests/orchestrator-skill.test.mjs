@@ -28,7 +28,7 @@ function readsStatusLikeAuto(text) {
   const fields = [...new Set([...text.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]))].sort();
   assert.deepEqual(fields, ['branch', 'id', 'report']);
   for (const f of fields) assert.match(RUN[1], new RegExp(`\\b${f}:`), `run.${f}`);
-  for (const field of ['autoDecided']) assert.ok(text.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
+  for (const field of ['autoDecided', 'secondOpinions']) assert.ok(text.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);
   for (const c of ['split', 'decide']) assert.ok(text.includes(`\`${c}\``) && new RegExp(`^\\| \`${c}[ \`]`, 'm').test(SKILL), c);
   for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(text.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
 }

@@ -210,6 +210,8 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.match(instructions('do', 'demo', { fix: true }).system, /Read \.am\/demo\/check\.md first and fix only the causes it reports/);
   assert.match(instructions('handover', 'demo', { push: true }).system, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`[\s\S]*push the start branch/);
   assert.match(instructions('handover', 'demo').system, /Do not push\./);
+  // The same run fields as the hand-over items of am:auto's step 7.
+  for (const resume of [true, false]) assert.ok(instructions('handover', 'demo', { resume }).system.includes('every line of `autoDecided` and `secondOpinions`'), `resume ${resume}`);
 });
 
 test('doKind: hand over a large new plan only when the run skill is installed', () => {

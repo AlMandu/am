@@ -118,6 +118,16 @@ test('am:auto starts the progress command next to every stage command', async ()
   const { stateLine } = await import('../plugin/scripts/progress.mjs');
   assert.equal(stateLine([]), 'state: ended');
   assert.ok(section.includes(`\`${stateLine([])}\``), 'state: ended');
+  assert.ok(section.includes('each `second opinion:` line gets its own plain line: what had to be decided and which option was chosen, and whether Codex agreed'));
+  assert.ok(section.includes('other than its `second opinion:` lines'));
+  // The skill relays news by this prefix; a changed prefix would silently drop the plain line.
+  assert.ok(readFileSync(path.join(ROOT, '..', 'scripts', 'stage.mjs'), 'utf8').includes('text: `second opinion: ${line}`'));
+});
+
+test('am:auto gathers the choices the second opinion settled in its final reply', () => {
+  const auto = read('auto');
+  assert.ok(auto.includes('each choice the second opinion settled (from Defaults applied in plan.md: what had to be decided and the agreed option, and whether it overruled your own pick)'));
+  assert.ok(auto.includes('`autoDecided` and `secondOpinions` lines join what you decided'));
 });
 
 test('the second-opinion agent stays pinned and read-only, and the common rules send choices to it', () => {
