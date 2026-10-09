@@ -78,10 +78,12 @@ test('the skill and the script agree on commands and on every "next" value', () 
   assert.deepEqual([...new Set(code)].sort(), [...values].sort(), 'the documented next values and the ones the script sets');
   for (const v of values) assert.ok(SKILL.includes(`\`${v}\``), `skill does not say what to do on "${v}"`);
   // The fields the skill tells the session to read exist in the status output.
-  for (const field of ['next', 'decisions', 'needsDecision', 'blocked', 'errors', 'running', 'autoDecided']) {
+  for (const field of ['next', 'decisions', 'needsDecision', 'blocked', 'errors', 'running', 'autoDecided', 'secondOpinions']) {
     assert.ok(SKILL.includes(`\`${field}`) && new RegExp(`\\b${field}\\b`).test(SCRIPT), field);
   }
   for (const field of ['run.tasks', 'run.report', 'blocked[].reason', 'blocked[].logs', 'blocked[].hint', 'needsDecision[].file']) assert.ok(SKILL.includes(`\`${field}\``), field);
+  // The run skill relays the script's second-opinion news line by its prefix.
+  assert.ok(SKILL.includes('`second opinion:`') && SCRIPT.includes('text: `second opinion: ${line}`'), 'second opinion news prefix');
   assert.match(SKILL, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/orchestrator\.mjs" <command>/);
 });
 

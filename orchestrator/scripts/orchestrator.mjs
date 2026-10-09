@@ -1169,6 +1169,8 @@ function writeReport(ctx) {
   }
   const decided = plan.tasks.flatMap((t) => autoDecided(ctx, t).map((l) => `- ${t.id}: ${l}`));
   lines.push('## 사용자 대신 정한 것 (자동 결정)', '', ...(decided.length ? decided : ['없음']), '');
+  const opinions = plan.tasks.flatMap((t) => secondOpinions(ctx, t).map((l) => `- ${t.id}: ${l}`));
+  lines.push('## 2차 의견으로 정한 것', '', ...(opinions.length ? opinions : ['없음']), '');
   lines.push('## 실행 확인 체크리스트 (작업별 check.md)', '');
   for (const t of done) {
     const file = amPath(ctx, t, 'check.md');
@@ -2340,7 +2342,7 @@ function statusData(repo, opt) {
   const base = baseContext(repo);
   const par = parallelOf(base);
   // 별도 작업 공간 확인이 없거나 낡았으면(stale) run 은 하나씩 돈다. next 는 바꾸지 않는다: 진행 중인 실행이 있을 때 doctor 로 돌려보내면 스킬이 새 실행을 만든다
-  const data = { ready: Boolean(base.env) && base.env.ok !== false, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: sessionsOnly(liveSessions({ clean: false })).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], costUsd: 0 };
+  const data = { ready: Boolean(base.env) && base.env.ok !== false, running: null, run: null, next: 'doctor', parallel: { max: par.max, reason: par.reason, ...(par.stale ? { stale: true } : {}) }, sessions: { max: sessionLimit(), inUse: sessionsOnly(liveSessions({ clean: false })).length, shared: base.env?.sessionsShared ?? null }, errors: [], decisions: [], needsDecision: [], blocked: [], autoDecided: [], secondOpinions: [], costUsd: 0 };
   const current = path.join(repo, ORCH_DIR, 'current');
   const runId = opt.run || (existsSync(current) ? readText(current).trim() : '');
   let ctx = null;
@@ -2375,6 +2377,7 @@ function statusData(repo, opt) {
       .filter((t) => st(t).status === 'blocked')
       .map((t) => ({ id: t.id, title: t.title, stage: st(t).blockedAt || null, reason: st(t).reason, hint: resumeHint(t, st(t).blockedAt, st(t)), logs: rel(ctx, taskDir(ctx, t)), workspace: st(t).worktree || null }));
     data.autoDecided = plan.tasks.flatMap((t) => autoDecided(ctx, t).map((l) => `${t.id}: ${l}`));
+    data.secondOpinions = plan.tasks.flatMap((t) => secondOpinions(ctx, t).map((l) => `${t.id}: ${l}`));
     data.costUsd = Number(totalCost(ctx).toFixed(2));
     runnable = Boolean(nextTask(plan, state));
     allDone = data.run.done === data.run.total;

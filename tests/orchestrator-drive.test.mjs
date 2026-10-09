@@ -30,6 +30,7 @@ test('status --json: 다음에 할 일(next)과 답할 결정·막힌 작업을 
   assert.match(readFileSync(path.join(r.repo, st.needsDecision[0].file), 'utf8'), /which screen first/);
   assert.equal(st.run.done, 1, '무관한 작업(T03)은 그사이 끝난다');
   assert.deepEqual(st.autoDecided, ['T03: 첫 화면은 목록으로 한다 - 지금 화면과 가장 비슷함 (자동 결정)']);
+  assert.deepEqual(st.secondOpinions, []);
   assert.equal(r.orch('answer', 'T01', '목록 먼저').code, 0);
   assert.equal(statusJson(r).next, 'run');
   assert.equal(r.orch('run').code, 0);
@@ -37,6 +38,7 @@ test('status --json: 다음에 할 일(next)과 답할 결정·막힌 작업을 
   assert.deepEqual([st.next, st.run.done, st.run.total], ['done', 3, 3]);
   assert.ok(st.costUsd > 0 && existsSync(path.join(r.repo, st.run.report)));
   assert.match(st.run.branch, /^orch\//);
+  assert.match(readFileSync(path.join(r.repo, st.run.report), 'utf8'), /## 2차 의견으로 정한 것\n\n없음\n/);
 });
 
 test('status --json: 막힌 작업은 단계·사유·이어 가는 방법과 함께, 형식이 틀린 작업 목록은 오류와 함께 알려 준다', () => {
@@ -91,13 +93,18 @@ test('스킬의 절차(status --json 의 next 만 보고 다음 명령을 정함
   assert.deepEqual(r.statusOf(), { T01: 'done', T02: 'done', T03: 'done' });
 });
 
-test('진행 소식: 세션이 2차 의견으로 정한 선택은 한 번만 알리고, "(no second opinion)" 줄은 알리지 않는다', () => {
+test('진행 소식: 세션이 2차 의견으로 정한 선택은 한 번만 알리고, "(no second opinion)" 줄은 알리지 않는다. 상태와 보고서에도 모은다', () => {
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { opinions: ['t01-a'] } });
   assert.equal(r.orch('run').code, 0);
   const events = readFileSync(path.join(r.runDir(), 'progress.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   const opinions = events.filter((e) => e.ev === 'step' && e.text.startsWith('second opinion:'));
   assert.deepEqual(opinions.map((e) => [e.text, e.task, e.stage]), [['second opinion: C1 저장 방식: 파일 - 이유 (second opinion, Codex agreed)', 'T01', 'plan']]);
   assert.equal(events.filter((e) => e.text.includes('no second opinion')).length, 0);
+  const st = statusJson(r);
+  assert.deepEqual(st.secondOpinions, ['T01: C1 저장 방식: 파일 - 이유 (second opinion, Codex agreed)']);
+  const report = readFileSync(path.join(r.repo, st.run.report), 'utf8');
+  assert.match(report, /## 사용자 대신 정한 것 \(자동 결정\)\n\n없음\n\n## 2차 의견으로 정한 것\n\n- T01: C1 저장 방식: 파일 - 이유 \(second opinion, Codex agreed\)\n\n## 실행 확인/);
+  assert.ok(!report.includes('no second opinion'));
 });
 
 // Windows 에서는 끝에서 보내는 SIGINT 를 검사할 수 없다(위 Ctrl+C 테스트와 같은 이유).
