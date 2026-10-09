@@ -54,6 +54,11 @@ function changeLog(text) {
 
 const handedLine = (line) => HANDED.test(line) || (OLD_HANDED.every((re) => re.test(line)) && !STOPPED.test(line));
 
+/** The run ID of the last fixed hand-over line in the plan's Change log, or null (none, or only an older line). */
+export function handedRun(text) {
+  return changeLog(text).map((line) => HANDED.exec(line)?.[1]).filter(Boolean).pop() ?? null;
+}
+
 /** How many steps of the plan carry the am:do done mark. */
 export function countDone(text) {
   return (String(text).match(DONE_ALL) || []).length;

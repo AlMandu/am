@@ -3,11 +3,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 
@@ -1022,4 +1022,201 @@ test('instructions: only a hand-over is told not to run the progress command, on
     for (const push of [true, false]) assert.equal(instructions('handover', 'demo', { resume, push }).system.split(`\n${line}\n`).length, 2, `resume ${resume}, push ${push}`);
   }
   for (const s of STAGES) assert.ok(!instructions(s, 'demo').system.includes('`progress` command'), s);
+});
+
+// ------------------------------------------------------------------ waiting for other runs of the working tree
+
+const T0 = Date.parse('2026-10-09T10:00:00.000Z');
+/** One event line at T0 plus min minutes. */
+const evAt = (min, fields) => `${JSON.stringify({ t: new Date(T0 + min * 60000).toISOString(), ...fields })}\n`;
+const LIVE = 101;
+const DEAD = 102;
+const aliveOnly = (pid) => pid === LIVE;
+/** Writes the event file of another task (or this one) under .am/. */
+function taskEvents(dir, slug, lines) {
+  mkdirSync(path.join(dir, '.am', slug), { recursive: true });
+  writeFileSync(path.join(dir, '.am', slug, 'progress.jsonl'), lines.join(''));
+}
+const others = (dir, min, slug = 'demo') => otherRuns(dir, slug, { now: () => T0 + min * 60000, alive: aliveOnly });
+const stageLines = (stage, status, { pid = DEAD, from = 0, to = 5 } = {}) => [evAt(from, { ev: 'start', text: 's', pid, stage }), evAt(to, { ev: 'end', text: 'e', stage, status })];
+const LOCK = (dir) => path.join(dir, '.am', '.admission.lock');
+
+test('otherRuns: a live stage of another task blocks; a dead one without an end does not', (t) => {
+  assert.deepEqual([GRACE_MS, POLL_MS, WAIT_MS], [600000, 5000, 480000]);
+  const dir = makeRepo(t);
+  assert.deepEqual(others(dir, 0), { runs: [], text: '' });
+  taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'do' })]);
+  assert.deepEqual(others(dir, 100), { runs: ['a'], text: 'a (do stage running)' });
+  taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: DEAD, stage: 'do' })]);
+  assert.deepEqual(others(dir, 1).runs, []);
+  // Copied run lines are not the task's own: neither a live start nor an end that leads on.
+  taskEvents(dir, 'a', [evAt(0, { ev: 'step', text: 's', stage: 'split', src: 'run' }), evAt(0, { ev: 'step', text: 'x', src: 'run' }), `${JSON.stringify({ t: new Date(T0).toISOString(), ev: 'start', text: 'r', pid: LIVE, src: 'run' })}\n`, evAt(1, { ev: 'end', text: 'e', stage: 'do', status: 'DONE', src: 'run' })]);
+  assert.deepEqual(others(dir, 2).runs, []);
+});
+
+test('otherRuns: the gap after an end that leads on holds for the grace time; final ends hold nothing', (t) => {
+  const dir = makeRepo(t);
+  for (const [stage, status] of [['plan', 'READY'], ['do', 'DONE'], ['check', 'NOTE'], ['check', 'BLOCK'], ['compactmem', 'PROPOSED'], ['compactmem', 'NOTHING'], ['compactmem', 'BLOCKED'], ['compactmem', 'failed']]) {
+    taskEvents(dir, 'a', stageLines(stage, status));
+    assert.deepEqual(others(dir, 15), { runs: ['a'], text: 'a (between stages)' }, `${stage} ${status}`);
+    assert.deepEqual(others(dir, 15.01).runs, [], `${stage} ${status} after the grace time`);
+  }
+  for (const [stage, status] of [['plan', 'NEEDS_DECISION'], ['do', 'BLOCKED'], ['handover', 'HANDED'], ['check', 'failed'], ['commit', 'COMMITTED'], ['commit', 'NOTHING'], ['plan', 'failed']]) {
+    taskEvents(dir, 'a', stageLines(stage, status));
+    assert.deepEqual(others(dir, 6).runs, [], `${stage} ${status}`);
+  }
+});
+
+test('otherRuns: in a gap the earlier seat goes first, slug order on a tie; a wait note keeps or makes a seat', (t) => {
+  const dir = makeRepo(t);
+  taskEvents(dir, 'a', [...stageLines('commit', 'COMMITTED', { from: -30, to: -20 }), ...stageLines('plan', 'READY', { from: 0, to: 5 })]);
+  // We have no seat yet: the gap blocks.
+  assert.deepEqual(others(dir, 6).runs, ['a']);
+  // Our seat (first start or wait note after our last final end) is later: still blocked; earlier: we go.
+  taskEvents(dir, 'demo', [evAt(3, { ev: 'note', text: 'w', stage: 'wait' })]);
+  assert.deepEqual(others(dir, 6).runs, ['a']);
+  taskEvents(dir, 'demo', [...stageLines('commit', 'COMMITTED', { from: -40, to: -35 }), ...stageLines('plan', 'READY', { from: -1, to: -0.5 })]);
+  assert.deepEqual(others(dir, 6).runs, []);
+  // A tie: the lower slug goes first.
+  taskEvents(dir, 'demo', stageLines('plan', 'READY', { from: 0, to: 4 }));
+  assert.deepEqual(others(dir, 6).runs, ['a']);
+  assert.deepEqual(others(dir, 6, 'a').runs, []);
+  // A task that only waits holds its seat while its last wait note is within the grace time.
+  taskEvents(dir, 'a', [evAt(-30, { ev: 'end', text: 'e', stage: 'commit', status: 'COMMITTED' }), evAt(2, { ev: 'note', text: 'w', stage: 'wait' }), evAt(9, { ev: 'note', text: 'w', stage: 'wait' })]);
+  taskEvents(dir, 'demo', []);
+  assert.deepEqual(others(dir, 18).runs, ['a']);
+  assert.deepEqual(others(dir, 19.5).runs, []);
+  taskEvents(dir, 'demo', [evAt(1, { ev: 'note', text: 'w', stage: 'wait' })]);
+  assert.deepEqual(others(dir, 10).runs, [], 'our earlier wait note is the earlier seat');
+  // A live stage blocks whatever the seats say.
+  taskEvents(dir, 'a', [evAt(20, { ev: 'start', text: 's', pid: LIVE, stage: 'check' })]);
+  taskEvents(dir, 'demo', stageLines('plan', 'READY', { from: -50, to: -49 }));
+  assert.deepEqual(others(dir, 21).runs, ['a']);
+});
+
+test('otherRuns: the orchestrator blocks by its live lock and in the gap after split or answer, not for the run this task handed over', (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const orch = path.join(dir, '.orchestrator');
+  mkdirSync(orch, { recursive: true });
+  writeFileSync(path.join(orch, 'lock.json'), JSON.stringify({ pid: LIVE, command: 'run', startedAt: 'x', run: 'r1' }));
+  assert.deepEqual(others(dir, 0), { runs: ['am-orchestrator'], text: 'am-orchestrator run (pid 101)' });
+  writeFileSync(path.join(orch, 'lock.json'), JSON.stringify({ pid: DEAD, command: 'run' }));
+  assert.deepEqual(others(dir, 0).runs, []);
+  orchRun(dir, 'r1', null, { current: 'r1\n' });
+  for (const [stage, status, blocks] of [['split', 'done', true], ['answer', 'planned', true], ['answer', 'split', true], ['answer', 'blocked', false], ['answer', 'needs-decision', false], ['run', 'done', false], ['split', 'failed', false]]) {
+    writeFileSync(runFile(dir, 'r1'), evAt(0, { ev: 'start', text: 's', pid: DEAD, stage }) + evAt(5, { ev: 'end', text: 'e', stage, status }));
+    assert.deepEqual(others(dir, 15).runs, blocks ? ['am-orchestrator run r1'] : [], `${stage} ${status}`);
+    assert.deepEqual(others(dir, 15.01).runs, [], `${stage} ${status} after the grace time`);
+  }
+  writeFileSync(runFile(dir, 'r1'), evAt(5, { ev: 'end', text: 'e', stage: 'split', status: 'done' }));
+  assert.equal(others(dir, 6).text, 'am-orchestrator run r1 (between commands)');
+  // The run this task handed over leaves the gap to this task; its live lock still blocks.
+  writeFileSync(path.join(dir, '.am', 'demo', 'plan.md'), `${SMALL}## Change log\n- Hand-over: am-orchestrator run skill, run r1, start branch main\n`);
+  assert.deepEqual(others(dir, 6).runs, []);
+  writeFileSync(path.join(orch, 'lock.json'), JSON.stringify({ pid: LIVE, command: 'run' }));
+  assert.deepEqual(others(dir, 6).runs, ['am-orchestrator']);
+});
+
+test('takeLock: one owner at a time; a dead or long unreadable owner is replaced, a live one is not', (t) => {
+  const dir = makeRepo(t);
+  const file = LOCK(dir);
+  const first = takeLock(file, { alive: () => true });
+  assert.equal(typeof first.release, 'function');
+  assert.deepEqual(takeLock(file, { alive: () => true }), { busy: process.pid });
+  first.release();
+  assert.ok(!existsSync(file));
+  writeFileSync(file, JSON.stringify({ pid: LIVE, t: 1 }));
+  assert.deepEqual(takeLock(file, { alive: aliveOnly }), { busy: LIVE });
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify({ pid: LIVE, t: 1 }));
+  writeFileSync(file, JSON.stringify({ pid: DEAD, t: 1 }));
+  const taken = takeLock(file, { alive: aliveOnly });
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).pid, process.pid);
+  // Release removes only its own lock.
+  writeFileSync(file, JSON.stringify({ pid: LIVE, t: 2 }));
+  taken.release();
+  assert.ok(existsSync(file));
+  writeFileSync(file, '');
+  assert.deepEqual(takeLock(file, { alive: aliveOnly }), { busy: null });
+  utimesSync(file, new Date(Date.now() - 120000), new Date(Date.now() - 120000));
+  assert.equal(typeof takeLock(file, { alive: aliveOnly }).release, 'function');
+  assert.deepEqual(readdirSync(path.join(dir, '.am')).filter((f) => f.includes('.stale')), []);
+  // A lock that cannot be made at all: null, and the stage goes on unchecked.
+  assert.equal(takeLock(path.join(dir, 'no-such-folder', 'x.lock')), null);
+});
+
+test('wait: a blocked stage starts no session and ends with WAIT after the wait time; one note, no start or end', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'do' })]);
+  const { code, result, calls } = await run(dir, ['plan', 'demo'], { alive: aliveOnly, waitMs: 150, pollMs: 20 });
+  assert.equal(code, 0);
+  assert.equal(result.status, 'WAIT');
+  assert.equal(result.stage, 'plan');
+  assert.equal(result.reason, 'waiting for another run of this repository: a (do stage running)');
+  assert.deepEqual(calls, []);
+  const list = events(dir);
+  assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['note', 'wait']]);
+  assert.match(list[0].text, /a \(do stage running\)/);
+  assert.ok(!existsSync(LOCK(dir)));
+});
+
+test('wait: a stage goes on once the other run ends within the wait time', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'commit' })]);
+  setTimeout(() => appendFileSync(path.join(dir, '.am', 'a', 'progress.jsonl'), `${JSON.stringify({ t: new Date().toISOString(), ev: 'end', text: 'e', stage: 'commit', status: 'COMMITTED' })}\n`), 100);
+  const { result, calls } = await run(dir, ['plan', 'demo'], { alive: aliveOnly, waitMs: 10000, pollMs: 20 });
+  assert.equal(result.status, 'READY');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(evs(events(dir)), ['note', 'start', 'end']);
+  assert.ok(!existsSync(LOCK(dir)));
+});
+
+test('wait: of two stages started together only one starts; a live owner of the lock makes a stage wait', async (t) => {
+  const dir = makeRepo(t, { fake: { hang: [1] } });
+  mkdirSync(path.join(dir, '.am', 'other'), { recursive: true });
+  writeFileSync(path.join(dir, '.am', 'other', 'request.md'), 'Another request');
+  const first = run(dir, ['plan', 'demo'], { waitMs: 300, pollMs: 20 });
+  const second = run(dir, ['plan', 'other'], { waitMs: 300, pollMs: 20 });
+  let code = null;
+  try {
+    const b = await second;
+    assert.equal(b.result.status, 'WAIT');
+    assert.equal(b.result.reason, 'waiting for another run of this repository: demo (plan stage running)');
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    await pause(100);
+    assert.equal(readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').length, 1, 'only the first stage started a session');
+  } finally {
+    interrupt('SIGTERM', { exit: (c) => (code = c) });
+    await first;
+  }
+  assert.equal(code, 1);
+  assert.deepEqual(evs(events(dir, 'other')), ['note']);
+
+  const held = makeRepo(t, { fake: PLANNED });
+  writeFileSync(LOCK(held), JSON.stringify({ pid: LIVE, t: 1 }));
+  const { result, calls } = await run(held, ['plan', 'demo'], { alive: aliveOnly, waitMs: 100, pollMs: 20 });
+  assert.equal(result.status, 'WAIT');
+  assert.equal(result.reason, 'waiting for another run of this repository: another stage of this repository is starting (pid 101)');
+  assert.deepEqual(calls, []);
+  assert.equal(readFileSync(LOCK(held), 'utf8'), JSON.stringify({ pid: LIVE, t: 1 }));
+  // A dead owner's lock is taken over and released after the start line.
+  writeFileSync(LOCK(held), JSON.stringify({ pid: DEAD, t: 1 }));
+  const after = await run(held, ['plan', 'demo'], { alive: aliveOnly, waitMs: 100, pollMs: 20 });
+  assert.equal(after.result.status, 'READY');
+  assert.ok(!existsSync(LOCK(held)));
+});
+
+test('wait: when the start line cannot be written the lock is kept until the stage ends', async (t) => {
+  const dir = makeRepo(t, { fake: { hang: [1] } });
+  mkdirSync(path.join(dir, '.am', 'demo', 'progress.jsonl'));
+  const running = run(dir, ['plan', 'demo']);
+  let code = null;
+  try {
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    assert.ok(existsSync(LOCK(dir)), 'held during the session');
+  } finally {
+    interrupt('SIGTERM', { exit: (c) => (code = c) });
+    await running;
+  }
+  assert.equal(code, 1);
+  assert.ok(!existsSync(LOCK(dir)), 'released at the end');
 });

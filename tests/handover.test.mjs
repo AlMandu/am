@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { countDone, decide, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
+import { countDone, decide, handedRun, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
 
 const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
 const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';
@@ -126,6 +126,16 @@ test('countDone counts the done marks of both languages and leaves readPlan as i
   const plain = readPlan(LARGE);
   countDone(LARGE);
   assert.deepEqual(readPlan(LARGE), plain);
+});
+
+test('handedRun gives the run ID of the last fixed hand-over line in the Change log, else null', () => {
+  assert.equal(handedRun(`# t\n## Change log\n${FIXED}`), '20261008-0900');
+  assert.equal(handedRun(`# t\n## Change log\n- 2026-10-08: ${FIXED.slice(2)}`), '20261008-0900');
+  assert.equal(handedRun(`# t\n## Change log\n${FIXED}${FIXED.replace('20261008-0900', '20261009-1100')}`), '20261009-1100');
+  assert.equal(handedRun(`# t\n## Steps\n${FIXED}## Change log\n`), null);
+  assert.equal(handedRun(LARGE), null);
+  assert.equal(handedRun('# t\n## 변경 기록\n- am-orchestrator run 스킬로 넘김: run.id 20261007-1412, 시작 브랜치 main\n'), null); // older wording
+  assert.equal(handedRun(`# t\n## Change log\n${STOP_LINE}`), null);
 });
 
 test('withinOneRun is true only for at most 1 implementation run and 1 commit', () => {

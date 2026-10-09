@@ -230,6 +230,25 @@ test('the am stage runner copies the events a real split writes, from the path t
   assert.ok(SCRIPT.includes("case 'progress':"));
 });
 
+test('the am stage runner waits on the orchestrator through what is pinned here: the lock pid and the ends of split and answer', async () => {
+  const { otherRuns, GRACE_MS } = await import('../plugin/scripts/stage.mjs');
+  // The lock names the live command's pid; the ends after which the run skill starts its next command.
+  assert.match(SCRIPT, /writeJson\(lockFile\(repo\), \{ pid: process\.pid, command,/);
+  assert.match(SCRIPT, /event\(\{ ev: 'end', stage: 'split', status: 'done',/);
+  assert.match(SCRIPT, /event\(\{ ev: 'end', stage: 'answer', task: id, status: s\.status,[^\n]*\/\/ planned, split, blocked 또는 needs-decision/);
+  for (const s of ["status: 'planned'", "status = 'split'"]) assert.ok(SCRIPT.includes(s), s);
+  assert.match(SCRIPT, /const ORCH_DIR = '\.orchestrator';/);
+  // A real split: the stage runner of another task waits in the gap after it, and not after the grace time.
+  const r = makeRepo();
+  assert.equal(r.orch('doctor').code, 0);
+  mkdirSync(path.join(r.repo, '.am', 'x'), { recursive: true });
+  const split = r.orch('split', path.join(r.repo, 'docs', 'design.md'));
+  assert.equal(split.code, 0, split.out);
+  const run = readFileSync(path.join(r.repo, '.orchestrator', 'current'), 'utf8').trim();
+  assert.deepEqual(otherRuns(r.repo, 'x').runs, [`am-orchestrator run ${run}`]);
+  assert.deepEqual(otherRuns(r.repo, 'x', { now: () => Date.now() + GRACE_MS + 60000 }).runs, []);
+});
+
 test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {
   const { MARKS, lastMark, checkVerdict } = await import('../plugin/scripts/stage.mjs');
   const { lastMarker, verdictFromFile } = await import('../orchestrator/scripts/orchestrator.mjs');

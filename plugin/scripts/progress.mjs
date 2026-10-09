@@ -20,8 +20,8 @@ import { countDone } from '../hooks/handover.mjs';
 
 const USAGE = 'usage: node progress.mjs <slug> [--consumer <name>]';
 // Unread step and start lines are collected for batchMs; a quiet wait ends after quietMs with the state line only;
-// a wait that begins in an ended state gives a new start startWaitMs to appear. maxLifeMs stays under the
-// 10-minute default limit of a background command.
+// a wait that begins in an ended state gives a new start startWaitMs to appear (up to maxLifeMs after a recent wait note
+// of a stage that waits for another run). maxLifeMs stays under the 10-minute default limit of a background command.
 export const DEFAULTS = { batchMs: 30000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
 const EVENTS = ['start', 'step', 'note', 'alert', 'end'];
 const SHOWN = ['stage', 'task', 'status', 'min', 'src'];
@@ -30,12 +30,13 @@ const ENDED = 'state: ended';
 const oneLine = (v) => String(v).replace(/\s+/g, ' ').trim();
 const eventFile = (cwd, slug) => path.join(cwd, '.am', slug, 'progress.jsonl');
 
-/** Appends one event line to the slug's event file. Never creates the folder and never throws: progress news must not stop the work. */
+/** Appends one event line to the slug's event file; false when it was not written. Never creates the folder and never throws: progress news must not stop the work. */
 export function appendEvent(cwd, slug, fields, { now = Date.now } = {}) {
   try {
     appendFileSync(eventFile(cwd, slug), `${JSON.stringify({ t: new Date(now()).toISOString(), ...fields })}\n`);
+    return true;
   } catch {
-    // Dropped on purpose.
+    return false; // dropped on purpose
   }
 }
 
@@ -104,7 +105,7 @@ export function pidAlive(pid) {
 }
 
 // The last start when its command is still running, or null: an end after it, no positive integer pid or a dead pid is ended.
-function runningStart(events, alive) {
+export function runningStart(events, alive) {
   const at = events.map((e) => e.ev).lastIndexOf('start');
   if (at < 0) return null;
   const start = events[at];
@@ -180,7 +181,11 @@ async function waitLoop(paths, o) {
     if (!snap) return null;
     const { items, next } = unreadOf(snap, readCursor(paths.cursor));
     const last = snap.items.filter((i) => i.event.ev === 'start').pop();
-    return { unread: items, next, run: runningStart(snap.items.map((i) => i.event), o.alive), lastStart: last ? `${last.pos}:${last.line}` : '' };
+    const events = snap.items.map((i) => i.event);
+    // A stage that waits for another run of the repository before its start (stage.mjs) leaves a wait note.
+    const note = events.slice(events.findLastIndex((e) => e.ev === 'start' || e.ev === 'end') + 1).findLast((e) => e.ev === 'note' && e.stage === 'wait');
+    const waiting = Boolean(note) && o.now() - Date.parse(note.t) <= o.quietMs;
+    return { unread: items, next, run: runningStart(events, o.alive), lastStart: last ? `${last.pos}:${last.line}` : '', waiting };
   };
   const emit = (snap, items) => {
     const state = snap ? formatState(snap.run, { now: o.now, planText: snap.run ? readText(paths.plan) : null }) : ENDED;
@@ -193,15 +198,20 @@ async function waitLoop(paths, o) {
   let good = null; // the last check that could read the file
   let startSeen; // the last start of a wait that began in an ended state; null once in the normal wait
   let batchAt = null;
+  let held = false; // a wait note seen while waiting for a start: only a new start or maxLifeMs ends the wait
   for (;;) {
     const t = o.now();
     const snap = look();
     if (snap) {
       good = snap;
       if (startSeen === undefined) startSeen = snap.run ? null : snap.lastStart;
-      if (startSeen !== null && snap.lastStart !== startSeen) startSeen = null;
+      if (startSeen !== null && snap.lastStart !== startSeen) {
+        startSeen = null;
+        held = false;
+      }
       if (startSeen !== null) {
-        if (t - began >= o.startWaitMs) return emit(snap, snap.unread);
+        if (snap.waiting) held = true;
+        if (!held && t - began >= o.startWaitMs) return emit(snap, snap.unread);
       } else {
         if (!snap.run || has(snap, ['alert', 'end'])) return emit(snap, snap.unread);
         if (has(snap, ['step', 'start'])) {
@@ -212,12 +222,12 @@ async function waitLoop(paths, o) {
         }
       }
     }
-    if (t - began >= o.maxLifeMs) return emit(good, good && batchAt !== null ? good.unread : []);
-    if (batchAt === null && t - began >= o.quietMs) return emit(good, []);
+    if (t - began >= o.maxLifeMs) return emit(good, good && (batchAt !== null || held) ? good.unread : []);
+    if (batchAt === null && !held && t - began >= o.quietMs) return emit(good, []);
     const deadlines = [began + o.maxLifeMs];
-    if (typeof startSeen === 'string') deadlines.push(began + o.startWaitMs);
+    if (typeof startSeen === 'string' && !held) deadlines.push(began + o.startWaitMs);
     if (batchAt !== null) deadlines.push(batchAt + o.batchMs);
-    else deadlines.push(began + o.quietMs);
+    else if (!held) deadlines.push(began + o.quietMs);
     const left = deadlines.map((d) => d - t).filter((ms) => ms > 0);
     await o.sleep(Math.min(o.pollMs, ...left));
   }

@@ -22,17 +22,18 @@
 // The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
-// started but did not finish with a marker. Exit codes: 0 result printed, 1 bad input.
+// started but did not finish with a marker; `WAIT`: another run of this working tree kept going for
+// the whole wait (no session, no start or end line; am:auto starts the stage again). Exit codes: 0 result printed, 1 bad input.
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
-import { findOrchestrator, readPlan, withinOneRun } from '../hooks/handover.mjs';
-import { appendEvent, readFrom } from './progress.mjs';
+import { findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
+import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -371,6 +372,146 @@ export function runRelay(cwd, slug, { resume = false, now = Date.now } = {}) {
   };
 }
 
+// ------------------------------------------------------------------ other runs in this repository
+
+// A stage starts only when no other unattended run of this working tree is going: another task's stage session, the gap
+// between two of its stages, or an am-orchestrator command. The check and the start line happen under a short lock.
+// How long a stage end that leads to the next stage (or a wait note) keeps that run going.
+export const GRACE_MS = 10 * 60000;
+// How often a blocked stage looks again, and how long it waits before it ends with WAIT and am:auto starts it again.
+export const POLL_MS = 5000;
+export const WAIT_MS = 8 * 60000;
+// End statuses after which am:auto starts another stage of the same task (null: every end).
+const GOES_ON = { plan: ['READY'], do: ['DONE'], check: ['NOTE', 'BLOCK'], compactmem: null };
+// Ends of an orchestrator command after which the run skill starts the next command.
+const ORCH_GOES_ON = { split: ['done'], answer: ['planned', 'split'] };
+const goesOn = (table, e) => Object.hasOwn(table, e.stage) && (table[e.stage] === null || table[e.stage].includes(e.status));
+const isWait = (e) => e.ev === 'note' && e.stage === 'wait';
+const timeOf = (e) => (e ? Date.parse(e.t) : NaN);
+
+/**
+ * Where one task stands, from its own event lines (copied run lines left out): `live` (a stage session runs), `gap`
+ * (its last end leads on, or it waits, within graceMs) and `seat` (ms of the first start or wait note after its last
+ * end that leads nowhere; NaN without one).
+ */
+export function taskState(events, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS } = {}) {
+  const own = events.filter((e) => e.src !== 'run');
+  const live = runningStart(own, alive);
+  const lastEnd = own.findLastIndex((e) => e.ev === 'end');
+  const lastFinal = own.findLastIndex((e) => e.ev === 'end' && !goesOn(GOES_ON, e));
+  const seat = timeOf(own.slice(lastFinal + 1).find((e) => e.ev === 'start' || isWait(e)));
+  const recent = (e) => Boolean(e) && now() - timeOf(e) <= graceMs;
+  const gap = (lastEnd >= 0 && goesOn(GOES_ON, own[lastEnd]) && recent(own[lastEnd])) || recent(own.slice(lastEnd + 1).findLast(isWait));
+  return { live: Boolean(live), stage: live ? live.start.stage : null, gap, seat };
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The other unattended runs of this working tree that keep slug's stage from starting: {runs: [names], text: one line}.
+ * Another task blocks while a stage session of it runs, and in a gap when its seat comes before ours (slug order on a
+ * tie) or we have none. The orchestrator blocks while a live pid holds its lock, and for graceMs after a split or answer
+ * end that leads to its next command, unless that run is the one this task handed over.
+ */
+export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS } = {}) {
+  const o = { now, alive, graceMs };
+  const am = path.join(cwd, '.am');
+  const eventsOf = (name) => readFrom(path.join(am, name, 'progress.jsonl'), 0).events;
+  const mine = taskState(eventsOf(slug), o);
+  const found = [];
+  let names = [];
+  try {
+    names = readdirSync(am, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== slug).map((d) => d.name).sort();
+  } catch {
+    // No .am folder: no other task.
+  }
+  for (const name of names) {
+    const s = taskState(eventsOf(name), o);
+    if (s.live) found.push({ name, text: `${name} (${s.stage || 'a'} stage running)` });
+    else if (s.gap && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
+  }
+  const orch = path.join(cwd, '.orchestrator');
+  const lock = readJson(path.join(orch, 'lock.json'));
+  if (lock && Number.isInteger(lock.pid) && lock.pid > 0 && alive(lock.pid)) found.push({ name: 'am-orchestrator', text: `am-orchestrator ${lock.command || 'command'} (pid ${lock.pid})` });
+  else {
+    let run = '';
+    try {
+      run = readFileSync(path.join(orch, 'current'), 'utf8').trim();
+    } catch {
+      // No orchestrator run.
+    }
+    let plan = '';
+    try {
+      plan = readFileSync(path.join(am, slug, 'plan.md'), 'utf8');
+    } catch {
+      // No plan yet: nothing was handed over.
+    }
+    if (run && run !== handedRun(plan)) {
+      const last = readFrom(path.join(orch, 'runs', run, 'progress.jsonl'), 0).events.findLast((e) => e.ev === 'end');
+      if (last && goesOn(ORCH_GOES_ON, last) && now() - timeOf(last) <= graceMs) found.push({ name: `am-orchestrator run ${run}`, text: `am-orchestrator run ${run} (between commands)` });
+    }
+  }
+  return { runs: found.map((f) => f.name), text: found.map((f) => f.text).join(', ') };
+}
+
+/**
+ * Takes the repository's start lock (exclusive create of {pid, t}). Returns {release} when taken, {busy: pid} while a live
+ * owner holds it, or null when it cannot be made (then the stage goes on unchecked). A dead owner's lock is moved aside
+ * first and dropped only when the moved file still names a dead owner; an unreadable lock counts as dead after a minute.
+ */
+export function takeLock(file, { now = Date.now, alive = pidAlive } = {}) {
+  const mine = JSON.stringify({ pid: process.pid, t: now() });
+  const dead = (f) => {
+    const owner = readJson(f);
+    if (owner) return !(Number.isInteger(owner.pid) && owner.pid > 0 && alive(owner.pid));
+    try {
+      return now() - statSync(f).mtimeMs > 60000;
+    } catch {
+      return true;
+    }
+  };
+  for (let i = 0; i < 3; i++) {
+    try {
+      writeFileSync(file, mine, { flag: 'wx' });
+      const release = () => {
+        try {
+          if (readFileSync(file, 'utf8') === mine) rmSync(file, { force: true });
+        } catch {
+          // Already gone.
+        }
+      };
+      return { release };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') return null;
+    }
+    if (!dead(file)) return { busy: readJson(file)?.pid ?? null };
+    const aside = `${file}.${process.pid}.stale`;
+    try {
+      renameSync(file, aside);
+    } catch {
+      continue; // someone else moved or released it
+    }
+    if (!dead(aside)) {
+      // A live owner took the lock in between: put it back unless another one is there by now.
+      try {
+        writeFileSync(file, readFileSync(aside), { flag: 'wx' });
+      } catch {
+        // Kept by the newer owner.
+      }
+      rmSync(aside, { force: true });
+      return { busy: readJson(file)?.pid ?? null };
+    }
+    rmSync(aside, { force: true });
+  }
+  return { busy: readJson(file)?.pid ?? null };
+}
+
 // ------------------------------------------------------------------ running claude
 
 /** Windows: the real file on PATH. A .cmd or .bat has to go through cmd.exe. */
@@ -604,7 +745,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive } = {}) {
   const [stage, slug, ...flags] = argv;
   if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
     out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
@@ -627,9 +768,39 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (stage === 'plan' && !existsSync(path.join(dir, 'request.md'))) return done({ reason: `no .am/${slug}/request.md: write the request there first` });
   if (stage !== 'plan' && !existsSync(planFile)) return done({ reason: `no .am/${slug}/plan.md: run the plan stage first` });
   ensureIgnored(cwd);
-  const startedAt = now();
   const event = (fields) => appendEvent(cwd, slug, fields, { now });
-  event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage });
+  // Admission: under the start lock, look for other runs and write the start line when there are none.
+  const lockFile = path.join(cwd, '.am', '.admission.lock');
+  const waitBegan = Date.now(); // the wait is timed by the clock that setTimeout uses
+  let held = null; // the lock, kept to the end when the start line could not be written
+  let noted = false;
+  for (;;) {
+    const lock = takeLock(lockFile, { now, alive });
+    let blocked;
+    if (!lock) {
+      event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage });
+      break;
+    }
+    if (lock.busy !== undefined) blocked = `another stage of this repository is starting (pid ${lock.busy ?? '?'})`;
+    else {
+      const other = otherRuns(cwd, slug, { now, alive, graceMs });
+      if (!other.runs.length) {
+        if (event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage })) lock.release();
+        else held = lock;
+        break;
+      }
+      lock.release();
+      blocked = other.text;
+    }
+    if (!noted) {
+      noted = true;
+      event({ ev: 'note', text: `waiting for another run of this repository to end: ${blocked}`, stage: 'wait' });
+    }
+    const left = waitMs - (Date.now() - waitBegan);
+    if (left <= 0) return done({ status: 'WAIT', reason: `waiting for another run of this repository: ${blocked}` });
+    await new Promise((r) => setTimeout(r, Math.min(pollMs, left)));
+  }
+  const startedAt = now();
   let stopRelay = null; // set while a hand-over copies the run's events
   finish = ({ status, reason }) => {
     if (!finishers.has(finish)) return;
@@ -637,6 +808,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     stopRelay?.();
     const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
     event({ ev: 'end', text: first || `${result.stage} stage ended`, stage: result.stage, status, min: Math.max(0, Math.floor((now() - startedAt) / 60000)) });
+    held?.release();
   };
   finishers.add(finish);
 

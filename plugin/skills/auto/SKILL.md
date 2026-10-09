@@ -60,7 +60,7 @@ In Claude Code, when `${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs` exists, steps 3 t
 - `HANDED` (the do stage as a hand-over): the run is done and merged, and pushed in push mode; skip check, compactmem and commit, and take step 7's hand-over items from its `reply` file.
 - `BLOCK` (check): run the do stage with `--fix`, then check once more; still `BLOCK` stops (step 5).
 - `NEEDS_DECISION`: the stage left an OPEN card in plan.md, a stop above: ask it, replace the card with the answer marked as the user's decision, and run the same stage again with the same flags.
-- `BLOCKED` or `failed` (other stages): stop with its `reason` and `reply` file. `unavailable`: no session can start here; read the files of step 2 and do the remaining steps in this session, and say so in the final reply.
+- `BLOCKED` or `failed` (other stages): stop with its `reason` and `reply` file. `unavailable`: no session can start here; read the files of step 2 and do the remaining steps in this session, and say so in the final reply. `WAIT` (any stage): another run of this repository is still going; tell the user once, and again when the `reason` changes, that you wait for the run it names, then run the same stage again with the same flags.
 For step 7 read plan.md, check.md and the `reply` files; it also gives the cost, the sum of `costUsd`, and, with the deviations from the plan, each result's `compacted` that is not null (the task files shortened before that stage and their originals, or why the shortening failed and the originals were used).
 
 ## Steps

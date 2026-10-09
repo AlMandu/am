@@ -252,6 +252,33 @@ test('beginning in an ended state it waits for a new start: goes on when one com
   assert.equal(idle.cursor(), cursor);
 });
 
+test('a stage that waits for another run keeps the wait for its start going past the start wait, up to maxLifeMs', async () => {
+  const WAIT_NOTE = { ev: 'note', text: 'waiting for another run of this repository to end: other (do stage running)', stage: 'wait' };
+  const env = setup();
+  env.add(START);
+  env.add({ ev: 'end', text: 'plan stage ended', status: 'READY' });
+  env.addAt(1000, WAIT_NOTE);
+  env.addAt(DEFAULTS.quietMs - 5000, { ev: 'start', text: 'do stage started', pid: LIVE, stage: 'do' });
+  let r = await run(env);
+  assert.equal(r.at, DEFAULTS.quietMs - 5000); // the unread end before is printed with the new start
+  assert.deepEqual(r.lines.slice(-3), [`note: ${WAIT_NOTE.text} [stage=wait]`, 'start: do stage started [stage=do]', 'state: running (do, 0 min)']);
+
+  // No start comes (the stage ends with WAIT): the note is printed at maxLifeMs with state: ended.
+  const idle = setup();
+  idle.add({ ...START, pid: 1 });
+  idle.add(WAIT_NOTE);
+  r = await run(idle);
+  assert.equal(r.at, DEFAULTS.maxLifeMs);
+  assert.deepEqual(r.lines, ['start: plan stage started [stage=plan]', `note: ${WAIT_NOTE.text} [stage=wait]`, 'state: ended']);
+
+  // An old wait note (an interrupted wait) does not stretch it.
+  const old = setup();
+  old.add(WAIT_NOTE);
+  await old.sleep(DEFAULTS.quietMs + 1000);
+  r = await run(old);
+  assert.equal(r.at, DEFAULTS.quietMs + 1000 + DEFAULTS.startWaitMs);
+});
+
 test('a start without a live pid is ended: the start wait, then the lines and state: ended', async () => {
   const env = setup();
   env.add({ ev: 'start', text: 'plan stage started', stage: 'plan', pid: 1 });
