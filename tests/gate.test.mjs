@@ -1,10 +1,13 @@
 // Run: node --test tests/gate.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findCommits, commandText, decide, runGate, programExists, findOnPath, STATUS, MAX_REASON_CHARS } from '../plugin/hooks/gate.mjs';
+import { modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
 
 const BASE = path.resolve(tmpdir(), 'am-gate-base');
 
@@ -247,6 +250,72 @@ test('cli mode runs every command and reports non-blocking failures without fail
   assert.equal(report.status, STATUS.PASS);
   assert.equal(report.commands.length, 2);
   assert.equal(report.commands[1].exit, 3);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------- hook.mjs process
+
+const HOOK = fileURLToPath(new URL('../plugin/hooks/hook.mjs', import.meta.url));
+
+// Runs a hook.mjs file as a real process, with the given config folder and no AM_GATE.
+function runHook(hook, configDir, input) {
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
+  delete env.AM_GATE;
+  const r = spawnSync(process.execPath, [hook], { input, env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(r.stderr, '');
+  return r;
+}
+
+test('hook.mjs creates the missing user files before the gate and stays silent', () => {
+  const config = mkdtempSync(path.join(tmpdir(), 'am-hook-config-'));
+  const repo = makeRepo();
+  const models = path.join(config, 'am', 'models.json');
+  const settings = path.join(config, 'am', 'settings.json');
+  let r = runHook(HOOK, config, payload(repo, 'git status'));
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(readFileSync(models, 'utf8'), modelsTemplate());
+  assert.equal(readFileSync(settings, 'utf8'), settingsTemplate());
+  // An existing file is never touched; only the missing one comes back.
+  const own = '{"model":{"plan":"sonnet"}}';
+  writeFileSync(models, own);
+  rmSync(settings);
+  r = runHook(HOOK, config, payload(repo, 'git status'));
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(readFileSync(models, 'utf8'), own);
+  assert.equal(readFileSync(settings, 'utf8'), settingsTemplate());
+  rmSync(config, { recursive: true, force: true });
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('hook.mjs creates nothing when the config folder is missing', () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'am-hook-config-'));
+  const missing = path.join(temp, 'missing');
+  const repo = makeRepo();
+  const r = runHook(HOOK, missing, payload(repo, 'git status'));
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(existsSync(missing), false);
+  rmSync(temp, { recursive: true, force: true });
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('hook.mjs still runs the gate when the user files module cannot load', () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'am-hook-copy-'));
+  const config = path.join(temp, 'config');
+  mkdirSync(config);
+  mkdirSync(path.join(temp, 'hooks'));
+  for (const name of ['hook.mjs', 'gate.mjs']) copyFileSync(fileURLToPath(new URL(`../plugin/hooks/${name}`, import.meta.url)), path.join(temp, 'hooks', name));
+  const hook = path.join(temp, 'hooks', 'hook.mjs');
+  const repo = makeRepo({ commands: [{ name: 'build', run: FAIL }] });
+  let r = runHook(hook, config, payload(repo, 'git commit -m x'));
+  assert.equal(r.status, 0);
+  assert.equal(parseStdout(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+  r = runHook(hook, config, payload(repo, 'git status'));
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  rmSync(temp, { recursive: true, force: true });
   rmSync(repo, { recursive: true, force: true });
 });
 

@@ -369,7 +369,7 @@ tests/orchestrator-progress.test.mjs      진행 소식 이벤트, 잠금 파일
 .am/<slug>/brief.md, plan.md, check.md
 
 이 PC 에 생기는 것 (<Claude 설정 폴더> 는 CLAUDE_CONFIG_DIR, 없으면 ~/.claude)
-<Claude 설정 폴더>/am/settings.json                남은 메모리 기준(직접 만드는 파일, am 과 함께 씀)
+<Claude 설정 폴더>/am/settings.json                남은 메모리 기준(am 이 기본값으로 만들어 두는 파일, am 과 함께 씀)
 <Claude 설정 폴더>/am-orchestrator/settings.json   동시 세션 제한(sessions <N> 로 씀)
 <Claude 설정 폴더>/am-orchestrator/sessions/       돌고 있는 세션 기록(끝나면 지워짐)
 ```
