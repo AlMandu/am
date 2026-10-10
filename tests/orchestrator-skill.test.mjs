@@ -469,3 +469,56 @@ test('the am user models module and the orchestrator copy read the same files al
     fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
   }
 });
+
+test('am memory guard and the orchestrator: same free-memory rule, record rule, folder, name and host on the same inputs', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const am = await import('../plugin/scripts/memory-guard.mjs');
+  const orch = await import('../orchestrator/scripts/orchestrator.mjs');
+  assert.equal(am.DEFAULT_MIN_FREE_MEMORY_MB, orch.DEFAULT_MIN_FREE_MEMORY_MB);
+  assert.equal(am.HEARTBEAT_MS, orch.HEARTBEAT_MS);
+  assert.equal(am.HEARTBEAT_MS, 30000);
+  assert.equal(am.STALE_MS, orch.STALE_MS);
+  assert.equal(am.STALE_MS, 300000);
+  assert.equal(am.RECORD_NAME.source, orch.RECORD_NAME.source);
+  assert.equal(am.RECORD_NAME.flags, orch.RECORD_NAME.flags);
+  assert.equal(am.RECORD_NAME.flags, '');
+  const MB = 1048576;
+  for (const busy of [-1, 0, 1, 3])
+    for (const freeBytes of [0, 500 * MB, 6143 * MB, 6144 * MB, 7000 * MB])
+      for (const setting of [undefined, null, '', ' ', '6GB', -1, 0, 500, '500', 6144])
+        for (const platform of ['win32', 'darwin', 'linux']) {
+          const input = { busy, freeBytes, setting, platform };
+          assert.deepEqual(am.memoryShortMB(input), orch.memoryShortMB(input), JSON.stringify(input));
+        }
+  const now = 10 * 60000;
+  const alive = (pid) => pid === 1;
+  for (const host of ['me', 'other'])
+    for (const pid of [1, 2])
+      for (const mtimeMs of [now, now - 4 * 60000, now - 6 * 60000])
+        for (const woke of [false, true])
+          for (const young of [false, true]) {
+            const opts = { now, myHost: 'me', alive, woke, young };
+            assert.equal(am.recordHeld({ host, pid, mtimeMs }, opts), orch.recordHeld({ host, pid, mtimeMs }, opts), JSON.stringify({ host, pid, mtimeMs, woke, young }));
+          }
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-memory-guard-'));
+  try {
+    assert.equal(orch.sessionsDir({ CLAUDE_CONFIG_DIR: base }), am.sessionsDirOf({ CLAUDE_CONFIG_DIR: base }));
+    assert.equal(orch.sessionsDir({}), am.sessionsDirOf({}));
+    assert.equal(orch.hostName(), am.hostName());
+    const dir = am.sessionsDirOf({ CLAUDE_CONFIG_DIR: base });
+    const rec = am.holdRecord({ kind: 'test' }, { dir });
+    try {
+      const m = orch.RECORD_NAME.exec(path.basename(rec.file));
+      assert.ok(m, rec.file);
+      assert.equal(m[1], orch.hostName());
+      assert.equal(m[2], String(process.pid));
+      assert.equal(m[3], '.gate');
+    } finally {
+      rec.release();
+    }
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+  }
+});

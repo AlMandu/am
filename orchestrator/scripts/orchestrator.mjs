@@ -1777,17 +1777,18 @@ export function memoryShortMB({ busy, freeBytes, setting, platform }) {
   const freeMB = Math.floor(freeBytes / 1048576);
   return freeMB < needMB ? { freeMB, needMB } : null;
 }
-const HEARTBEAT_MS = 30000;
-const STALE_MS = 5 * 60000;
+export const HEARTBEAT_MS = 30000;
+export const STALE_MS = 5 * 60000;
 // 잠자기에서 깨면 모든 기록이 오래돼 보인다. 이 프로세스가 90초 넘게 멈춰 있었으면(잠자기·시계 변경) 2분 동안은 오래된 기록도 산다고 본다:
 // 그사이 살아 있는 주인은 새로 고친다
 const WAKE_GAP_MS = 90000;
 const WAKE_GRACE_MS = 2 * 60000;
-const userDir = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am-orchestrator');
+const userDir = (env = process.env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am-orchestrator');
 const settingsFile = () => path.join(userDir(), 'settings.json');
-const sessionsDir = () => path.join(userDir(), 'sessions');
+export const sessionsDir = (env = process.env) => path.join(userDir(env), 'sessions');
 // 기록 이름에 넣는 호스트 이름. macOS 는 네트워크를 바꾸면 호스트 이름이 바뀌므로 그때그때 읽는다
-const hostName = () => os.hostname().replace(/[^\w.-]/g, '_') || 'host';
+export const hostName = () => os.hostname().replace(/[^\w.-]/g, '_') || 'host';
+export const RECORD_NAME = /^(.+)~(\d+)~\d+(\.gate)?\.json$/;
 
 /** settings.json 의 내용. 없으면 {}, 읽지 못하면(깨진 JSON 등) null. */
 function readSettings() {
@@ -1857,7 +1858,7 @@ function liveSessions({ clean = true } = {}) {
   const opts = { now: Date.now(), myHost: hostName(), alive: pidAlive, woke: Boolean(wokeAt) && Date.now() - wokeAt < WAKE_GRACE_MS, young: clean && process.uptime() * 1000 < HEARTBEAT_MS + 15000 };
   const out = [];
   for (const name of names) {
-    const m = /^(.+)~(\d+)~\d+(\.gate)?\.json$/.exec(name); // 게이트 기록 이름은 예전 버전의 규칙(~\d+\.json)에 맞지 않아 예전 버전은 세지 않는다
+    const m = RECORD_NAME.exec(name); // 게이트 기록 이름은 예전 버전의 규칙(~\d+\.json)에 맞지 않아 예전 버전은 세지 않는다
     if (!m) continue;
     const file = path.join(dir, name);
     if (leftover.has(file)) continue; // 이 프로세스가 놓았는데 지우지 못한 기록

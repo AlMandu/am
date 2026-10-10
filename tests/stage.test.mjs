@@ -4,7 +4,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +13,7 @@ import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
+import { RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../plugin/scripts/memory-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -1404,6 +1405,170 @@ test('user settings: every broken file is one error line naming the file and the
   const r = readUserSettings(folder);
   assert.ok(r.error.startsWith(`${folder}: `) && r.error.includes('read') && !r.error.includes('\n'), r.error);
   assert.ok(!('minFreeMemoryMB' in r));
+});
+
+// A temporary record folder; the records pushed to the returned list are released before the folder is removed.
+function recordDir(t) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-memory-guard-'));
+  const held = [];
+  t.after(() => {
+    for (const r of held) r.release();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, held };
+}
+// Waits until check() is true, at most 2 seconds, and tells whether it is.
+const within2s = async (check) => {
+  await until(check, 2000);
+  return check();
+};
+const MB = 1048576;
+
+test('memory guard: the module reads no environment variable and imports only node built-ins', () => {
+  const src = readFileSync(path.join(REPO, 'plugin', 'scripts', 'memory-guard.mjs'), 'utf8');
+  assert.ok(!src.includes('process.env'));
+  const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.ok(imports.length > 0);
+  for (const name of imports) assert.ok(name.startsWith('node:'), name);
+});
+
+test('memory guard: the built-in 6144 MB holds on win32 only, a set value on every OS, 0 is off and nothing waits alone', () => {
+  const short = (setting, platform, freeMB, busy = 1) => memoryShortMB({ busy, freeBytes: freeMB * MB, setting, platform });
+  assert.deepEqual(short(undefined, 'win32', 1000), { freeMB: 1000, needMB: 6144 });
+  assert.deepEqual(short(null, 'win32', 6143), { freeMB: 6143, needMB: 6144 });
+  assert.equal(short(null, 'win32', 6144), null);
+  for (const platform of ['darwin', 'linux']) assert.equal(short(undefined, platform, 1000), null, platform);
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    assert.deepEqual(short(500, platform, 400), { freeMB: 400, needMB: 500 }, platform);
+    assert.deepEqual(short('500', platform, 400), { freeMB: 400, needMB: 500 }, platform);
+    assert.equal(short(500, platform, 500), null, platform);
+    assert.equal(short(0, platform, 0), null, platform);
+  }
+  for (const busy of [0, -1]) assert.equal(short(500, 'darwin', 0, busy), null, String(busy));
+  for (const bad of ['6GB', -1, '', ' ']) {
+    assert.deepEqual(short(bad, 'win32', 1000), { freeMB: 1000, needMB: 6144 }, String(bad));
+    assert.equal(short(bad, 'darwin', 1000), null, String(bad));
+  }
+});
+
+test('memory guard: recordHeld frees a dead same-host pid and a record untouched past staleMs, and waits after a wake', () => {
+  const now = 10 * 60000;
+  const alive = (pid) => pid === 1;
+  const o = { now, myHost: 'me', alive };
+  assert.equal(recordHeld({ host: 'me', pid: 1, mtimeMs: now - 1000 }, o), true);
+  assert.equal(recordHeld({ host: 'me', pid: 2, mtimeMs: now - 1000 }, o), false);
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 1000 }, o), true);
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 6 * 60000 }, o), false);
+  assert.equal(recordHeld({ host: 'me', pid: 1, mtimeMs: now - 6 * 60000 }, o), false);
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 6 * 60000 }, { ...o, woke: true }), true);
+  assert.equal(recordHeld({ host: 'me', pid: 2, mtimeMs: now }, { ...o, woke: true }), false);
+  assert.equal(recordHeld({ host: 'me', pid: 1, mtimeMs: now - 6 * 60000 }, { ...o, young: true }), true);
+  assert.equal(recordHeld({ host: 'other', pid: 1, mtimeMs: now - 6 * 60000 }, { ...o, young: true }), false);
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 2000 }, { ...o, staleMs: 1000 }), false);
+  assert.equal(recordHeld({ host: 'other', pid: 2, mtimeMs: now - 4 * 60000 }, { ...o, staleMs: 4 * 60000 }), true);
+});
+
+test('memory guard: the record folder lives under the config folder, else under ~/.claude', () => {
+  const dir = path.join(os.tmpdir(), 'cfg');
+  assert.equal(sessionsDirOf({ CLAUDE_CONFIG_DIR: dir }), path.join(dir, 'am-orchestrator', 'sessions'));
+  assert.equal(sessionsDirOf({}), path.join(os.homedir(), '.claude', 'am-orchestrator', 'sessions'));
+});
+
+test('memory guard: liveRecords returns only live records with a matching name and removes nothing', (t) => {
+  const { dir } = recordDir(t);
+  const names = ['me~1~1.gate.json', 'other~2~3.json', 'h~1.json', 'h~x~1.json', 'h~1~doctor.tmp', 'me~2~1.json', 'other~5~1.gate.json', 'me~1~2.json'];
+  for (const n of names) writeFileSync(path.join(dir, n), '{}\n');
+  const now = Date.now();
+  const old = (now - 6 * 60000) / 1000;
+  for (const n of ['other~5~1.gate.json', 'me~1~2.json']) utimesSync(path.join(dir, n), old, old);
+  const o = { now, alive: (pid) => pid === 1, myHost: 'me', young: false, staleMs: 5 * 60000 };
+  const found = (opts) => liveRecords(dir, opts).sort((a, b) => a.file.localeCompare(b.file));
+  assert.deepEqual(found(o), [
+    { file: path.join(dir, 'me~1~1.gate.json'), host: 'me', pid: 1, gate: true },
+    { file: path.join(dir, 'other~2~3.json'), host: 'other', pid: 2, gate: false },
+  ]);
+  assert.deepEqual(found({ ...o, young: true }).map((r) => path.basename(r.file)), ['me~1~1.gate.json', 'me~1~2.json', 'other~2~3.json']);
+  assert.deepEqual(readdirSync(dir).sort(), [...names].sort());
+  assert.deepEqual(liveRecords(path.join(dir, 'missing')), []);
+});
+
+test('memory guard: holdRecord writes a .gate record, keeps it fresh, writes it again when removed and stops after release', async (t) => {
+  const { dir: root, held } = recordDir(t);
+  const dir = path.join(root, 'sessions');
+  const rec = holdRecord({ kind: 'x' }, { dir, heartbeatMs: 20 });
+  held.push(rec);
+  assert.equal(rec.written, true);
+  assert.equal(path.dirname(rec.file), dir);
+  const m = RECORD_NAME.exec(path.basename(rec.file));
+  assert.ok(m, rec.file);
+  assert.equal(m[1], hostName());
+  assert.equal(m[2], String(process.pid));
+  assert.equal(m[3], '.gate');
+  const content = JSON.parse(readFileSync(rec.file, 'utf8'));
+  assert.equal(content.pid, process.pid);
+  assert.equal(content.host, os.hostname());
+  assert.equal(content.kind, 'x');
+  assert.ok(!Number.isNaN(Date.parse(content.startedAt)), content.startedAt);
+  const hourAgo = (Date.now() - 3600000) / 1000;
+  utimesSync(rec.file, hourAgo, hourAgo);
+  assert.ok(await within2s(() => statSync(rec.file).mtimeMs > hourAgo * 1000 + 60000), 'touched again');
+  rmSync(rec.file);
+  assert.ok(await within2s(() => existsSync(rec.file)), 'written again');
+  rec.release();
+  assert.equal(existsSync(rec.file), false);
+  await new Promise((res) => setTimeout(res, 200));
+  assert.equal(existsSync(rec.file), false, 'not written again after release');
+  rec.release();
+});
+
+test('memory guard: a released record that could not be removed is not counted', (t) => {
+  const { dir, held } = recordDir(t);
+  const other = holdRecord({}, { dir });
+  held.push(other);
+  const rec = holdRecord({}, { dir });
+  rmSync(rec.file);
+  mkdirSync(rec.file); // a folder of the same name: removing it fails
+  rec.release();
+  assert.ok(existsSync(rec.file));
+  const o = { now: Date.now(), alive: () => true, myHost: hostName(), young: false, staleMs: 5 * 60000 };
+  assert.deepEqual(liveRecords(dir, o).map((r) => r.file), [other.file]);
+});
+
+test('memory guard: a folder that cannot be written does not throw, and the record appears once it can', async (t) => {
+  const { dir: root, held } = recordDir(t);
+  const dir = path.join(root, 'blocked');
+  writeFileSync(dir, 'a file where the folder should be');
+  const rec = holdRecord({}, { dir, heartbeatMs: 20 });
+  held.push(rec);
+  assert.equal(rec.written, false);
+  rmSync(dir);
+  assert.ok(await within2s(() => existsSync(rec.file)), 'written by the timer');
+});
+
+test('memory guard: holdRecord and liveRecords need a folder', () => {
+  assert.throws(() => holdRecord({}), /dir/);
+  assert.throws(() => liveRecords(), /dir/);
+});
+
+test('memory guard: records still held when the process exits are removed, with one exit handler', (t) => {
+  const { dir: root } = recordDir(t);
+  const dir = path.join(root, 'sessions');
+  const script = path.join(root, 'child.mjs');
+  writeFileSync(
+    script,
+    `import { readdirSync } from 'node:fs';
+import { holdRecord } from ${JSON.stringify(pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'memory-guard.mjs')).href)};
+const dir = process.argv[2];
+const before = process.listenerCount('exit');
+holdRecord({ kind: 'a' }, { dir });
+holdRecord({ kind: 'b' }, { dir });
+console.log(JSON.stringify({ added: process.listenerCount('exit') - before, files: readdirSync(dir).length }));
+`,
+  );
+  const r = spawnSync(process.execPath, [script, dir], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { added: 1, files: 2 });
+  assert.deepEqual(readdirSync(dir), []);
 });
 
 const cfgEnv = (file) => ({ ...process.env, CLAUDE_CONFIG_DIR: path.dirname(path.dirname(file)) });
