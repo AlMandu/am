@@ -25,10 +25,14 @@
 // no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different,
 // its stage-key (else default) values the skill's frontmatter for the plan, do, check, compactmem and commit sessions, and
 // its run (else default) values the run skill's frontmatter for the hand-over.
+// Then the per-PC user settings file (user-settings.mjs) is read: broken, the stage ends `failed` the same way.
+// A stage that starts a session of its own (not a hand-over) first writes a `.gate` record in the orchestrator's record folder
+// (memory-guard.mjs) and checks the free memory while other sessions of this PC run; short, it waits. The record is held to the end.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
-// started but did not finish with a marker, or the user models file is broken; `WAIT`: another run of this working tree kept going for
-// the whole wait (no session, no start or end line; am:auto starts the stage again). Exit codes: 0 result printed, 1 bad input.
+// started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
+// the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
+// stage again). Exit codes: 0 result printed, 1 bad input.
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -38,8 +42,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
 import { findAm, findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
+import { HEARTBEAT_MS, holdRecord, liveRecords, memoryShortMB, sessionsDirOf } from './memory-guard.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
 import { FRONTMATTER, frontmatterModels, readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
+import { readUserSettings, userSettingsFile } from './user-settings.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -826,7 +832,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 // ------------------------------------------------------------------ main
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
   const [stage, slug, ...flags] = argv;
   if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
     out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
@@ -849,6 +855,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const userFile = userModelsFile(env);
   const user = readUserModels(userFile);
   if (user.error) return done({ reason: `the user model settings cannot be used (fix or remove the file): ${user.error}` });
+  const settingsFile = userSettingsFile(env);
+  const settings = readUserSettings(settingsFile);
+  if (settings.error) return done({ reason: `the user settings cannot be used (fix or remove the file): ${settings.error}` });
   if (stage === 'plan' && !existsSync(path.join(dir, 'request.md'))) return done({ reason: `no .am/${slug}/request.md: write the request there first` });
   if (stage !== 'plan' && !existsSync(planFile)) return done({ reason: `no .am/${slug}/plan.md: run the plan stage first` });
   ensureIgnored(cwd);
@@ -857,32 +866,60 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const lockFile = path.join(cwd, '.am', '.admission.lock');
   const waitBegan = Date.now(); // the wait is timed by the clock that setTimeout uses
   let held = null; // the lock, kept to the end when the start line could not be written
-  let noted = false;
+  // The do stage's kind is read once, before the wait. A hand-over (its sessions are the orchestrator's) and a do stage that
+  // cannot start a session take no part in the memory check.
+  const k = stage === 'do' ? doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix }) : null;
+  const joins = !(k && (k.error || k.kind === 'handover'));
+  const recordsDir = sessionsDirOf(env);
+  let record = null; // this stage's `.gate` record, held to the end once the memory check passed
+  // Writes the record first, so that a stage starting at the same moment counts this one; null when memory is enough, else what is short.
+  const memoryCheck = () => {
+    const rec = holdRecord({ repo: cwd, phase: `am:auto ${stage}`, where: dir }, { dir: recordsDir, heartbeatMs });
+    const busy = liveRecords(recordsDir, { alive }).filter((r) => r.file !== rec.file).length;
+    const short = memoryShortMB({ busy, freeBytes: freeMem(), setting: settings.minFreeMemoryMB, platform });
+    if (!short) {
+      record = rec;
+      return null;
+    }
+    rec.release();
+    return { ...short, busy };
+  };
+  const repoWait = (text) => ({ kind: 'repo', note: `waiting for another run of this repository to end: ${text}`, reason: `waiting for another run of this repository: ${text}` });
+  const memoryWait = ({ freeMB, needMB, busy }) => ({
+    kind: 'memory',
+    note: `waiting for free memory (${freeMB} MB free, needs ${needMB} MB, ${busy} other sessions on this PC)`,
+    reason: `waiting for free memory on this PC: ${freeMB} MB free, needs ${needMB} MB (${settings.minFreeMemoryMB === null ? 'built-in default' : `minFreeMemoryMB in ${settingsFile}`}), ${busy} other sessions on this PC`,
+  });
+  let noted = ''; // the kind of the last wait note
   for (;;) {
     const lock = takeLock(lockFile, { now, alive });
     let blocked;
     if (!lock) {
-      event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage });
-      break;
-    }
-    if (lock.busy !== undefined) blocked = `another stage of this repository is starting (pid ${lock.busy ?? '?'})`;
+      const short = joins ? memoryCheck() : null;
+      if (!short) {
+        event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage });
+        break;
+      }
+      blocked = memoryWait(short);
+    } else if (lock.busy !== undefined) blocked = repoWait(`another stage of this repository is starting (pid ${lock.busy ?? '?'})`);
     else {
       const other = otherRuns(cwd, slug, { now, alive, graceMs });
-      if (!other.runs.length) {
+      const short = !other.runs.length && joins ? memoryCheck() : null;
+      if (!other.runs.length && !short) {
         if (event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage })) lock.release();
         else held = lock;
         break;
       }
       lock.release();
-      blocked = other.text;
+      blocked = short ? memoryWait(short) : repoWait(other.text);
     }
-    if (!noted) {
-      noted = true;
-      event({ ev: 'note', text: `waiting for another run of this repository to end: ${blocked}`, stage: 'wait' });
+    if (noted !== blocked.kind) {
+      noted = blocked.kind;
+      event({ ev: 'note', text: blocked.note, stage: 'wait' });
     }
     const left = waitMs - (Date.now() - waitBegan);
-    if (left <= 0) return done({ status: 'WAIT', reason: `waiting for another run of this repository: ${blocked}` });
-    await new Promise((r) => setTimeout(r, Math.min(pollMs, left)));
+    if (left <= 0) return done({ status: 'WAIT', reason: blocked.reason });
+    await new Promise((r) => setTimeout(r, Math.min(pollMs * (1 + Math.random() * 0.5), left)));
   }
   const startedAt = now();
   let stopRelay = null; // set while a hand-over copies the run's events
@@ -890,6 +927,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   finish = ({ status, reason, stopped = false }) => {
     if (!finishers.has(finish)) return;
     finishers.delete(finish);
+    // First, so that nothing below can leave the record behind.
+    record?.release();
     stopRelay?.();
     // A stop signal comes while the session may still be writing a line.
     stopOpinions?.(!stopped);
@@ -903,9 +942,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   let opts = { push, fix };
   let orchRoot = '';
   if (stage === 'do') {
-    const k = doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix });
     if (k.error) return done({ reason: k.error });
     kind = k.kind;
+    if (kind === 'handover') record?.release(); // never held for a hand-over; kept as a safety net
     opts = { ...opts, resume: k.resume };
     // Resolved like the allow rules (path.join), so the inline file names the same path.
     orchRoot = k.orchRoot ? path.resolve(k.orchRoot) : '';

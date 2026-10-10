@@ -58,7 +58,7 @@ const isolatedEnv = { ...process.env, CLAUDE_CONFIG_DIR: NO_USER_CFG };
 async function run(dir, argv, opts = {}) {
   let text = '';
   const out = { write: (s) => (text += s) };
-  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, am: () => [], out, ...opts });
+  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, am: () => [], out, freeMem: () => 2 ** 50, ...opts });
   const calls = existsSync(path.join(dir, 'calls.jsonl')) ? readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
@@ -683,18 +683,21 @@ test('events: a stage writes start with its pid and one end with status and minu
   assert.equal(formatEvent({ ...list[1], min: 0 }), 'end: plan stage ended [stage=plan status=READY min=0]');
 });
 
-test('events: start comes before the orchestrator lookup, minutes follow the given clock', async (t) => {
+test('events: the orchestrator lookup runs once, before the start line; minutes follow the given clock', async (t) => {
   const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['AM_STAGE: DONE'] } });
-  let clock = Date.parse('2026-10-08T00:00:00Z');
+  const clock = Date.parse('2026-10-08T00:00:00Z');
   let sawStart = false;
+  let lookups = 0;
   const orchestrator = () => {
     sawStart = events(dir).some((e) => e.ev === 'start');
-    clock += 150000;
+    lookups += 1;
     return null;
   };
-  const { result } = await run(dir, ['do', 'demo'], { orchestrator, now: () => clock });
+  // The session moves the clock on by 2.5 minutes.
+  const { result } = await run(dir, ['do', 'demo'], { orchestrator, now: () => clock + (existsSync(path.join(dir, 'calls.jsonl')) ? 150000 : 0) });
   assert.equal(result.status, 'DONE');
-  assert.ok(sawStart);
+  assert.ok(!sawStart);
+  assert.equal(lookups, 1);
   const end = ends(events(dir));
   assert.equal(end.length, 1);
   assert.equal(end[0].min, 2);
@@ -1030,7 +1033,7 @@ test('runRelay: which run is followed and from where', (t) => {
 test('relay: the real command ends by itself and prints the same result line', (t) => {
   const dir = newHandover(t);
   const stage = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
-  writeFileSync(path.join(dir, 'wrapper.mjs'), `import { main } from ${JSON.stringify(stage)};\nprocess.exitCode = await main(['do', 'demo'], { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => '/orch', relayMs: 60000 });\n`);
+  writeFileSync(path.join(dir, 'wrapper.mjs'), `import { main } from ${JSON.stringify(stage)};\nprocess.exitCode = await main(['do', 'demo'], { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => '/orch', relayMs: 60000, freeMem: () => 2 ** 50 });\n`);
   // A timer that is neither unref'd nor cleared would keep the process alive past the limit.
   const r = spawnSync(process.execPath, ['wrapper.mjs'], { cwd: dir, env: isolatedEnv, encoding: 'utf8', timeout: 20000 });
   assert.equal(r.error, undefined);
@@ -2032,4 +2035,161 @@ test('second-opinion lines are told while the session runs; a stop signal ends t
   appendFileSync(planFile(dir), ')\n- C4 late (second opinion)\n');
   await pause(100);
   assert.equal(slugBytes(dir), before);
+});
+
+// ------------------------------------------------------------------ memory wait
+
+/** A config folder for the memory check: am/settings.json holding text (none when null) and, unless other is false, a live record of another PC's session. */
+function memoryCfg(t, text = null, { other = true } = {}) {
+  const file = userSettings(t, text);
+  const env = cfgEnv(file);
+  const records = sessionsDirOf(env);
+  if (other) {
+    mkdirSync(records, { recursive: true });
+    writeFileSync(path.join(records, 'otherhost~4242~1.gate.json'), '{}\n');
+  }
+  return { env, file, records };
+}
+const SHORT_MEM = { platform: 'win32', freeMem: () => 1024 * MB };
+const MEMORY_NOTE = 'waiting for free memory (1024 MB free, needs 6144 MB, 1 other sessions on this PC)';
+
+test('memory wait: a broken user settings file ends every stage before any session or start line; a missing one changes nothing', async (t) => {
+  for (const text of ['{"minFreeMemoryMB":"6GB"}', '{"minFreeMemoryMB":']) {
+    const file = userSettings(t, text);
+    for (const stage of ['plan', 'check']) {
+      const dir = makeRepo(t, { plan: SMALL, fake: PLANNED });
+      const { result, calls } = await run(dir, [stage, 'demo'], { env: cfgEnv(file) });
+      assert.equal(result.status, 'failed', `${stage} ${text}`);
+      assert.ok(result.reason.startsWith('the user settings cannot be used (fix or remove the file): '), result.reason);
+      assert.ok(result.reason.includes(file), result.reason);
+      assert.deepEqual(calls, []);
+      assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'progress.jsonl')));
+    }
+  }
+  const dir = makeRepo(t, { fake: PLANNED });
+  assert.equal((await run(dir, ['plan', 'demo'], { env: cfgEnv(userSettings(t, null)) })).result.status, 'READY');
+});
+
+test('memory wait: short of memory while another session of this PC runs, a stage waits, notes it once and ends WAIT', async (t) => {
+  const { env, records } = memoryCfg(t);
+  const dir = makeRepo(t, { fake: PLANNED });
+  const { result, calls } = await run(dir, ['plan', 'demo'], { env, ...SHORT_MEM, waitMs: 150, pollMs: 20 });
+  assert.equal(result.status, 'WAIT');
+  assert.equal(result.stage, 'plan');
+  assert.equal(result.reason, 'waiting for free memory on this PC: 1024 MB free, needs 6144 MB (built-in default), 1 other sessions on this PC');
+  assert.deepEqual(calls, []);
+  const list = events(dir);
+  assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['note', 'wait']]);
+  assert.equal(list[0].text, MEMORY_NOTE);
+  assert.ok(!existsSync(LOCK(dir)));
+  assert.deepEqual(liveRecords(records).map((r) => path.basename(r.file)), ['otherhost~4242~1.gate.json']);
+  // A value in the settings file holds on every OS, and the reason names the file.
+  const custom = memoryCfg(t, '{"minFreeMemoryMB":1e9}');
+  const mac = makeRepo(t, { fake: PLANNED });
+  const r = await run(mac, ['plan', 'demo'], { env: custom.env, platform: 'darwin', freeMem: () => 1024 * MB, waitMs: 100, pollMs: 20 });
+  assert.equal(r.result.status, 'WAIT');
+  assert.equal(r.result.reason, `waiting for free memory on this PC: 1024 MB free, needs 1000000000 MB (minFreeMemoryMB in ${custom.file}), 1 other sessions on this PC`);
+  assert.deepEqual(r.calls, []);
+});
+
+test('memory wait: with no other session, or with enough free memory, a stage starts at once', async (t) => {
+  const alone = memoryCfg(t, null, { other: false });
+  const dir = makeRepo(t, { fake: PLANNED });
+  assert.equal((await run(dir, ['plan', 'demo'], { env: alone.env, ...SHORT_MEM, waitMs: 5000, pollMs: 20 })).result.status, 'READY');
+  assert.deepEqual(evs(events(dir)), ['start', 'end']);
+  const busy = memoryCfg(t);
+  const roomy = makeRepo(t, { fake: PLANNED });
+  assert.equal((await run(roomy, ['plan', 'demo'], { env: busy.env, platform: 'win32', waitMs: 5000, pollMs: 20 })).result.status, 'READY');
+  assert.deepEqual(evs(events(roomy)), ['start', 'end']);
+});
+
+test('memory wait: a wait for another run and then for memory notes each once, then the stage starts', async (t) => {
+  const { env } = memoryCfg(t);
+  const dir = makeRepo(t, { fake: PLANNED });
+  taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'commit' })]);
+  setTimeout(() => appendFileSync(path.join(dir, '.am', 'a', 'progress.jsonl'), `${JSON.stringify({ t: new Date().toISOString(), ev: 'end', text: 'e', stage: 'commit', status: 'COMMITTED' })}\n`), 100);
+  // Memory is short for the first two checks, then enough: decided by the calls, not the clock.
+  let checks = 0;
+  const freeMem = () => (++checks <= 2 ? 1024 * MB : 2 ** 50);
+  const { result, calls } = await run(dir, ['plan', 'demo'], { env, platform: 'win32', freeMem, alive: aliveOnly, waitMs: 10000, pollMs: 20 });
+  assert.equal(result.status, 'READY');
+  assert.equal(calls.length, 1);
+  assert.equal(checks, 3);
+  const list = events(dir);
+  assert.deepEqual(evs(list), ['note', 'note', 'start', 'end']);
+  assert.equal(list[0].text, 'waiting for another run of this repository to end: a (commit stage running)');
+  assert.equal(list[1].text, MEMORY_NOTE);
+});
+
+test('memory wait: a running stage holds one record of this process, removed by a stop signal and by a normal end', async (t) => {
+  const { env, records } = memoryCfg(t, null, { other: false });
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const running = run(dir, ['do', 'demo'], { env });
+  let code = null;
+  try {
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    const held = liveRecords(records);
+    assert.equal(held.length, 1);
+    assert.equal(held[0].pid, process.pid);
+    assert.ok(held[0].gate);
+    assert.match(path.basename(held[0].file), RECORD_NAME);
+    const info = JSON.parse(readFileSync(held[0].file, 'utf8'));
+    assert.deepEqual([info.repo, info.phase, info.where], [dir, 'am:auto do', path.join(dir, '.am', 'demo')]);
+  } finally {
+    interrupt('SIGTERM', { exit: (c) => (code = c) });
+    await running;
+  }
+  assert.equal(code, 1);
+  assert.deepEqual(liveRecords(records), []);
+  const plain = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  assert.equal((await run(plain, ['do', 'demo'], { env })).result.status, 'DONE');
+  assert.deepEqual(liveRecords(records), []);
+});
+
+test('memory wait: one orchestrator lookup decides whether the do stage holds a record; a hand-over holds none', async (t) => {
+  const { env, records } = memoryCfg(t, null, { other: false });
+  const lookups = (...answers) => {
+    const fn = () => answers[fn.calls++] ?? null;
+    fn.calls = 0;
+    return fn;
+  };
+  const during = async (dir, orchestrator) => {
+    const running = run(dir, ['do', 'demo'], { env, orchestrator, relayMs: 60000 });
+    let held = null;
+    let code = null;
+    try {
+      await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+      held = liveRecords(records).length;
+    } finally {
+      interrupt('SIGTERM', { exit: (c) => (code = c) });
+    }
+    const { result } = await running;
+    assert.equal(code, 1);
+    return { held, result };
+  };
+  const handed = lookups('/orch', null);
+  const h = await during(newHandover(t, { hang: [1] }), handed);
+  assert.equal(handed.calls, 1);
+  assert.equal(h.result.stage, 'handover');
+  assert.equal(h.held, 0);
+  const local = lookups(null, '/orch');
+  const d = await during(makeRepo(t, { plan: LARGE, fake: { hang: [1] } }), local);
+  assert.equal(local.calls, 1);
+  assert.equal(d.result.stage, 'do');
+  assert.equal(d.held, 1);
+  assert.deepEqual(liveRecords(records), []);
+  // A recorded hand-over without the run skill fails at once, short of memory or not.
+  const busy = memoryCfg(t);
+  const lost = makeRepo(t, { plan: HANDED_PLAN });
+  const { result, calls } = await run(lost, ['do', 'demo'], { env: busy.env, ...SHORT_MEM, waitMs: 5000, pollMs: 20 });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.stage, 'handover');
+  assert.match(result.reason, /run skill is not installed/);
+  assert.deepEqual(calls, []);
+  assert.ok(!events(lost).some((e) => e.stage === 'wait'));
+});
+
+// Last: by liveRecords, not the folder's file list (a record Windows could not remove at once is left out there, and the folder stays).
+test('memory wait: the stage tests leave no live record behind', () => {
+  assert.deepEqual(liveRecords(sessionsDirOf(isolatedEnv)), []);
 });
