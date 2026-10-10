@@ -1,6 +1,7 @@
 // Run: node --test tests/orchestrator-follow.test.mjs
 // 숨은 작업 모드(--worker): 출력은 .orchestrator/worker/log 로, 잠금을 잡으면 worker.json, 끝나면 result-<pid>.json, 하트비트가 멈추면 130.
 // 따라가기(--worker 없이 부른 doctor·split·answer·run): 작업을 띄우거나 같은 명령의 살아 있는 작업에 붙어 그 log 범위를 내고 작업의 코드로 끝난다.
+// 전달: 따라가기 없이 끝난 결과(하트비트 시간 안)는 같은 명령의 다음 호출이 새로 띄우지 않고 한 번 낸다. 다른 명령이 성공하면 전달된 것으로 본다.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
@@ -226,6 +227,8 @@ test('따라가기 (a) 빠른 명령: 작업의 log 범위를 내고 그 코드�
   const res = resultOf(r, w.pid);
   assert.equal(Number(readFileSync(path.join(workerDir(r), `read-${w.pid}`), 'utf8')), res.logTo, '따라가기가 끝까지 읽은 위치');
   assert.equal(d.out, logBytes(r).subarray(0, res.logTo).toString('utf8'), '처음 작업이라 범위는 log 의 처음부터');
+  assert.ok(existsSync(path.join(workerDir(r), `delivered-${w.pid}`)), '따라가기가 결과를 차지했다');
+  assert.equal(resultOf(r, w.pid).delivered, true);
   assert.equal(r.orch('split', DESIGN(r)).code, 0);
   const run = r.orch('run');
   assert.equal(run.code, 1, run.out);
@@ -324,4 +327,121 @@ test('따라가기 (k) 따라가기를 강제로 죽여도 작업은 돌고, 다
   assert.equal(second.code, 0, second.out);
   const res = resultOf(r, w.pid);
   assert.equal(first.out + second.out, logBytes(r).subarray(from, res.logTo).toString('utf8'));
+});
+
+// ------------------------------------------------------------------ 전달
+
+const marked = (r, pid) => existsSync(path.join(workerDir(r), `delivered-${pid}`));
+/** 따라가기 없이 끝난 가짜 결과: log 끝에 text 를 덧붙여 그 범위를 이 결과의 범위로 둔다. */
+const fakeResult = (r, pid, fields, text = '') => {
+  mkdirSync(workerDir(r), { recursive: true });
+  const logFile = path.join(workerDir(r), 'log');
+  const from = existsSync(logFile) ? statSync(logFile).size : 0;
+  appendFileSync(logFile, text);
+  writeFileSync(path.join(workerDir(r), `read-${pid}`), String(from));
+  writeFileSync(path.join(workerDir(r), `result-${pid}.json`), JSON.stringify({ pid, code: 0, error: '', endedAt: new Date().toISOString(), delivered: false, logTo: statSync(logFile).size, ...fields }));
+};
+const follow = (r, ...args) => spawnSync(process.execPath, [ORCH, ...args, '--repo', r.repo], { encoding: 'utf8', env: r.env });
+const sleeper = () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+
+test('전달 (c) 따라가기 없이 끝난 answer 의 결과: 인자 없는 answer 가 남은 줄과 멈춘 이유를 한 번 내고, 그다음은 사용법', () => {
+  const r = makeRepo();
+  fakeResult(r, DEAD, { command: 'answer', code: 2, error: '멈춘 이유 X' }, '남은 줄\n\n멈춘 이유 X\n');
+  const before = results(r).length;
+  const p = follow(r, 'answer');
+  assert.equal(p.status, 2, p.stdout + p.stderr);
+  assert.equal(p.stdout, '남은 줄\n');
+  assert.match(p.stderr, /멈춘 이유 X/);
+  assert.equal(resultOf(r, DEAD).delivered, true);
+  assert.ok(marked(r, DEAD));
+  assert.equal(results(r).length, before, '새 작업을 띄우지 않았다');
+  const q = follow(r, 'answer');
+  assert.equal(q.status, 2);
+  assert.match(q.stdout + q.stderr, /사용법: answer/);
+  assert.ok(!/멈춘 이유/.test(q.stdout + q.stderr));
+});
+
+test('전달 (c) 따라가기를 죽인 split: 끝난 뒤 인자 없는 split 이 남은 줄과 0 을 내고, 그다음은 사용법', { skip: process.platform === 'win32' }, async () => {
+  const r = makeRepo({ scenario: { slowSplit: 1000 } });
+  assert.equal(r.orch('doctor').code, 0);
+  const from = statSync(path.join(workerDir(r), 'log')).size;
+  const first = r.start('split', DESIGN(r));
+  const firstExit = exitOf(first);
+  await waitFile(path.join(r.repo, '.orchestrator', 'fake-slow-split.pid'));
+  const w = workerJson(r);
+  first.kill('SIGKILL');
+  await firstExit;
+  assert.ok(await deadPid(w.pid), '작업이 끝나지 않았다');
+  const second = follow(r, 'split');
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  const res = resultOf(r, w.pid);
+  assert.equal(first.out + second.stdout + second.stderr, logBytes(r).subarray(from, res.logTo).toString('utf8'));
+  assert.match(second.stdout, /작업 \d+개로 나눴습니다/);
+  assert.equal(readdirSync(path.join(r.repo, '.orchestrator', 'runs')).length, 1);
+  const third = follow(r, 'split');
+  assert.equal(third.status, 2);
+  assert.match(third.stdout + third.stderr, /사용법: split/);
+});
+
+test('전달 (d) 성공한 명령만 다른 작업의 미전달 결과를 전달된 것으로 표시한다', () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')], [{ id: 'D1', what: '첫 화면', whyNow: '화면이 달라짐', options: [{ label: '목록', effect: '목록' }, { label: '상세', effect: '상세' }], recommended: '목록', undo: 'easy', blocks: ['T01'], answer: null }]) });
+  fakeResult(r, DEAD, { command: 'run', code: 1 }, '옛 run 줄\n');
+  assert.equal(r.orch('decide', 'X', 'y').code, 2);
+  assert.equal(resultOf(r, DEAD).delivered, false);
+  assert.ok(!marked(r, DEAD));
+  const steps = [['decide', 'D1', '목록'], ['retry', 'T01'], ['done', 'T01'], ['doctor', '--skip-probe']];
+  steps.forEach((args, i) => {
+    if (i) fakeResult(r, DEAD + i, { command: 'run', code: 1 }, '옛 run 줄\n');
+    const p = r.orch(...args);
+    assert.equal(p.code, 0, `${args.join(' ')}: ${p.out}`);
+    assert.equal(resultOf(r, DEAD + i).delivered, true, args.join(' '));
+    assert.ok(marked(r, DEAD + i), args.join(' '));
+  });
+  assert.ok(!r.orch('run').out.includes('옛 run 줄'));
+});
+
+test('전달 (c4) 하트비트 시간 밖의 결과는 내지 않고, 잠금을 쥔 작업의 결과는 미리 내지 않고 붙는다', async () => {
+  const r = makeRepo();
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  fakeResult(r, DEAD, { command: 'doctor', endedAt: ago(31) }, '옛 doctor 줄\n');
+  const before = results(r).length;
+  const old = r.orch('doctor', '--skip-probe');
+  assert.equal(old.code, 0, old.out);
+  assert.ok(!old.out.includes('옛 doctor 줄'));
+  assert.equal(results(r).length, before + 1);
+  assert.ok(!marked(r, DEAD), '창 밖의 결과는 표시하지 않는다');
+  fakeResult(r, DEAD + 1, { command: 'doctor', endedAt: ago(29) }, '옛 doctor 줄\n');
+  const fresh = r.orch('doctor', '--skip-probe');
+  assert.equal(fresh.code, 0, fresh.out);
+  assert.equal(fresh.out, '옛 doctor 줄\n');
+  assert.equal(results(r).length, before + 2);
+  // 살아 있는 잠금 주인의 결과: 재사용된 pid 의 옛것일 수 있어 내지 않고 붙는다
+  const s = sleeper();
+  const startedAt = new Date().toISOString();
+  fakeResult(r, s.pid, { command: 'doctor', code: 5, endedAt: startedAt });
+  writeFileSync(path.join(workerDir(r), 'worker.json'), JSON.stringify({ pid: s.pid, command: 'doctor', args: ['doctor'], startedAt }));
+  writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'doctor', startedAt }));
+  const proc = r.start('doctor');
+  const exited = exitOf(proc);
+  await sleep(500);
+  assert.equal(proc.exitCode, null, '미리 전달하지 않고 붙어 있다');
+  assert.equal(proc.out, '');
+  s.kill('SIGKILL');
+  assert.equal(await exited, 5, proc.out);
+  assert.ok(marked(r, s.pid));
+});
+
+test('전달 (gap) 같은 명령의 작업이 잠금을 지운 뒤 결과를 쓰기 전이면 결과를 기다려 낸다', async () => {
+  const r = makeRepo();
+  const s = sleeper();
+  mkdirSync(workerDir(r), { recursive: true });
+  writeFileSync(path.join(workerDir(r), 'worker.json'), JSON.stringify({ pid: s.pid, command: 'doctor', args: ['doctor'], startedAt: new Date().toISOString() }));
+  const proc = r.start('doctor');
+  const exited = exitOf(proc);
+  await sleep(300);
+  fakeResult(r, s.pid, { command: 'doctor', code: 4 }, '끝 틈 줄\n');
+  assert.equal(await exited, 4, proc.out);
+  s.kill('SIGKILL');
+  assert.equal(proc.out, '끝 틈 줄\n');
+  assert.deepEqual(results(r), [`result-${s.pid}.json`]);
 });

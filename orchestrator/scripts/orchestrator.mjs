@@ -1849,7 +1849,7 @@ function createLock(file, value, alive = pidAlive) {
   return isObj(o) ? o : {};
 }
 
-function acquireLock(repo, command, run) {
+function acquireLock(repo, command, run, timing) {
   const held = readLock(repo);
   if (held) busy(held);
   ensureIgnored(repo, ORCH_DIR);
@@ -1868,6 +1868,12 @@ function acquireLock(repo, command, run) {
     }
     // 작업 모드: 이 작업이 log 에 쓴 범위의 끝. 잠금을 지운 뒤 다음 작업이 같은 log 에 쓴 줄을 따라가기가 내지 않게
     if (worker) worker.logTo = logSize(worker.logFile);
+    // 성공했으면 다른 작업의 미전달 결과는 지난 일이다: 같은 명령의 다음 호출에 내지 않게 잠금을 지우기 전에 표시한다
+    try {
+      if ((exitCode ?? process.exitCode ?? 0) === 0) settleResults(repo, timing);
+    } catch {
+      /* 표시를 못 해도 잠금은 지운다 */
+    }
     try {
       if (readJson(lockFile(repo)).pid === process.pid) rmSync(lockFile(repo), { force: true });
     } catch {
@@ -2009,11 +2015,125 @@ function workerResult(repo, pid, since) {
   return res;
 }
 
+// 전달 표시: 결과를 받은 쪽(따라가기, 같은 명령의 다음 호출, 성공한 다른 명령)이 delivered-<pid> 를 배타적으로 만든다. 먼저 만든 하나만 전달한다
+const markerOf = (repo, pid) => workerFile(repo, `delivered-${pid}`);
+/** 결과를 전달된 것으로 차지한다. 이미 전달됐거나 다른 쪽이 먼저 차지했으면 false. */
+function claimResult(repo, res) {
+  if (res.delivered) return false;
+  try {
+    writeFileSync(markerOf(repo, res.pid), now(), { flag: 'wx' });
+  } catch {
+    return false;
+  }
+  try {
+    writeJson(workerFile(repo, `result-${res.pid}.json`), { ...res, delivered: true });
+  } catch {
+    /* 표시 파일이 이미 전달을 말한다 */
+  }
+  return true;
+}
+const undelivered = (repo, res) => !res.delivered && !existsSync(markerOf(repo, res.pid));
+
+/** worker 폴더의 결과 중 하트비트 시간 안에 끝났고 아직 전달되지 않은 것. filter 가 있으면 그것도 맞는 것만. */
+function freshResults(repo, timing, filter = () => true) {
+  let names;
+  try {
+    names = readdirSync(workerFile(repo, ''));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    const m = /^result-(\d+)\.json$/.exec(name);
+    if (!m) continue;
+    const file = workerFile(repo, name);
+    try {
+      if (Date.now() - statSync(file).mtimeMs >= timing.heartbeatMs) continue; // 오래된 파일은 읽지 않는다
+    } catch {
+      continue;
+    }
+    const res = readJsonOr(file);
+    if (!isObj(res) || res.pid !== Number(m[1])) continue;
+    const ended = Date.parse(res.endedAt);
+    if (Number.isNaN(ended) || !(Date.now() - ended < timing.heartbeatMs)) continue;
+    if (undelivered(repo, res) && filter(res)) out.push(res);
+  }
+  return out;
+}
+
+/** 같은 명령의 미전달 결과(새것부터). 지금 잠금을 쥔 작업의 pid, worker.json 의 작업이 시작하기 전에 끝난 같은 pid 의 결과는 재사용된 pid 의 옛것으로 거른다. */
+function pendingResults(repo, cmd, timing) {
+  const lockPid = readLock(repo)?.pid;
+  const w = readJsonOr(workerFile(repo, 'worker.json'));
+  const skip = (res) => res.pid === lockPid || (isObj(w) && w.pid === res.pid && Date.parse(res.endedAt) < Date.parse(w.startedAt));
+  return freshResults(repo, timing, (res) => res.command === cmd && !skip(res)).sort((x, y) => Date.parse(y.endedAt) - Date.parse(x.endedAt));
+}
+
+/** 미전달 결과 하나를 낸다: log 의 남은 범위를 stdout 으로, 멈춘 이유(코드 2, 또는 범위 없는 결과)는 stderr 로, 그 코드로 끝난다. */
+function deliver(repo, res) {
+  const posFile = workerFile(repo, `read-${res.pid}`);
+  if (Number.isInteger(res.logTo)) {
+    const read = readJsonOr(posFile); // 없으면 null: 0 으로 읽어 log 처음부터 내지 않게
+    const pos = Number.isInteger(read) && read >= 0 ? read : res.logTo;
+    if (res.logTo > pos) {
+      let fd;
+      try {
+        fd = openSync(workerFile(repo, 'log'), 'r');
+        const buf = Buffer.alloc(res.logTo - pos);
+        let out = buf.subarray(0, readSync(fd, buf, 0, buf.length, pos));
+        // 멈춘 이유는 stderr 로만: 범위가 그 줄로 끝나면 stdout 에서 뗀다
+        const tail = Buffer.from(`\n${res.error}\n`);
+        if (res.code === 2 && res.error && out.length >= tail.length && out.subarray(out.length - tail.length).equals(tail)) out = out.subarray(0, out.length - tail.length);
+        process.stdout.write(out);
+      } catch {
+        /* log 가 없으면 낼 것이 없다 */
+      } finally {
+        if (fd !== undefined) closeSync(fd);
+      }
+      try {
+        writeText(posFile, String(res.logTo));
+      } catch {
+        /* 이미 차지했으니 다시 내지 않는다 */
+      }
+    }
+  }
+  if (res.error && (res.code === 2 || !Number.isInteger(res.logTo))) process.stderr.write(`\n${res.error}\n`);
+  process.exitCode = res.code;
+}
+
+/** 같은 명령의 미전달 결과가 있으면 가장 새것을 전달하고(더 옛것은 함께 전달된 것으로 차지) true. */
+function deliverPending(repo, cmd, timing) {
+  for (;;) {
+    const [newest, ...older] = pendingResults(repo, cmd, timing);
+    if (!newest) return false;
+    const won = claimResult(repo, newest);
+    for (const res of older) claimResult(repo, res);
+    if (won) {
+      deliver(repo, newest);
+      return true;
+    }
+    if (!existsSync(markerOf(repo, newest.pid))) return false; // 표시를 쓸 수 없다(권한 등): 같은 결과를 끝없이 되풀이하지 않는다
+  }
+}
+
+/** 성공한 명령: 다른 작업의 미전달 결과를 전달된 것으로 표시한다(이 명령이 지금 상태를 바꿨으니 옛 결과는 다시 내지 않는다). */
+function settleResults(repo, timing) {
+  for (const res of freshResults(repo, timing, (x) => x.pid !== process.pid)) claimResult(repo, res);
+}
+
 async function follow(repo, cmd, a, argv, timing) {
   baseContext(repo); // git 저장소가 아니거나 설정이 잘못됐으면 아무것도 띄우지 않고 2
   for (let i = 0; i < FOLLOW_TRIES; i += 1) {
+    // 따라가기 없이 끝난 같은 명령의 결과가 있으면 새로 띄우지 않고 그것을 한 번 낸다
+    if (deliverPending(repo, cmd, timing)) return undefined;
     const w = liveWorker(repo);
     if (w && w.command === cmd) return attach(repo, w.pid, null, w.startedAt, timing);
+    // 끝 틈: 같은 명령의 작업이 잠금을 지웠지만 아직 결과를 쓰지 않았다. 결과를 기다려 다시 본다
+    const last = readJsonOr(workerFile(repo, 'worker.json'));
+    if (isObj(last) && last.command === cmd && Number.isInteger(last.pid) && last.pid > 0 && pidAlive(last.pid)) {
+      for (let t = 0; t < timing.resultWaitMs && pidAlive(last.pid) && !workerResult(repo, last.pid, last.startedAt); t += timing.followPollMs) await wait(timing.followPollMs);
+      if (deliverPending(repo, cmd, timing)) return undefined;
+    }
     const held = readLock(repo);
     if (held) busy(held);
     if (!a && cmd === 'split') fail(SPLIT_USAGE);
@@ -2028,6 +2148,7 @@ async function follow(repo, cmd, a, argv, timing) {
       if (res) {
         // 잠금을 잡기 전에 끝남(설정 오류, 중단): log 에 범위가 없으니 그 오류를 직접 낸다
         while (child.exitCode === null && child.signalCode === null) await nap(timing.followPollMs, child);
+        claimResult(repo, res);
         if (res.error) process.stderr.write(`\n${res.error}\n`);
         process.exitCode = res.code;
         return undefined;
@@ -2067,7 +2188,7 @@ function spawnWorker(repo, argv) {
   child.on('error', () => {}); // 띄운 뒤의 오류는 exit 로 본다
   child.unref();
   // 재사용된 pid 의 남은 파일을 믿지 않게. 자식은 아직 node 가 뜨기 전이라 새것을 쓰지 못했다
-  for (const name of [`read-${child.pid}`, `result-${child.pid}.json`]) rmSync(workerFile(repo, name), { force: true });
+  for (const name of [`read-${child.pid}`, `result-${child.pid}.json`, `delivered-${child.pid}`]) rmSync(workerFile(repo, name), { force: true });
   followed = { pid: child.pid, forwarded: Boolean(followed?.forwarded) }; // 띄운 순간부터 신호를 넘길 대상
   return child;
 }
@@ -2125,6 +2246,7 @@ function attach(repo, pid, child, since, timing) {
         res = workerResult(repo, pid, since);
       }
       flush(res && Number.isInteger(res.logTo) ? res.logTo : endSize, true);
+      if (res) claimResult(repo, res); // 낸 뒤에 차지: 함께 붙은 따라가기가 졌어도 같은 코드로 끝난다
       if (res) process.exitCode = res.code;
       else if (followed.forwarded) process.exitCode = 130;
       else {
@@ -3381,7 +3503,7 @@ async function main(argv, timing = WORKER_DEFAULTS) {
     baseContext(repo);
     // 잠금에 실행 이름을 담는다: split 은 새 이름을 여기서 정해 넘기고, doctor 는 실행과 상관없다
     if (cmd === 'split') opt.run ||= newRunId();
-    acquireLock(repo, cmd, cmd === 'doctor' ? '' : opt.run || currentRun(repo));
+    acquireLock(repo, cmd, cmd === 'doctor' ? '' : opt.run || currentRun(repo), timing);
   }
   switch (cmd) {
     case 'init':
