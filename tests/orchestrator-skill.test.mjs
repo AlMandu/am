@@ -254,7 +254,7 @@ test('the am stage runner copies the events a real split writes, from the path t
 test('the am stage runner waits on the orchestrator through what is pinned here: the lock pid and the ends of split and answer', async () => {
   const { otherRuns, GRACE_MS } = await import('../plugin/scripts/stage.mjs');
   // The lock names the live command's pid; the ends after which the run skill starts its next command.
-  assert.match(SCRIPT, /writeJson\(lockFile\(repo\), \{ pid: process\.pid, command,/);
+  assert.match(SCRIPT, /createLock\(lockFile\(repo\), \{ pid: process\.pid, command,/);
   assert.match(SCRIPT, /event\(\{ ev: 'end', stage: 'split', status: 'done',/);
   assert.match(SCRIPT, /event\(\{ ev: 'end', stage: 'answer', task: id, status: s\.status,[^\n]*\/\/ planned, split, blocked 또는 needs-decision/);
   for (const s of ["status: 'planned'", "status = 'split'"]) assert.ok(SCRIPT.includes(s), s);

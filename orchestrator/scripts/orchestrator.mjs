@@ -9,7 +9,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -1760,11 +1760,92 @@ function readLock(repo, alive = pidAlive) {
   return alive(lock?.pid) ? lock : null;
 }
 
+/** 살아 있는 다른 명령에 져서 끝낸다. 작업 모드면 진 작업으로 표시해 worker.json 과 결과를 남기지 않는다. */
+function busy(held) {
+  if (worker) worker.lost = true;
+  fail(`이 저장소에서 이미 돌고 있는 명령이 있습니다: ${held.command ?? '알 수 없음'} (pid ${held.pid ?? '알 수 없음'}, ${held.startedAt ?? '알 수 없는 때'} 시작). 끝난 뒤 다시 하세요. 진행 상황은 \`status\` 로 볼 수 있습니다.`);
+}
+
+const LOCK_STALE_MS = 60000; // 읽을 수 없는 잠금·치우기 잠금이 이만큼 고쳐지지 않았으면 주인이 죽은 것으로 본다
+const olderThan = (file, ms) => {
+  try {
+    return Date.now() - statSync(file).mtimeMs > ms;
+  } catch {
+    return true; // 그사이 없어짐
+  }
+};
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * 잠금 파일을 배타적으로 만든다: 동시에 시작한 두 프로세스가 둘 다 잡지 못하게. 잡았으면 null, 살아 있는 주인이 있으면 그 내용({} 는 읽을 수 없는 잠금).
+ * 완성된 임시 파일을 hard link 로 걸고(반쯤 쓴 잠금이 보이지 않게), hard link 가 안 되는 파일 시스템에서만 `wx` 로 직접 쓴다.
+ * 죽은 주인의 잠금은 치우기 잠금(.break) 안에서 다시 확인한 뒤에만 지운다: 그사이 잡은 살아 있는 새 주인을 밀어내지 않게.
+ */
+function createLock(file, value, alive = pidAlive) {
+  const text = `${JSON.stringify(value, null, 2)}\n`;
+  const tmp = `${file}.${process.pid}.tmp`;
+  const make = () => {
+    writeFileSync(tmp, text);
+    try {
+      linkSync(tmp, file);
+    } catch (err) {
+      if (err.code === 'EEXIST') throw err;
+      writeFileSync(file, text, { flag: 'wx' }); // hard link 를 못 거는 파일 시스템
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+  };
+  // 주인: 살아 있으면 그 내용, 죽었으면 'dead', 그사이 없어졌으면 'gone'
+  const owner = () => {
+    let lock;
+    try {
+      lock = readJson(file);
+    } catch (err) {
+      if (err.code === 'ENOENT') return 'gone';
+      return olderThan(file, LOCK_STALE_MS) ? 'dead' : {};
+    }
+    return isObj(lock) && Number.isInteger(lock.pid) && lock.pid > 0 && alive(lock.pid) ? lock : 'dead';
+  };
+  const brk = `${file}.break`;
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      make();
+      return null;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+    const o = owner();
+    if (o === 'gone') continue;
+    if (o !== 'dead') return o;
+    // 치우기 잠금을 기다린다(최대 약 1초). 쥔 채 죽은 것은 60초가 지나야 지운다
+    let took = false;
+    for (let w = 0; w < 50 && !took; w += 1) {
+      try {
+        writeFileSync(brk, String(process.pid), { flag: 'wx' });
+        took = true;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+        if (olderThan(brk, LOCK_STALE_MS)) rmSync(brk, { force: true });
+        else pause(20);
+      }
+    }
+    if (!took) break;
+    try {
+      if (owner() === 'dead') rmSync(file, { force: true });
+    } finally {
+      rmSync(brk, { force: true });
+    }
+  }
+  const o = owner();
+  return isObj(o) ? o : {};
+}
+
 function acquireLock(repo, command, run) {
   const held = readLock(repo);
-  if (held) fail(`이 저장소에서 이미 돌고 있는 명령이 있습니다: ${held.command} (pid ${held.pid}, ${held.startedAt} 시작). 끝난 뒤 다시 하세요. 진행 상황은 \`status\` 로 볼 수 있습니다.`);
+  if (held) busy(held);
   ensureIgnored(repo, ORCH_DIR);
-  writeJson(lockFile(repo), { pid: process.pid, command, startedAt: now(), ...(run ? { run } : {}) });
+  const other = createLock(lockFile(repo), { pid: process.pid, command, startedAt: now(), ...(run ? { run } : {}) });
+  if (other) busy(other);
   process.on('exit', (exitCode) => {
     // 끝 소식을 남기지 못한 채 끝나면(오류, 중단) 잠금을 지우기 전에 남긴다
     try {
@@ -1781,7 +1862,82 @@ function acquireLock(repo, command, run) {
     } catch {
       /* 이미 없으면 그만 */
     }
+    // 작업 모드의 결과는 잠금을 지운 뒤에: 결과를 보고 바로 띄운 다음 작업이 이 잠금에 지지 않게
+    writeResult(exitCode);
   });
+  if (worker) workerHeld();
+}
+
+// ------------------------------------------------------------------ 작업 프로세스(--worker)
+
+// 숨은 --worker: doctor·split·answer·run 을 터미널 없이 돌리는 작업 프로세스. 하는 일은 같고, 출력은 .orchestrator/worker/log 로,
+// 잠금을 잡으면 worker.json, 끝나면 result-<pid>.json 을 남긴다. heartbeat 파일이 heartbeatMs 동안 바뀌지 않으면 Ctrl+C 와 같이 멈춘다.
+export const WORKER_DEFAULTS = { heartbeatMs: 30 * 60000, pollMs: 5000 };
+const WORKER_COMMANDS = ['doctor', 'split', 'answer', 'run'];
+let worker = null; // 작업 모드의 상태. 작업 모드가 아니면 null
+
+/** 작업 모드를 시작한다: 출력을 log 로 돌리고, 잠금 전에 끝나는 경우의 결과 쓰기를 등록한다. */
+function startWorker(repo, command, argv, timing) {
+  const dir = path.join(repo, ORCH_DIR, 'worker');
+  mkdirSync(dir, { recursive: true });
+  const logFile = path.join(dir, 'log');
+  worker = { dir, command, args: argv.filter((a) => a !== '--worker'), timing, held: false, lost: false, written: false, delivered: false, error: '' };
+  // 모든 출력은 이 두 함수를 거친다. 동기로 덧붙여, 바로 뒤에 process.exit 해도 빠지지 않게
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.write = (chunk, encoding, cb) => {
+      const done = typeof encoding === 'function' ? encoding : cb;
+      try {
+        appendFileSync(logFile, typeof chunk === 'string' ? chunk : Buffer.from(chunk), typeof encoding === 'string' ? encoding : undefined);
+      } catch {
+        /* 로그를 못 써도 일은 계속한다 */
+      }
+      if (typeof done === 'function') process.nextTick(done);
+      return true;
+    };
+  }
+  // 잠금을 잡은 뒤의 결과는 acquireLock 의 종료 리스너가 잠금을 지운 다음에 쓴다
+  process.on('exit', (code) => {
+    if (!worker.held) writeResult(code);
+  });
+}
+
+/** 결과 파일을 한 번만 쓴다. 살아 있는 다른 잠금에 진 작업은 쓰지 않는다. */
+function writeResult(exitCode) {
+  if (!worker || worker.written || worker.lost) return;
+  worker.written = true;
+  try {
+    writeJson(path.join(worker.dir, `result-${process.pid}.json`), { pid: process.pid, command: worker.command, code: exitCode ?? process.exitCode ?? 0, error: worker.error, endedAt: now(), delivered: worker.delivered });
+  } catch {
+    /* 결과가 끝내 없으면 부른 쪽이 실패로 본다 */
+  }
+}
+
+/** 잠금을 잡은 직후: worker.json 을 쓰고 하트비트 감시를 시작한다. */
+function workerHeld() {
+  worker.held = true;
+  const owner = /^\d+$/.test(process.env.AM_HANDOVER_OWNER || '') && Number(process.env.AM_HANDOVER_OWNER) > 0 ? { owner: Number(process.env.AM_HANDOVER_OWNER) } : {};
+  writeJson(path.join(worker.dir, 'worker.json'), { pid: process.pid, command: worker.command, args: worker.args, startedAt: now(), ...owner });
+  // 폴링 횟수로만 센다: 벽시계를 보지 않아 잠자기·시계 변경에 속지 않는다
+  const { heartbeatMs, pollMs } = worker.timing;
+  const beat = path.join(worker.dir, 'heartbeat');
+  const read = () => {
+    try {
+      return readFileSync(beat, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  let last = read();
+  let still = 0;
+  setInterval(() => {
+    const cur = read();
+    if (cur === last) still += 1;
+    else [last, still] = [cur, 0];
+    if (still * pollMs >= heartbeatMs) {
+      worker.delivered = true;
+      interrupt(`하트비트가 ${Math.round(heartbeatMs / 1000)}초 동안 바뀌지 않아 멈췄습니다`);
+    }
+  }, pollMs).unref(); // 명령이 끝나면 프로세스도 끝나게
 }
 
 // ------------------------------------------------------------------ 이 PC 전체의 동시 세션 수
@@ -2997,10 +3153,11 @@ export function parseArgs(argv) {
   return { pos, opt };
 }
 
-async function main(argv) {
+async function main(argv, timing = WORKER_DEFAULTS) {
   const { pos, opt } = parseArgs(argv);
   const [cmd, a, ...rest] = pos;
   const repo = path.resolve(opt.repo || process.cwd());
+  if (opt.worker && WORKER_COMMANDS.includes(cmd) && !(cmd === 'run' && opt['dry-run'])) startWorker(repo, cmd, argv, timing);
   // 상태를 바꾸는 명령은 한 번에 하나만: 실행 중에 다른 명령이 끼어들지 못하게 잠근다
   // dry-run 을 구현한 것은 run 뿐이라 그것만 잠금 없이 돈다(다른 명령은 --dry-run 을 붙여도 실제로 실행된다)
   if (['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done'].includes(cmd) && !(cmd === 'run' && opt['dry-run'])) {
@@ -3047,18 +3204,23 @@ const isMain = () => {
   }
 };
 
-if (isMain()) {
-  // Ctrl+C 나 종료 신호: 돌고 있던 세션을 그대로 두면 혼자 계속 파일을 고치므로 함께 끝낸다.
-  // 상태는 단계가 바뀔 때마다 저장돼 있어, 다시 run 하면 끊긴 단계부터 이어 간다.
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(sig, () => {
-      for (const child of activeChildren) killTree(child);
-      if (onInterrupt) onInterrupt();
-      process.stderr.write('\n중단했습니다. 돌고 있던 세션도 끝냈습니다. 다시 `run` 하면 끊긴 단계부터 이어 갑니다.\n');
-      process.exit(130);
-    });
-  }
-  main(process.argv.slice(2)).catch((err) => {
+/** 중단: 돌고 있던 세션을 그대로 두면 혼자 계속 파일을 고치므로 함께 끝낸다. 상태는 단계가 바뀔 때마다 저장돼 있어, 다시 run 하면 끊긴 단계부터 이어 간다. */
+function interrupt(reason) {
+  for (const child of activeChildren) killTree(child);
+  if (onInterrupt) onInterrupt();
+  if (worker) worker.error = reason;
+  process.stderr.write('\n중단했습니다. 돌고 있던 세션도 끝냈습니다. 다시 `run` 하면 끊긴 단계부터 이어 갑니다.\n');
+  process.exit(130);
+}
+
+/** 명령줄 진입점. 시간 값은 테스트가 짧게 넘길 수 있게 매개변수로 받는다. */
+export async function cli(argv, timing = WORKER_DEFAULTS) {
+  // Ctrl+C 나 종료 신호
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => interrupt(`${sig} 신호를 받았습니다`));
+  try {
+    await main(argv, timing);
+  } catch (err) {
+    if (worker) worker.error = err && err.message ? err.message : String(err);
     if (err instanceof Halt || err instanceof PhaseError) {
       process.stderr.write(`\n${err.message}\n`);
       process.exitCode = 2;
@@ -3066,5 +3228,7 @@ if (isMain()) {
       process.stderr.write(`${err && err.stack ? err.stack : err}\n`);
       process.exitCode = 3;
     }
-  });
+  }
 }
+
+if (isMain()) cli(process.argv.slice(2));
