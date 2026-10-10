@@ -39,9 +39,12 @@
 // The command does not run the stage itself: it starts the worker below detached and follows it, writing the heartbeat,
 // and prints the worker's result line. A live worker of this task for the same stage and flags is followed instead; one of
 // another stage is waited for up to 8 minutes, then the call ends WAIT naming that stage. A stop signal goes to the worker.
+// A result of the same stage and flags that ended with nobody following is taken once by the next call instead of a new
+// start while plan.md and check.md are unchanged (stage-delivered-<pid> mark); a changed or other stage's result is dropped.
 // Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix]` runs the same stage
 // while holding .am/<slug>/stage-worker.json (one worker per task), logs to stage-worker.log, leaves the result line in
-// stage-result.json and stops (`failed`) when the follower's stage-heartbeat file stays the same for 30 minutes.
+// stage-result.json (its delivered mark: stage-delivered-<pid>) and stops (`failed`) when the follower's stage-heartbeat
+// file stays the same for 30 minutes.
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -85,6 +88,8 @@ export const FOLLOW_MS = 1000;
 export const FOLLOW_STOP_MS = 10000;
 // The worker's files under .am/<slug>/: its record, its result, its output log, and the heartbeat its follower writes.
 export const WORKER_FILES = { record: 'stage-worker.json', result: 'stage-result.json', log: 'stage-worker.log', heartbeat: 'stage-heartbeat' };
+// The delivered mark of a result: one per result, named by its worker's pid, claimed by creating it (`wx`).
+export const DELIVERED_PREFIX = 'stage-delivered-';
 // End markers each session may give; anything else is `failed`.
 export const MARKS = {
   plan: ['READY', 'NEEDS_DECISION'],
@@ -1193,11 +1198,32 @@ const jsonLine = (line) => {
   }
 };
 
+/** A task file's size and change time, or null when it cannot be read: what a result is compared with before it is delivered. */
+export function fileState(dir, name) {
+  try {
+    const s = statSync(path.join(dir, name));
+    return { size: s.size, mtimeMs: s.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/** Claims the result of the worker with this pid: `won` (this call made the mark), `taken` (it was there) or `error`. */
+export function claimResult(dir, pid) {
+  try {
+    writeFileSync(path.join(dir, `${DELIVERED_PREFIX}${pid}`), new Date().toISOString(), { flag: 'wx' });
+    return 'won';
+  } catch (err) {
+    return err?.code === 'EEXIST' ? 'taken' : 'error';
+  }
+}
+
 /**
  * Worker mode (`--worker`): runs main for one stage of one task while holding .am/<slug>/stage-worker.json, logs main's
  * output to stage-worker.log and leaves the result in stage-result.json (atomic, written once). It stops by the stop
  * path (`failed`) on a signal, when main throws, or when the follower's heartbeat file stays the same for idleMs; it
- * stops quietly (no result, no end event, record untouched) when its record is taken by another worker. Returns the
+ * stops quietly (no result, no end event, record untouched) when its record is taken by another worker. Once it holds
+ * the record it removes the delivered marks of older results (and a result left under its own, reused pid). Returns the
  * exit code; every wait is a parameter, the rest goes to main.
  */
 export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, busyMs = WORKER_BUSY_MS, busyPollMs = WORKER_BUSY_POLL_MS, idleMs = WORKER_IDLE_MS, exit = (c) => process.exit(c), on = (s, f) => process.on(s, f), out = process.stdout, ...rest } = {}) {
@@ -1243,6 +1269,19 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     log(`another stage worker of this task is running (pid ${lock.busy ?? '?'})\n`);
     return 1;
   }
+  // Marks of older results go; the mark of the result still on file stays, unless that result carries this pid (reused).
+  try {
+    let kept = readJson(file('result'))?.pid;
+    if (kept === process.pid) {
+      rmSync(file('result'), { force: true });
+      kept = null;
+    }
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith(DELIVERED_PREFIX) && name !== `${DELIVERED_PREFIX}${kept}`) rmSync(path.join(dir, name), { force: true });
+    }
+  } catch {
+    // A mark left behind names no result on file: it is never read.
+  }
   try {
     writeFileSync(file('log'), '');
   } catch {
@@ -1261,18 +1300,10 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     },
   };
   const failedLine = (reason) => stageLine(stage, slug, 'failed', reason);
-  const statOf = (name) => {
-    try {
-      const s = statSync(path.join(dir, name));
-      return { size: s.size, mtimeMs: s.mtimeMs };
-    } catch {
-      return null;
-    }
-  };
   const writeResult = (line, delivered) => {
     const target = file('result');
     const tmp = `${target}.${process.pid}.tmp`;
-    const res = { pid: process.pid, stage, push, fix, line, t: new Date(now()).toISOString(), delivered, plan: statOf('plan.md'), check: statOf('check.md') };
+    const res = { pid: process.pid, stage, push, fix, line, t: new Date(now()).toISOString(), delivered, plan: fileState(dir, 'plan.md'), check: fileState(dir, 'check.md') };
     try {
       writeFileSync(tmp, `${JSON.stringify(res)}\n`);
       renameSync(tmp, target);
@@ -1384,6 +1415,7 @@ const passStop = (target, sig) => {
  * The command without --worker: starts the stage as a detached worker and follows it, then prints the worker's result
  * line. A live worker of this task for the same stage and flags is followed instead; one of another stage is waited for
  * up to waitMs, then the call ends WAIT. A task without its folder runs main here (it ends at once with no file).
+ * Every result it prints is claimed by its delivered mark; before a start, a pending result is delivered or dropped.
  * Returns the exit code; every wait is a parameter, the rest goes to main.
  */
 export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, stopMs = FOLLOW_STOP_MS, workerCmd = [process.execPath, fileURLToPath(import.meta.url), '--worker'], kill = passStop, on = (s, f) => process.on(s, f), out = process.stdout, cwd = process.cwd(), env, now = Date.now, alive = pidAlive, ...rest } = {}) {
@@ -1406,7 +1438,46 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   const accepted = () => {
     const r = readJson(file('result'));
     if (!r || r.stage !== stage || r.push !== push || r.fix !== fix || typeof r.line !== 'string') return null;
-    return Date.parse(r.t) >= began ? r.line : null;
+    return Date.parse(r.t) >= began ? r : null;
+  };
+  const markable = (pid) => Number.isInteger(pid) && pid > 0;
+  // A result this call takes: printed first, then claimed (a follower prints it even when the claim is lost).
+  const take = (r, code) => {
+    print(r.line, code);
+    if (markable(r.pid)) claimResult(dir, r.pid);
+    return code;
+  };
+  // The result on file when nobody took it yet: not handed out at its worker's end, and not claimed.
+  const pending = () => {
+    const r = readJson(file('result'));
+    if (!r || !markable(r.pid) || typeof r.line !== 'string' || r.delivered === true) return null;
+    return existsSync(path.join(dir, `${DELIVERED_PREFIX}${r.pid}`)) ? null : r;
+  };
+  const sameState = (a, b) => (a === null || b === null ? a === b : Boolean(a) && a.size === b.size && a.mtimeMs === b.mtimeMs);
+  // Whether a pending result may stand for this call: same stage and flags, not a wait, not a stop, and plan.md and
+  // check.md as it left them. Its age does not count.
+  const deliverable = (r) => {
+    if (r.stage !== stage || r.push !== push || r.fix !== fix) return false;
+    let line = null;
+    try {
+      line = JSON.parse(r.line);
+    } catch {
+      return false;
+    }
+    if (!line || typeof line !== 'object' || line.status === 'WAIT') return false;
+    if (line.status === 'failed' && String(line.reason ?? '').startsWith('stopped by ')) return false;
+    return sameState(r.plan, fileState(dir, 'plan.md')) && sameState(r.check, fileState(dir, 'check.md'));
+  };
+  // Before a worker starts: the pending result's line when it may be delivered and this call claimed it or lost the
+  // claim to another call; any other pending result is claimed only, so that it never comes back.
+  const fromPending = () => {
+    const r = pending();
+    if (!r) return null;
+    if (!deliverable(r)) {
+      claimResult(dir, r.pid);
+      return null;
+    }
+    return claimResult(dir, r.pid) === 'error' ? null : r.line;
   };
   let suspectSeen = null; // {snap, at}: the first look at a record that was only suspect
   // The record now: `same` (a live worker of this stage and flags), `other`, `suspect` (not yet confirmed) or `none`.
@@ -1499,18 +1570,23 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
       }
       if (target) {
         kill(target, s);
+        // Its stop is told here: the next call must not get that result again.
+        if (markable(target.pid)) claimResult(dir, target.pid);
         stopAt = Date.now() + stopMs;
       }
       wake?.();
     });
   }
   for (;;) {
-    const line = accepted();
-    if (line) return print(line, sig ? 1 : 0);
+    const got = accepted();
+    if (got) return take(got, sig ? 1 : 0);
     if (sig) {
       if (!target) return 1;
       const ended = target === child ? child.done : !liveAttached();
-      if (ended || Date.now() >= stopAt) return print(accepted() || stageLine(stage, slug, 'failed', `stopped by ${sig}`), 1);
+      if (ended || Date.now() >= stopAt) {
+        const last = accepted();
+        return last ? take(last, 1) : print(stageLine(stage, slug, 'failed', `stopped by ${sig}`), 1);
+      }
     } else {
       const seen = look();
       if (seen.kind === 'same') {
@@ -1532,13 +1608,22 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
           // That stage ended before this look: start this one now.
           child = null;
           sawOther = false;
+          const held = fromPending();
+          if (held) return print(held, 0);
           start();
         } else if (child || attached !== null || spawnError) {
           // What was followed ended: its result or a new owner may have come just now.
           const again = accepted();
-          if (again) return print(again, 0);
+          if (again) return take(again, 0);
+          // Attached just as it ended, after its result was written: that result, once.
+          const left = pending();
+          if (left && deliverable(left) && claimResult(dir, left.pid) !== 'error') return print(left.line, 0);
           if (look().kind === 'none') return print(stageLine(stage, slug, 'failed', spawnError || `the stage worker ended without a result; see .am/${slug}/${WORKER_FILES.log}`), 0);
-        } else start();
+        } else {
+          const held = fromPending();
+          if (held) return print(held, 0);
+          start();
+        }
       }
     }
     await sleep(followMs);

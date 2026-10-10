@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState } from '../plugin/scripts/stage.mjs';
 import { formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -2583,6 +2583,47 @@ test('worker: bad arguments print the usage and make no file', async (t) => {
   assert.deepEqual([readOr(WF(dir, 'record')), readOr(WF(dir, 'log'))], [null, null]);
 });
 
+const TASK = (dir) => path.join(dir, '.am', 'demo');
+const markerOf = (dir, pid) => existsSync(path.join(TASK(dir), `${DELIVERED_PREFIX}${pid}`));
+const markers = (dir) => readdirSync(TASK(dir)).filter((f) => f.startsWith(DELIVERED_PREFIX)).sort();
+
+test('claimResult: the first claim wins, the next finds it taken, a missing folder is an error', (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  assert.equal(claimResult(TASK(dir), 4242), 'won');
+  assert.equal(claimResult(TASK(dir), 4242), 'taken');
+  assert.ok(markerOf(dir, 4242));
+  assert.equal(claimResult(path.join(dir, 'missing'), 4242), 'error');
+  assert.deepEqual(fileState(TASK(dir), 'nothing.md'), null);
+});
+
+test('worker: once it holds the record it removes older delivered marks, and a result under its own pid; a blocked worker removes none', async (t) => {
+  const kept = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  writeFileSync(WF(kept, 'result'), resultOf({ stage: 'check', line: stageLine('check', 'demo', 'NOTE', '') }));
+  for (const pid of [LIVE, 777]) claimResult(TASK(kept), pid);
+  const w = startWorker(kept, ['check', 'demo']);
+  await until(() => existsSync(path.join(kept, 'calls.jsonl')));
+  assert.deepEqual(markers(kept), [`${DELIVERED_PREFIX}${LIVE}`]);
+  w.handlers.SIGTERM();
+  assert.equal(await w.done, 1);
+
+  const reused = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  writeFileSync(WF(reused, 'result'), resultOf({ pid: process.pid, stage: 'check', line: stageLine('check', 'demo', 'NOTE', '') }));
+  claimResult(TASK(reused), process.pid);
+  const v = startWorker(reused, ['check', 'demo']);
+  await until(() => existsSync(path.join(reused, 'calls.jsonl')));
+  assert.deepEqual([readOr(WF(reused, 'result')), markers(reused)], [null, []]);
+  v.handlers.SIGTERM();
+  assert.equal(await v.done, 1);
+
+  const blocked = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(blocked, 'record'), JSON.stringify({ pid: LIVE, t: 1, stage: 'do' }));
+  writeFileSync(WF(blocked, 'result'), resultOf({ pid: process.pid, stage: 'do', line: stageLine('do', 'demo', 'DONE', '') }));
+  for (const pid of [process.pid, 777]) claimResult(TASK(blocked), pid);
+  assert.equal(await startWorker(blocked, ['check', 'demo'], { alive: aliveOnly, busyMs: 100, busyPollMs: 20 }).done, 1);
+  assert.deepEqual(markers(blocked), [`${DELIVERED_PREFIX}${process.pid}`, `${DELIVERED_PREFIX}777`].sort());
+  assert.ok(readOr(WF(blocked, 'result')));
+});
+
 test('worker: reads no environment variable; its times are parameters', () => {
   assert.ok(!String(worker).includes('process.env'));
 });
@@ -2782,6 +2823,124 @@ test('follow: the command with bad arguments prints the usage, exits 1 and start
   assert.equal(r.status, 1);
   assert.match(r.stdout, /^bad arguments[^]*usage: node stage\.mjs/);
   assert.deepEqual(Object.values(WORKER_FILES).filter((name) => existsSync(path.join(dir, '.am', 'demo', name))), []);
+});
+
+const planState = (dir) => fileState(TASK(dir), 'plan.md');
+const HOUR_AGO = Date.now() - 3600000;
+// A result left before the call began (a result dated at the call's start is that call's own).
+const earlier = (fields) => resultOf(fields, Date.now() - 1000);
+
+test('follow: a result that ended with nobody following goes once to the next call of its stage, whatever its age', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  assert.equal(await startWorker(dir, ['plan', 'demo']).done, 0);
+  const { result } = workerState(dir);
+  await pause(20); // calls after the result, not in its millisecond
+  const f = startFollow(dir, ['plan', 'demo'], { workerCmd: NO_SPAWN });
+  assert.equal(await f.done, 0);
+  assert.equal(f.text, `${result.line}\n`);
+  assert.ok(!spawned(dir));
+  assert.ok(markerOf(dir, process.pid));
+  await startFollow(dir, ['plan', 'demo'], { workerCmd: NO_SPAWN }).done;
+  assert.ok(spawned(dir), 'a delivered result is not given again');
+
+  const old = makeRepo(t, { plan: SMALL });
+  const line = stageLine('plan', 'demo', 'READY', '');
+  writeFileSync(WF(old, 'result'), resultOf({ stage: 'plan', line, plan: planState(old) }, HOUR_AGO));
+  const g = startFollow(old, ['plan', 'demo'], { workerCmd: NO_SPAWN });
+  assert.equal(await g.done, 0);
+  assert.equal(g.text, `${line}\n`);
+  assert.ok(!spawned(old));
+  assert.ok(markerOf(old, LIVE));
+
+  const handed = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(handed, 'result'), earlier({ stage: 'plan', line, plan: planState(handed), delivered: true }));
+  const h = startFollow(handed, ['plan', 'demo'], { workerCmd: NO_SPAWN });
+  await h.done;
+  assert.ok(spawned(handed));
+  assert.notEqual(h.text, `${line}\n`);
+});
+
+test('follow: a pending result of another stage, other flags, a wait or a stop is dropped and this stage runs', async (t) => {
+  const lines = [
+    { stage: 'do', line: stageLine('do', 'demo', 'DONE', '') },
+    { stage: 'check', fix: true, line: stageLine('check', 'demo', 'NOTE', 'fixed') },
+    { stage: 'check', line: stageLine('check', 'demo', 'WAIT', 'waiting') },
+    { stage: 'check', line: stageLine('check', 'demo', 'failed', 'stopped by SIGTERM') },
+  ];
+  for (const fields of lines) {
+    const dir = makeRepo(t, { plan: SMALL, fake: NOTED });
+    writeFileSync(WF(dir, 'result'), earlier({ ...fields, plan: planState(dir) }));
+    const f = startFollow(dir, ['check', 'demo']);
+    assert.equal(await f.done, 0);
+    const out = JSON.parse(f.text);
+    assert.deepEqual([out.stage, out.status], ['check', 'NOTE'], fields.line);
+    assert.equal(callsOf(dir).trim().split('\n').length, 1);
+    assert.ok(markerOf(dir, LIVE), fields.line);
+  }
+});
+
+test('follow: a pending result is not delivered once plan.md or check.md changed', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(dir, 'result'), earlier({ stage: 'plan', line: stageLine('plan', 'demo', 'NEEDS_DECISION', 'a question'), plan: planState(dir) }));
+  appendFileSync(path.join(TASK(dir), 'plan.md'), '- Answer: the first option\n');
+  const f = startFollow(dir, ['plan', 'demo']);
+  assert.equal(await f.done, 0);
+  assert.equal(JSON.parse(f.text).status, 'READY');
+  assert.equal(callsOf(dir).trim().split('\n').length, 1);
+
+  const checked = makeRepo(t, { plan: SMALL, fake: NOTED });
+  writeFileSync(path.join(TASK(checked), 'check.md'), '# check\n');
+  const before = fileState(TASK(checked), 'check.md');
+  writeFileSync(WF(checked, 'result'), earlier({ stage: 'check', line: stageLine('check', 'demo', 'BLOCK', 'old'), plan: planState(checked), check: before }));
+  utimesSync(path.join(TASK(checked), 'check.md'), new Date(HOUR_AGO), new Date(HOUR_AGO));
+  const g = startFollow(checked, ['check', 'demo']);
+  assert.equal(await g.done, 0);
+  assert.equal(JSON.parse(g.text).status, 'NOTE');
+});
+
+test('follow: the result a follower printed is claimed, so the next call runs the stage again', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const f = startFollow(dir, ['plan', 'demo']);
+  assert.equal(await f.done, 0);
+  const { result } = workerState(dir);
+  assert.equal(f.text, `${result.line}\n`);
+  assert.ok(markerOf(dir, result.pid));
+  const g = startFollow(dir, ['plan', 'demo']);
+  assert.equal(await g.done, 0);
+  assert.equal(JSON.parse(g.text).status, 'READY');
+  assert.equal(callsOf(dir).trim().split('\n').length, 2);
+});
+
+test('follow: a stop signal claims the followed worker\'s result at once; its later result is not given to the next call', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(dir, 'record'), record({ stage: 'check' }));
+  const f = startFollow(dir, ['check', 'demo'], { workerCmd: NO_SPAWN, alive: aliveOnly, kill: () => {}, stopMs: 100 });
+  await until(() => heartbeatOf(dir));
+  f.handlers.SIGTERM();
+  assert.ok(markerOf(dir, LIVE));
+  assert.equal(await f.done, 1);
+  assert.deepEqual(JSON.parse(f.text).reason, 'stopped by SIGTERM');
+  const line = stageLine('check', 'demo', 'NOTE', 'late');
+  writeFileSync(WF(dir, 'result'), earlier({ stage: 'check', line, plan: planState(dir) }));
+  rmSync(WF(dir, 'record'));
+  const g = startFollow(dir, ['check', 'demo'], { workerCmd: NO_SPAWN });
+  await g.done;
+  assert.ok(spawned(dir));
+  assert.notEqual(g.text, `${line}\n`);
+});
+
+test('follow: a worker followed just as it ended leaves its earlier result to this call, not `failed`', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(dir, 'record'), record({ stage: 'check' }));
+  const line = stageLine('check', 'demo', 'NOTE', 'ended');
+  writeFileSync(WF(dir, 'result'), resultOf({ stage: 'check', line, plan: planState(dir) }, Date.now() - 1000));
+  const f = startFollow(dir, ['check', 'demo'], { workerCmd: NO_SPAWN, alive: aliveOnly });
+  await until(() => heartbeatOf(dir));
+  rmSync(WF(dir, 'record'));
+  assert.equal(await f.done, 0);
+  assert.equal(f.text, `${line}\n`);
+  assert.ok(!spawned(dir));
+  assert.ok(markerOf(dir, LIVE));
 });
 
 test('follow: reads no environment variable; its times are parameters', () => {
