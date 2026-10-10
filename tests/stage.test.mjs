@@ -8,8 +8,8 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState } from '../plugin/scripts/stage.mjs';
-import { formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning } from '../plugin/scripts/stage.mjs';
+import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
@@ -251,6 +251,10 @@ test('am:auto and the hand-over stage log the same fixed hand-over line, and rea
   for (const text of [AUTO, instructions('handover', 'demo').system]) {
     assert.match(text, /in English whatever the plan's language/);
     assert.match(text, /\(a stop reason[^)]*\) starts with `Hand-over:`/);
+    // The orchestrator's split ends with exit code 4 while it still runs: called again before the run ID is read.
+    const still = /`split` ends with exit code 4, it is still running: run `split` again with no argument until it ends with another code, before you read `run\.id`/i.exec(text);
+    assert.ok(still, 'split exit code 4 is followed on');
+    assert.ok(still.index < text.indexOf('has made the run'), 'before the run ID is read');
   }
 });
 
@@ -2806,6 +2810,80 @@ test('follow: a stop signal goes to the worker and ends the call with exit 1; wh
   assert.equal(await g.done, 1);
   assert.ok(Date.now() - began < 1000);
   assert.equal(g.text, '');
+});
+
+test('follow: the limit is the progress command\'s lifetime; the start time reads HH:MM', () => {
+  assert.equal(FOLLOW_LIMIT_MS, DEFAULTS.maxLifeMs);
+  assert.equal(hhmm(new Date(2026, 0, 1, 7, 5).getTime()), '07:05');
+  assert.equal(hhmm(new Date(2026, 0, 1, 23, 59).getTime()), '23:59');
+  assert.equal(hhmm('x'), '??:??');
+  assert.equal(stillRunning('do', new Date(2026, 0, 1, 7, 5).getTime()), 'the do stage is still running (started 07:05)');
+});
+
+test('follow: at its limit the call ends WAIT with the worker\'s start time while the worker runs on; called again it follows on', async (t) => {
+  const dir = makeRepo(t, { fake: { ...PLANNED, delay: 4000 } });
+  const f = startFollow(dir, ['plan', 'demo'], { limitMs: 800 });
+  assert.equal(await f.done, 0);
+  assert.equal(f.text.trim().split('\n').length, 1, f.text);
+  const line = JSON.parse(f.text);
+  const rec = JSON.parse(readOr(WF(dir, 'record')));
+  assert.deepEqual([line.status, line.reason], ['WAIT', stillRunning('plan', rec.t)]);
+  assert.ok(pidAlive(rec.pid), 'the worker runs on');
+  assert.deepEqual([readOr(WF(dir, 'result')), markers(dir), ends(events(dir))], [null, [], []]);
+  // The same words through the whole run.
+  const g = startFollow(dir, ['plan', 'demo'], { limitMs: 800 });
+  assert.equal(await g.done, 0);
+  assert.equal(JSON.parse(g.text).reason, line.reason);
+  // Called again with another run holding the start lock: it follows the same worker before that lock and gets its line.
+  writeFileSync(LOCK(dir), JSON.stringify({ pid: process.pid, t: Date.now() }));
+  const h = startFollow(dir, ['plan', 'demo'], { workerCmd: NO_SPAWN });
+  assert.equal(await h.done, 0);
+  assert.equal(JSON.parse(h.text).status, 'READY');
+  assert.ok(!spawned(dir));
+  assert.equal(callsOf(dir).trim().split('\n').length, 1);
+  assert.equal(events(dir).filter((e) => e.ev === 'start').length, 1);
+});
+
+test('follow: a limit before the worker\'s record names the call\'s start; while another stage runs it keeps that wait\'s reason', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const T = new Date(2026, 9, 11, 9, 30).getTime();
+  const f = startFollow(dir, ['plan', 'demo'], { workerCmd: [process.execPath, '-e', 'setTimeout(() => {}, 2000)'], now: () => T, limitMs: 300 });
+  assert.equal(await f.done, 0);
+  assert.deepEqual([JSON.parse(f.text).status, JSON.parse(f.text).reason], ['WAIT', stillRunning('plan', T)]);
+
+  const other = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(other, 'record'), record({ stage: 'do', fix: true }));
+  const began = Date.now();
+  const g = startFollow(other, ['check', 'demo'], { workerCmd: NO_SPAWN, alive: aliveOnly, waitMs: 5000, limitMs: 300 });
+  assert.equal(await g.done, 0);
+  assert.ok(Date.now() - began < 1000);
+  const line = JSON.parse(g.text);
+  assert.deepEqual([line.status, line.reason], ['WAIT', `waiting for another stage of this task: the do --fix stage is still running (pid ${LIVE})`]);
+  assert.ok(!spawned(other));
+});
+
+test('follow: after a stop signal the limit no longer counts: the call ends `failed` with exit 1, not WAIT', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const f = startFollow(dir, ['check', 'demo'], { kill: () => {}, stopMs: 3000, limitMs: 1500 });
+  // The heartbeat starts before the worker writes its record: wait for the record itself.
+  let pid = null;
+  await until(() => {
+    try {
+      pid = JSON.parse(readOr(WF(dir, 'record'))).pid;
+    } catch {
+      // Not written yet.
+    }
+    return pid;
+  });
+  const began = Date.now();
+  f.handlers.SIGTERM();
+  assert.equal(await f.done, 1);
+  assert.ok(Date.now() - began >= 1500, 'the limit passed while it stopped');
+  const line = JSON.parse(f.text);
+  assert.deepEqual([line.status, line.reason], ['failed', 'stopped by SIGTERM']);
+  // The fake kill left the worker running: stop it here, before the folder goes.
+  process.kill(pid, 'SIGTERM');
+  await until(() => !pidAlive(pid));
 });
 
 test('follow: a task without its folder ends as main does, with no file', async (t) => {

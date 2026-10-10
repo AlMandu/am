@@ -35,10 +35,12 @@
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
-// stage again). Exit codes: 0 result printed, 1 bad input or stopped by a signal.
+// stage again), or the follow limit (about 8.5 minutes) passed while the stage still runs (reason `the <stage> stage is still
+// running (started HH:MM)`). Exit codes: 0 result printed, 1 bad input or stopped by a signal.
 // The command does not run the stage itself: it starts the worker below detached and follows it, writing the heartbeat,
 // and prints the worker's result line. A live worker of this task for the same stage and flags is followed instead; one of
 // another stage is waited for up to 8 minutes, then the call ends WAIT naming that stage. A stop signal goes to the worker.
+// Called again after a WAIT at the follow limit, it follows the same worker on.
 // A result of the same stage and flags that ended with nobody following is taken once by the next call instead of a new
 // start while plan.md and check.md are unchanged (stage-delivered-<pid> mark); a changed or other stage's result is dropped.
 // Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix]` runs the same stage
@@ -86,6 +88,17 @@ export const WORKER_IDLE_MS = 30 * 60000;
 export const FOLLOW_MS = 1000;
 // How long the follower keeps following after it passed a stop signal on to the worker.
 export const FOLLOW_STOP_MS = 10000;
+// How long one follow call lasts: then it ends WAIT and the worker keeps running. The same value as progress.mjs's
+// maxLifeMs, inside the 10-minute limit of a background command.
+export const FOLLOW_LIMIT_MS = 510000;
+// A time as local HH:MM (24-hour, two digits each); `??:??` for a value that is not a time.
+export const hhmm = (t) => {
+  const d = new Date(t);
+  if (typeof t !== 'number' || Number.isNaN(d.getTime())) return '??:??';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+// The WAIT reason of a follow call that reached its limit while the stage still runs.
+export const stillRunning = (stage, t) => `the ${stage} stage is still running (started ${hhmm(t)})`;
 // The worker's files under .am/<slug>/: its record, its result, its output log, and the heartbeat its follower writes.
 export const WORKER_FILES = { record: 'stage-worker.json', result: 'stage-result.json', log: 'stage-worker.log', heartbeat: 'stage-heartbeat' };
 // The delivered mark of a result: one per result, named by its worker's pid, claimed by creating it (`wx`).
@@ -309,7 +322,7 @@ const STAGE_RULES = {
 - This stage cannot finish when a step's Check fails and you cannot fix it: leave the files as they are, record what failed in plan.md, and end with AM_STAGE: BLOCKED.
 - ${MARK('do')}`,
   handover: (slug, { push, resume }) => `This is the implementation stage for .am/${slug}/plan.md, handed to the am-orchestrator run skill because the plan is larger than one implementation run or one commit. You were started with the run skill. Drive it to the end by its Steps, with these additions from am:auto:
-- ${resume ? 'The Change log of the plan already records the hand-over with a run ID. Check that `status --json` shows the same `run.id` (if not, end with AM_STAGE: BLOCKED and say why). If the log also records the merge, only the push below is left.' : 'Before `split`, note `run.id` from `status --json` (none if `run` is null). Once `split` has made the run (`run.id` present and not the noted one; otherwise end with AM_STAGE: BLOCKED and say why), log exactly this one line in the Change log of the plan, in English whatever the plan\'s language, with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run.id>, start branch <branch>`.'} No other line you log (a stop reason before AM_STAGE: BLOCKED, for example) starts with \`Hand-over:\`.
+- ${resume ? 'The Change log of the plan already records the hand-over with a run ID. Check that `status --json` shows the same `run.id` (if not, end with AM_STAGE: BLOCKED and say why). If the log also records the merge, only the push below is left.' : 'Before `split`, note `run.id` from `status --json` (none if `run` is null). If `split` ends with exit code 4, it is still running: run `split` again with no argument until it ends with another code, before you read `run.id`. Once `split` has made the run (`run.id` present and not the noted one; otherwise end with AM_STAGE: BLOCKED and say why), log exactly this one line in the Change log of the plan, in English whatever the plan\'s language, with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run.id>, start branch <branch>`.'} No other line you log (a stop reason before AM_STAGE: BLOCKED, for example) starts with \`Hand-over:\`.
 - Its \`decide\` questions are scope or screen questions: decide them as above and pass each answer with \`decide\`. Its \`answer\` and \`blocked\` questions, and any question of its Prepare step, are stops: write the card into plan.md as above. When plan.md holds the user's answer to such a card, pass it to the run skill (\`answer\`, \`decide\`), or carry out exactly the action the answer names (for example write am-gate.json and commit it, or commit or stash the changes it names) and nothing more.
 - Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, check out the start branch and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits).
 - Do not run the \`progress\` command of the run skill's script, even where the skill says to start it: nobody reads this session, and the am stage runner copies the run's news into this task's event file itself.
@@ -1416,9 +1429,10 @@ const passStop = (target, sig) => {
  * line. A live worker of this task for the same stage and flags is followed instead; one of another stage is waited for
  * up to waitMs, then the call ends WAIT. A task without its folder runs main here (it ends at once with no file).
  * Every result it prints is claimed by its delivered mark; before a start, a pending result is delivered or dropped.
+ * After limitMs the call ends WAIT and the worker keeps running; called again, it follows the same worker on.
  * Returns the exit code; every wait is a parameter, the rest goes to main.
  */
-export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, stopMs = FOLLOW_STOP_MS, workerCmd = [process.execPath, fileURLToPath(import.meta.url), '--worker'], kill = passStop, on = (s, f) => process.on(s, f), out = process.stdout, cwd = process.cwd(), env, now = Date.now, alive = pidAlive, ...rest } = {}) {
+export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, stopMs = FOLLOW_STOP_MS, limitMs = FOLLOW_LIMIT_MS, workerCmd = [process.execPath, fileURLToPath(import.meta.url), '--worker'], kill = passStop, on = (s, f) => process.on(s, f), out = process.stdout, cwd = process.cwd(), env, now = Date.now, alive = pidAlive, ...rest } = {}) {
   const args = stageArgs(argv);
   if (!args) {
     out.write(BAD_ARGS);
@@ -1430,6 +1444,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   const file = (name) => path.join(dir, WORKER_FILES[name]);
   const began = now();
   const waitBegan = Date.now(); // the waits are timed by the clock that setTimeout uses
+  const limitBegan = performance.now(); // the limit by a clock that a change of the system time does not move
   const print = (line, code) => {
     out.write(`${line}\n`);
     return code;
@@ -1480,6 +1495,8 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
     return claimResult(dir, r.pid) === 'error' ? null : r.line;
   };
   let suspectSeen = null; // {snap, at}: the first look at a record that was only suspect
+  let followedT = null; // start time on the record of the live same-stage worker last followed
+  let lastSeen = null; // the last look
   // The record now: `same` (a live worker of this stage and flags), `other`, `suspect` (not yet confirmed) or `none`.
   const look = () => {
     const ready = Boolean(suspectSeen) && Date.now() - suspectSeen.at >= confirmMs;
@@ -1494,10 +1511,14 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
     }
     suspectSeen = null;
     const r = readJson(file('record'));
-    if (r && r.stage === stage && r.push === push && r.fix === fix) return { kind: 'same', pid: r.pid };
+    if (r && r.stage === stage && r.push === push && r.fix === fix) {
+      if (typeof r.t === 'number') followedT = r.t;
+      return { kind: 'same', pid: r.pid };
+    }
     const name = r && typeof r.stage === 'string' ? `${r.stage}${r.push ? ' --push' : ''}${r.fix ? ' --fix' : ''}` : 'other';
     return { kind: 'other', pid: r?.pid ?? '?', name };
   };
+  const otherReason = (seen) => `waiting for another stage of this task: the ${seen.name} stage is still running (pid ${seen.pid})`;
   let beats = 0;
   const heartbeat = () => {
     try {
@@ -1580,6 +1601,9 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   for (;;) {
     const got = accepted();
     if (got) return take(got, sig ? 1 : 0);
+    if (!sig && performance.now() - limitBegan >= limitMs) {
+      return print(stageLine(stage, slug, 'WAIT', lastSeen?.kind === 'other' ? otherReason(lastSeen) : stillRunning(stage, followedT ?? began)), 0);
+    }
     if (sig) {
       if (!target) return 1;
       const ended = target === child ? child.done : !liveAttached();
@@ -1589,6 +1613,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
       }
     } else {
       const seen = look();
+      lastSeen = seen;
       if (seen.kind === 'same') {
         attached = seen.pid;
         if (child && seen.pid === child.pid) ownHeld = true;
@@ -1600,7 +1625,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
           sawOther = false;
         }
         if (!(child && !child.done) && Date.now() - waitBegan >= waitMs) {
-          return print(stageLine(stage, slug, 'WAIT', `waiting for another stage of this task: the ${seen.name} stage is still running (pid ${seen.pid})`), 0);
+          return print(stageLine(stage, slug, 'WAIT', otherReason(seen)), 0);
         }
       } else if (seen.kind === 'none') {
         if (child && !child.done) heartbeat();

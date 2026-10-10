@@ -106,6 +106,8 @@ test('am:auto drives the stage runner and handles every status it prints', async
   assert.ok(auto.includes('`.am/<slug>/request.md`'));
   for (const status of [...new Set(Object.values(MARKS).flat()), 'failed', 'unavailable', 'WAIT']) assert.ok(auto.includes(`\`${status}\``), `status ${status}`);
   for (const field of ['status', 'reason', 'reply', 'compacted']) assert.ok(auto.includes(`\`${field}\``), field);
+  // A follow call that reached its limit ends WAIT while the stage still runs.
+  assert.match(auto, /`WAIT` \(any stage\):[^\n]*, or the stage is still running;/);
 });
 
 test('am:auto starts the progress command next to every stage command', async () => {
@@ -120,6 +122,9 @@ test('am:auto starts the progress command next to every stage command', async ()
   assert.ok(section.includes(`\`${stateLine([])}\``), 'state: ended');
   assert.ok(section.includes('each `second opinion:` line gets its own plain line: what had to be decided and which option was chosen, and whether Codex agreed'));
   assert.ok(section.includes('other than its `second opinion:` lines'));
+  // After a WAIT at the follow limit the same stage runs on: one progress command, kept going while a stage command runs.
+  assert.ok(section.includes('--consumer main` from the repository root in the background unless one is still running'));
+  assert.ok(section.includes('has already ended and no stage command of this task is running now'));
   // The skill relays news by this prefix; a changed prefix would silently drop the plain line.
   assert.ok(readFileSync(path.join(ROOT, '..', 'scripts', 'stage.mjs'), 'utf8').includes('text: `second opinion: ${line}`'));
 });
