@@ -2242,6 +2242,9 @@ async function cmdDoctor(repo, opt) {
   if (unshared) warn(`이 PC 의 동시 세션 제한 ${limit.max}개(${limitNote}): 기록 폴더에 쓸 수 없어(${unshared}) 다른 실행과 함께 세지 못합니다. 한 실행 안에서는 지킵니다: ${sessionsDir()}`);
   else if (limit.source === 'invalid' || limit.source === 'unreadable') warn(`이 PC 의 동시 세션 제한 ${limit.max}개(${limitNote}). \`sessions <N>\` 으로 다시 정하세요: ${settingsFile()}`);
   else ok(`이 PC 의 동시 세션 제한 ${limit.max}개(${limitNote}, 모든 실행을 합쳐 셈). 바꾸려면 \`sessions <N>\``);
+  // 오케스트레이터 settings.json 의 minFreeMemoryMB 는 읽지 않는다: 잘못 적은 자리를 알려 준다
+  const orchSettings = readSettings();
+  if (orchSettings && Object.hasOwn(orchSettings, 'minFreeMemoryMB')) warn(`${settingsFile()} 의 minFreeMemoryMB(${JSON.stringify(orchSettings.minFreeMemoryMB)})는 쓰이지 않습니다. PC 전체 남은 메모리 기준은 ${userSettingsFile(process.env)} 의 minFreeMemoryMB 에 적으세요(저장소별 값은 .orchestrator/config.json).`);
   const parallel = Math.max(1, Math.floor(Number(ctx.cfg.parallel)) || 1);
   const key = worktreeKey(repo, ctx.cfg);
   if (!existsSync(path.join(repo, 'am-gate.json'))) {

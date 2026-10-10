@@ -13,6 +13,7 @@
 - `.orchestrator/config.json` 에 `minFreeMemoryMB` 를 적지 않았거나 잘못 적었으면(예: "6GB") am:auto 와 같은 PC 전체 설정 파일 `~/.claude/am/settings.json` 의 `minFreeMemoryMB` 를 쓴다. 순서는 저장소 값 → PC 전체 값 → 기본이다.
 - 이 PC 전체 설정 파일이 깨졌으면 세션을 띄우기 전에 그 파일 경로를 알리며 멈춘다.
 - 남은 메모리 대기 줄이 기준을 어디서 가져왔는지(저장소 설정, PC 전체 파일, 기본값) 알린다.
+- `doctor` 가 `~/.claude/am-orchestrator/settings.json` 에 적힌 `minFreeMemoryMB` 를 찾으면, 그 값은 쓰이지 않으며 PC 전체 기준은 `~/.claude/am/settings.json` 에 적으라고 경고한다(doctor 를 실패시키지는 않는다).
 
 ## 0.1.34 (2026-10-10)
 

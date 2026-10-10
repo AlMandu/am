@@ -114,6 +114,26 @@ test('doctor: am 이 오래돼 필요한 스킬이 없으면 업데이트를 안
   assert.doesNotMatch(nd.out, /오래돼/);
 });
 
+test('doctor: 오케스트레이터 settings.json 에 적은 minFreeMemoryMB 는 쓰이지 않는다고 경고만 하고 실패시키지 않는다', () => {
+  const r = makeRepo();
+  const orchFile = path.join(r.home, 'am-orchestrator', 'settings.json');
+  const amFile = path.join(r.home, 'am', 'settings.json');
+  const none = r.orch('doctor');
+  assert.equal(none.code, 0, none.out);
+  assert.doesNotMatch(none.out, /쓰이지 않습니다/);
+  mkdirSync(path.dirname(orchFile), { recursive: true });
+  writeFileSync(orchFile, JSON.stringify({ maxSessions: 2 }));
+  const plain = r.orch('doctor');
+  assert.equal(plain.code, 0, plain.out);
+  assert.doesNotMatch(plain.out, /쓰이지 않습니다/);
+  writeFileSync(orchFile, JSON.stringify({ maxSessions: 2, minFreeMemoryMB: 6144 }));
+  const d = r.orch('doctor');
+  assert.equal(d.code, 0, d.out);
+  assert.ok(d.out.includes(`  ! ${orchFile} 의 minFreeMemoryMB(6144)는 쓰이지 않습니다. PC 전체 남은 메모리 기준은 ${amFile} 의 minFreeMemoryMB 에 적으세요`), d.out);
+  assert.match(d.out, /준비됐습니다/);
+  assert.equal(statusJson(r).ready, true);
+});
+
 // ------------------------------------------------------------------ 동시 진행
 
 test('doctor 는 설정 파일이 없으면 만들고, am 플러그인을 곁에서 찾는다(같은 저장소, 같은 마켓플레이스 설치)', () => {
