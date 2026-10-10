@@ -1,6 +1,7 @@
 // Run: node --test tests/orchestrator-follow.test.mjs
 // 숨은 작업 모드(--worker): 출력은 .orchestrator/worker/log 로, 잠금을 잡으면 worker.json, 끝나면 result-<pid>.json, 하트비트가 멈추면 130.
 // 따라가기(--worker 없이 부른 doctor·split·answer·run): 작업을 띄우거나 같은 명령의 살아 있는 작업에 붙어 그 log 범위를 내고 작업의 코드로 끝난다.
+// 한도(followLimitMs)에 닿으면 '아직 진행 중' 한 줄과 4, 다시 부르면 이어 따라간다.
 // 전달: 따라가기 없이 끝난 결과(하트비트 시간 안)는 같은 명령의 다음 호출이 새로 띄우지 않고 한 번 낸다. 다른 명령이 성공하면 전달된 것으로 본다.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -250,6 +251,36 @@ test('따라가기 (a) 빠른 명령: 작업의 log 범위를 내고 그 코드�
   assert.equal(q.status, 2);
   assert.match(q.stderr, /git 저장소가 아닙니다/);
   assert.ok(!existsSync(path.join(dir, '.orchestrator')));
+});
+
+// Windows 에서는 따라가기를 끊고 다시 붙는 흐름을 같은 방식으로 검사하지 않는다((k) 와 같은 이유)
+test('따라가기 (b) 한도에 닿으면 4 로 끝나고 작업은 돌며, 인자 없이 다시 부르면 이어 따라가 작업의 코드로 끝난다', { skip: process.platform === 'win32' }, async () => {
+  const r = makeRepo({ scenario: { slowSplit: 5000 } });
+  assert.equal(r.orch('doctor').code, 0);
+  const from = statSync(path.join(workerDir(r), 'log')).size;
+  const wrapper = path.join(tmp('orch-wrap-'), 'wrapper.mjs');
+  writeFileSync(wrapper, `import { cli } from ${JSON.stringify(pathToFileURL(ORCH).href)};\nawait cli(process.argv.slice(2), { followLimitMs: 1500 });\n`);
+  const began = Date.now();
+  const proc = spawn(process.execPath, [wrapper, 'split', DESIGN(r), '--repo', r.repo], { env: r.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  let err = '';
+  proc.stdout.setEncoding('utf8').on('data', (d) => (out += d));
+  proc.stderr.setEncoding('utf8').on('data', (d) => (err += d));
+  assert.equal(await exitOf(proc), 4, out + err);
+  assert.ok(Date.now() - began < 5000, '분할이 끝나기 전에 한도로 끝났다');
+  assert.match(err, /아직 진행 중, 같은 명령을 인자 없이 다시 실행하면 이어서 따라갑니다/);
+  const w = workerJson(r);
+  assert.ok(pidAlive(w.pid), '작업은 계속 돈다');
+  assert.equal(JSON.parse(readFileSync(lockPath(r), 'utf8')).pid, w.pid);
+  assert.ok(!existsSync(path.join(workerDir(r), `delivered-${w.pid}`)));
+  const again = follow(r, 'split');
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.ok(!/아직 진행 중/.test(again.stderr));
+  assert.equal(readdirSync(path.join(r.repo, '.orchestrator', 'runs')).length, 1);
+  const res = resultOf(r, w.pid);
+  assert.equal(out + again.stdout, logBytes(r).subarray(from, res.logTo).toString('utf8'));
+  assert.match(again.stdout, /작업 \d+개로 나눴습니다/);
+  assert.equal(res.delivered, true);
 });
 
 test('따라가기 (e) 신호는 작업에 넘긴다: SIGTERM 이면 작업이 세션을 끝내고 130', { skip: process.platform === 'win32' }, async () => {

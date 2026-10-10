@@ -405,6 +405,26 @@ test('the run skill starts the progress command next to split, answer and run', 
   }
 });
 
+test('the run skill follows a long command that is still running: exit code 4 and wait', async () => {
+  const table = /\n\| `sessions[^\n]*\n\n([^\n]+)\n/.exec(SKILL);
+  assert.ok(table, 'a line right below the command table');
+  for (const s of ['each end within about 9 minutes', 'exit code 4']) assert.ok(table[1].includes(s), s);
+  const rules = /\nRules while driving:\n([\s\S]*?)\n## Steps\n/.exec(SKILL)[1];
+  for (const s of ['run the same command again with no argument', 'this is not the polling forbidden here', 'The exception is running the command that is still running again with no argument, which follows it.', 'unless one is already running', 'a code other than 4']) assert.ok(rules.includes(s), s);
+  const split = /^3\. Split\.[^\n]*/m.exec(SKILL);
+  assert.ok(split && split[0].includes('if it ends with exit code 4, run `split` with no argument until it ends with another code'), 'step 3 follows split');
+  const run = /^ {3}- `run`: [^\n]*/m.exec(SKILL);
+  assert.ok(run && run[0].includes('4: it is still running'), 'step 4 run handles exit code 4');
+  const wait = /^ {3}- `wait`: [^\n]*/m.exec(SKILL);
+  for (const s of ['has not ended yet, wait for its completion notice', '`running.command`']) assert.ok(wait && wait[0].includes(s), s);
+  // The script: the limit stays under the Bash time limit like the progress command, prints the line the skill relies on and ends with 4.
+  const { FOLLOW_DEFAULTS, PROGRESS_DEFAULTS } = await import('../orchestrator/scripts/orchestrator.mjs');
+  assert.equal(FOLLOW_DEFAULTS.followLimitMs, PROGRESS_DEFAULTS.maxLifeMs);
+  assert.ok(SCRIPT.includes('아직 진행 중, 같은 명령을 인자 없이 다시 실행하면 이어서 따라갑니다'));
+  assert.ok(SCRIPT.includes('process.exitCode = 4'));
+  assert.match(SCRIPT, /data\.running = \{[^\n]*command: lock\.command/);
+});
+
 test('the same event lines give the same output from the am wait command and the orchestrator one', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');

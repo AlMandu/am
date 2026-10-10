@@ -1975,7 +1975,9 @@ function workerHeld() {
 // --worker 없이 부른 doctor·split·answer·run: 실제 일은 분리된 작업(--worker)으로 띄우고, 그 작업의 log 범위를 stdout 으로 내며
 // 따라가다가 작업의 종료 코드로 끝난다. 받은 신호는 작업에 넘긴다. 같은 명령의 살아 있는 작업이 있으면 새로 띄우지 않고 거기에 붙는다.
 // 따라가기를 강제로 죽여도 작업은 계속 돈다(하트비트가 멈추면 작업이 스스로 멈춘다).
-export const FOLLOW_DEFAULTS = { followPollMs: 200, resultWaitMs: 2000 };
+// followLimitMs 에 닿으면 '아직 진행 중' 과 4 로 끝나고 작업은 계속 돈다(같은 명령을 인자 없이 다시 부르면 이어 따라간다).
+// followLimitMs: progress 의 maxLifeMs 와 같은 값. Bash 의 기본 시간 제한(10분) 안에 끝나게
+export const FOLLOW_DEFAULTS = { followPollMs: 200, resultWaitMs: 2000, followLimitMs: 510000 };
 const FOLLOW_TRIES = 3; // 띄운 작업이 잠금에 지면 처음부터 다시 판단하는 횟수
 let followed = null; // 신호를 넘길 작업 { pid, forwarded }. 아직 띄우거나 붙지 않았으면 null(신호는 보통의 중단)
 
@@ -1988,6 +1990,13 @@ const readJsonOr = (file) => {
   }
 };
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+/** 따라가기 시작(began, 단조 시계)부터 한도가 지났는가. 붙기 전 기다림도 센다: Bash 시간 제한은 호출 시작부터 센다. */
+const overLimit = (began, timing) => performance.now() - began >= timing.followLimitMs;
+/** 한도로 끝난다: 작업은 계속 돌고, 같은 명령을 인자 없이 다시 부르면 이어 따라간다. */
+function stillRunning() {
+  process.stderr.write('\n아직 진행 중, 같은 명령을 인자 없이 다시 실행하면 이어서 따라갑니다\n');
+  process.exitCode = 4;
+}
 /** ms 동안, 또는 자식이 그보다 먼저 끝나면 그때까지 기다린다(끝난 뒤 남은 타이머가 프로세스를 붙잡지 않게 치운다). */
 const nap = (ms, child) =>
   new Promise((res) => {
@@ -2122,16 +2131,17 @@ function settleResults(repo, timing) {
 }
 
 async function follow(repo, cmd, a, argv, timing) {
+  const began = performance.now();
   baseContext(repo); // git 저장소가 아니거나 설정이 잘못됐으면 아무것도 띄우지 않고 2
   for (let i = 0; i < FOLLOW_TRIES; i += 1) {
     // 따라가기 없이 끝난 같은 명령의 결과가 있으면 새로 띄우지 않고 그것을 한 번 낸다
     if (deliverPending(repo, cmd, timing)) return undefined;
     const w = liveWorker(repo);
-    if (w && w.command === cmd) return attach(repo, w.pid, null, w.startedAt, timing);
+    if (w && w.command === cmd) return attach(repo, w.pid, null, w.startedAt, timing, began);
     // 끝 틈: 같은 명령의 작업이 잠금을 지웠지만 아직 결과를 쓰지 않았다. 결과를 기다려 다시 본다
     const last = readJsonOr(workerFile(repo, 'worker.json'));
     if (isObj(last) && last.command === cmd && Number.isInteger(last.pid) && last.pid > 0 && pidAlive(last.pid)) {
-      for (let t = 0; t < timing.resultWaitMs && pidAlive(last.pid) && !workerResult(repo, last.pid, last.startedAt); t += timing.followPollMs) await wait(timing.followPollMs);
+      for (let t = 0; t < timing.resultWaitMs && !overLimit(began, timing) && pidAlive(last.pid) && !workerResult(repo, last.pid, last.startedAt); t += timing.followPollMs) await wait(timing.followPollMs);
       if (deliverPending(repo, cmd, timing)) return undefined;
     }
     const held = readLock(repo);
@@ -2144,7 +2154,7 @@ async function follow(repo, cmd, a, argv, timing) {
     for (;;) {
       const exited = child.exitCode !== null || child.signalCode !== null; // 파일보다 먼저 본다: 끝난 뒤 읽은 파일은 완성돼 있다
       const res = workerResult(repo, child.pid);
-      if ((res && res.logTo !== undefined) || existsSync(workerFile(repo, `read-${child.pid}`))) return attach(repo, child.pid, child, '', timing);
+      if ((res && res.logTo !== undefined) || existsSync(workerFile(repo, `read-${child.pid}`))) return attach(repo, child.pid, child, '', timing, began);
       if (res) {
         // 잠금을 잡기 전에 끝남(설정 오류, 중단): log 에 범위가 없으니 그 오류를 직접 낸다
         while (child.exitCode === null && child.signalCode === null) await nap(timing.followPollMs, child);
@@ -2154,6 +2164,10 @@ async function follow(repo, cmd, a, argv, timing) {
         return undefined;
       }
       if (exited) break; // 결과 없이 죽음: 잠금에 진 것
+      if (overLimit(began, timing)) {
+        stillRunning(); // 작업은 돈다: 다시 부르면 붙거나 그 결과를 받는다
+        return undefined;
+      }
       await nap(timing.followPollMs, child);
     }
     if (followed?.forwarded) {
@@ -2193,8 +2207,8 @@ function spawnWorker(repo, argv) {
   return child;
 }
 
-/** 작업 pid 의 log 범위를 따라 낸다. 내가 띄운 자식이면 exit 이벤트로, 아니면 pid 생존으로 끝을 안다. */
-function attach(repo, pid, child, since, timing) {
+/** 작업 pid 의 log 범위를 따라 낸다. 내가 띄운 자식이면 exit 이벤트로, 아니면 pid 생존으로 끝을 안다. 한도(began 부터)에 닿으면 4 로 끝난다. */
+function attach(repo, pid, child, since, timing, began) {
   followed = { pid, forwarded: Boolean(followed?.forwarded) };
   const logFile = workerFile(repo, 'log');
   const posFile = workerFile(repo, `read-${pid}`);
@@ -2234,7 +2248,16 @@ function attach(repo, pid, child, since, timing) {
         /* 하트비트를 못 써도 따라가기는 계속한다 */
       }
       if (!gone()) {
+        if (!overLimit(began, timing)) {
+          flush(logSize(logFile), false);
+          return;
+        }
+        // 한도: 마지막 줄바꿈까지만 내고 위치를 저장한다. 결과는 차지하지 않는다(다시 부른 같은 명령이 받는다). 신호를 넘긴 뒤에도 같다
+        ending = true;
+        clearInterval(timer);
         flush(logSize(logFile), false);
+        stillRunning();
+        resolve();
         return;
       }
       ending = true;
