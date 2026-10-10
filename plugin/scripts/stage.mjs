@@ -18,6 +18,9 @@
 // Each stage appends to .am/<slug>/progress.jsonl: `start` (pid, stage), a `note` for a compaction, a second ask or a
 // hand-over, and one `end` (status, min) on every way out; write errors are dropped (see progress.mjs). During a hand-over
 // the news of the orchestrator run (.orchestrator/runs/<run>/progress.jsonl) is copied in as lines with `src: "run"`.
+// The hand-over session gets this process's pid as AM_HANDOVER_OWNER, which an orchestrator worker writes as its `owner`;
+// however the hand-over ends (a pushed-out worker too), that worker gets SIGTERM, only while it is alive and holds the
+// orchestrator lock.
 // The do, compactmem and commit sessions and the compaction session write the prompt cache for 5 minutes, not 1 hour
 // (FORCE_PROMPT_CACHING_5M): they rarely wait that long, and the 5-minute write costs less.
 // The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
@@ -92,8 +95,22 @@ const TAIL_CHARS = 600;
 export const COMPACT_MODEL = { model: 'opus', effort: 'medium' };
 // Session kinds whose prompt cache is written for 5 minutes. Plan and check wait on reviewers and gates for longer, so they keep 1 hour.
 export const CACHE_5M_KINDS = ['do', 'compactmem', 'commit', 'compact'];
-/** The environment of a session of this kind: env plus the 5-minute cache setting where it applies, else env as given. */
-export const sessionEnv = (kind, env) => (CACHE_5M_KINDS.includes(kind) ? { ...env, FORCE_PROMPT_CACHING_5M: '1' } : env);
+// The variable a hand-over session gets with this process's pid; an orchestrator worker it starts writes it to worker.json as `owner`.
+export const HANDOVER_OWNER = 'AM_HANDOVER_OWNER';
+/**
+ * The environment of a session of this kind. A hand-over gets env plus HANDOVER_OWNER (owner, this process's pid); any
+ * other kind gets env without an inherited HANDOVER_OWNER, plus the 5-minute cache setting where it applies; with
+ * neither change, env as given.
+ */
+export function sessionEnv(kind, env, owner = process.pid) {
+  if (kind === 'handover') return { ...env, [HANDOVER_OWNER]: String(owner) };
+  let out = env;
+  if (Object.hasOwn(env, HANDOVER_OWNER)) {
+    out = { ...env };
+    delete out[HANDOVER_OWNER];
+  }
+  return CACHE_5M_KINDS.includes(kind) ? { ...out, FORCE_PROMPT_CACHING_5M: '1' } : out;
+}
 
 // ------------------------------------------------------------------ context size
 
@@ -553,6 +570,27 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
   return { runs: found.map((f) => f.name), text: found.map((f) => f.text).join(', ') };
 }
 
+// Stops an orchestrator worker the way the orchestrator's `forward` does: a signal, or the whole tree on Windows.
+const signalRun = (pid, sig) => (WIN ? killTree({ pid }) : process.kill(pid, sig));
+
+/**
+ * Sends SIGTERM to the orchestrator worker a hand-over of this process started, and returns its pid; null when there is
+ * none. The orchestrator's `liveWorker` rule (worker.json's pid is alive and holds the lock) plus worker.json's `owner`
+ * being owner, so a command a person started is never touched. Never throws.
+ */
+export function stopHandedRun(cwd, owner, { alive = pidAlive, kill = signalRun } = {}) {
+  try {
+    const orch = path.join(cwd, '.orchestrator');
+    const w = readJson(path.join(orch, 'worker', 'worker.json'));
+    if (!w || typeof w !== 'object' || !Number.isInteger(w.pid) || w.pid <= 0 || w.owner !== Number(owner) || !alive(w.pid)) return null;
+    if (readJson(path.join(orch, 'lock.json'))?.pid !== w.pid) return null;
+    kill(w.pid, 'SIGTERM');
+    return w.pid;
+  } catch {
+    return null;
+  }
+}
+
 /** The text and modification time of a lock file, or null when it cannot be read. */
 function lockSnapshot(file) {
   try {
@@ -893,7 +931,7 @@ export function stageArgs(argv) {
 }
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
   const args = stageArgs(argv);
   if (!args) {
     out.write(BAD_ARGS);
@@ -990,6 +1028,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     // First, so that nothing below can leave the record behind.
     record?.release();
     stopRelay?.();
+    // The orchestrator worker this hand-over started stops with it, before the end line frees the task.
+    if (result.stage === 'handover') stopHandedRun(cwd, process.pid, { alive, kill });
     // A stop signal comes while the session may still be writing a line.
     stopOpinions?.(!stopped);
     const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
@@ -1062,7 +1102,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const timeoutMs = limits[kind] * 60000;
 
   const call = async (args) => {
-    const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env), timeoutMs });
+    const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env, process.pid), timeoutMs });
     const parsed = parseResult(r.stdout);
     if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + parsed.total_cost_usd; // a resumed session reports the whole conversation
     if (parsed?.session_id) result.sessionId = parsed.session_id;
@@ -1155,7 +1195,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     return 1;
   }
   const { stage, slug, push, fix } = args;
-  const { cwd = process.cwd(), now = Date.now, alive = pidAlive } = rest;
+  const { cwd = process.cwd(), now = Date.now, alive = pidAlive, kill = signalRun } = rest;
   const dir = path.join(cwd, '.am', slug);
   const file = (name) => path.join(dir, WORKER_FILES[name]);
   const log = (text) => {
@@ -1250,6 +1290,8 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     stopped = true;
     clearInterval(timer);
     for (const child of active) killTree(child);
+    // The new owner cannot use this worker's orchestrator run (the start lock waits on its lock): stop it too.
+    stopHandedRun(cwd, process.pid, { alive, kill });
     exit(1);
   };
   let missing = 0;

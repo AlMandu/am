@@ -270,6 +270,30 @@ test('the am stage runner waits on the orchestrator through what is pinned here:
   assert.deepEqual(otherRuns(r.repo, 'x', { now: () => Date.now() + GRACE_MS + 60000 }).runs, []);
 });
 
+test('the hand-over owner the am stage runner gives its session is the worker.json owner it stops by', async () => {
+  const { sessionEnv, stopHandedRun } = await import('../plugin/scripts/stage.mjs');
+  const N = 4321;
+  const r = makeRepo();
+  // The follower passes its environment to the detached worker, as a hand-over session's command does.
+  r.orch.env = { AM_HANDOVER_OWNER: sessionEnv('handover', {}, N).AM_HANDOVER_OWNER };
+  try {
+    assert.equal(r.orch('doctor').code, 0);
+  } finally {
+    r.orch.env = {};
+  }
+  const worker = JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'worker', 'worker.json'), 'utf8'));
+  assert.equal(worker.owner, N);
+  const W = worker.pid;
+  assert.ok(Number.isInteger(W) && W > 0);
+  writeFileSync(path.join(r.repo, '.orchestrator', 'lock.json'), JSON.stringify({ pid: W, command: 'doctor', startedAt: new Date().toISOString() }));
+  const sent = [];
+  const kill = (pid, sig) => sent.push([pid, sig]);
+  assert.equal(stopHandedRun(r.repo, N + 1, { alive: (p) => p === W, kill }), null);
+  assert.deepEqual(sent, []);
+  assert.equal(stopHandedRun(r.repo, N, { alive: (p) => p === W, kill }), W);
+  assert.deepEqual(sent, [[W, 'SIGTERM']]);
+});
+
 // Windows cannot be sent SIGINT from here (the same reason as the lock test in orchestrator-drive.test.mjs).
 test('the lock pid the am stage runner reads is the detached worker, not the command it follows', { skip: process.platform === 'win32' }, async () => {
   const { otherRuns } = await import('../plugin/scripts/stage.mjs');

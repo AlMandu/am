@@ -8,8 +8,8 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES } from '../plugin/scripts/stage.mjs';
-import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, sessionEnv, stopHandedRun } from '../plugin/scripts/stage.mjs';
+import { formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
@@ -19,7 +19,7 @@ import { RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHe
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
 
-// A fake claude: records its arguments in calls.jsonl (and its FORCE_PROMPT_CACHING_5M in env.jsonl) and answers as fake.json in the working folder says.
+// A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -27,6 +27,7 @@ import path from 'node:path';
 const argv = process.argv.slice(2);
 appendFileSync('calls.jsonl', JSON.stringify(argv) + '\\n');
 appendFileSync('env.jsonl', JSON.stringify(process.env.FORCE_PROMPT_CACHING_5M ?? null) + '\\n');
+appendFileSync('owner.jsonl', JSON.stringify(process.env.AM_HANDOVER_OWNER ?? null) + '\\n');
 const s = existsSync('fake.json') ? JSON.parse(readFileSync('fake.json', 'utf8')) : {};
 const n = readFileSync('calls.jsonl', 'utf8').trim().split('\\n').length;
 if ((s.hang || []).includes(n)) setTimeout(() => {}, 60000);
@@ -78,6 +79,7 @@ function memEnv(t, dir, files = { 'MEMORY.md': '- [a](a.md)\n' }) {
   return env;
 }
 const cacheEnv = (dir) => readFileSync(path.join(dir, 'env.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const ownerEnv = (dir) => readFileSync(path.join(dir, 'owner.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const SMALL = '# p\n## Summary\n- Scale: 1 implementation runs, 1 commits\n## Steps\n1. a. Check: x\n';
 const LARGE = '# p\n## Summary\n- 규모: 구현 2회, 커밋 2개\n## Steps\n1. a. Check: x\n';
 
@@ -620,6 +622,41 @@ test('do, compactmem, commit and the compaction session write the cache for 5 mi
     const dir = makeRepo(t, { plan: planText, fake });
     await run(dir, argv, { env: memEnv(t, dir), ...opts });
     assert.deepEqual(cacheEnv(dir), want, `${argv[0]} ${planText === LARGE ? 'hand-over' : ''}`);
+  }
+});
+
+test('sessionEnv: a hand-over gets the owner pid; every other kind loses an inherited one and keeps its cache setting', () => {
+  assert.equal(HANDOVER_OWNER, 'AM_HANDOVER_OWNER');
+  assert.deepEqual(sessionEnv('handover', { A: '1' }, 4321), { A: '1', AM_HANDOVER_OWNER: '4321' });
+  assert.deepEqual(sessionEnv('handover', { AM_HANDOVER_OWNER: '999' }, 7), { AM_HANDOVER_OWNER: '7' });
+  // A small env of the test's own: inside a real hand-over isolatedEnv would carry the variable.
+  for (const kind of ['plan', 'do', 'check', 'compactmem', 'commit', 'compact']) {
+    const env = { A: '1', AM_HANDOVER_OWNER: '999' };
+    const got = sessionEnv(kind, env, 7);
+    assert.ok(!(HANDOVER_OWNER in got), kind);
+    assert.equal(got.A, '1', kind);
+    assert.equal(got.FORCE_PROMPT_CACHING_5M, CACHE_5M_KINDS.includes(kind) ? '1' : undefined, kind);
+    assert.equal(env.AM_HANDOVER_OWNER, '999', `${kind}: the given env is not changed`);
+  }
+  const plain = { A: '1' };
+  for (const kind of ['plan', 'check']) assert.equal(sessionEnv(kind, plain, 7), plain, kind);
+});
+
+test('only the hand-over session gets AM_HANDOVER_OWNER (this process), even when the caller had one', async (t) => {
+  const handover = [String(process.pid)];
+  const cases = [
+    [['plan', 'demo'], { replies: ['AM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } }, undefined, [null]],
+    [['do', 'demo'], { replies: ['Implemented.', 'AM_STAGE: DONE'] }, SMALL, [null, null]],
+    [['check', 'demo'], { replies: ['AM_STAGE: NOTE'] }, SMALL, [null]],
+    [['compactmem', 'demo'], { replies: ['AM_STAGE: PROPOSED'] }, SMALL, [null]],
+    [['commit', 'demo'], { replies: ['AM_STAGE: COMMITTED'] }, SMALL, [null]],
+    [['do', 'demo'], { replies: ['AM_STAGE: HANDED'] }, LARGE, handover, { orchestrator: () => '/orch' }],
+    [['check', 'demo'], { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] }, BIG, [null, null]],
+  ];
+  for (const [argv, fake, planText, want, opts = {}] of cases) {
+    const dir = makeRepo(t, { plan: planText, fake });
+    await run(dir, argv, { env: { ...memEnv(t, dir), AM_HANDOVER_OWNER: '999' }, ...opts });
+    assert.deepEqual(ownerEnv(dir), want, `${argv[0]} ${planText === LARGE ? 'hand-over' : ''}`);
   }
 });
 
@@ -2534,6 +2571,149 @@ test('worker: bad arguments print the usage and make no file', async (t) => {
 
 test('worker: reads no environment variable; its times are parameters', () => {
   assert.ok(!String(worker).includes('process.env'));
+});
+
+// ------------------------------------------------------------------ the orchestrator worker a hand-over started
+
+// A pid no process has; the fake alive says it lives, the fake kill records the signal.
+const P = 2 ** 22 + 4242;
+const aliveP = (pid) => pid === P || pidAlive(pid);
+const killer = () => {
+  const sent = [];
+  return { sent, kill: (pid, sig) => sent.push([pid, sig]) };
+};
+const ORCH_FILES = (owner = process.pid) => ({
+  '.orchestrator/worker/worker.json': JSON.stringify({ pid: P, owner, command: 'run' }),
+  '.orchestrator/lock.json': JSON.stringify({ pid: P, command: 'run' }),
+});
+// Written by the test once the session runs: a live lock before it would make the start lock wait.
+const putOrch = (dir, files = ORCH_FILES()) => {
+  mkdirSync(path.join(dir, '.orchestrator', 'worker'), { recursive: true });
+  for (const [f, text] of Object.entries(files)) writeFileSync(path.join(dir, f), text);
+};
+
+test('stopHandedRun: SIGTERM only to a live worker of this owner that holds the orchestrator lock; never throws', (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-stage-handed-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const put = (w, lock) => {
+    rmSync(path.join(dir, '.orchestrator'), { recursive: true, force: true });
+    mkdirSync(path.join(dir, '.orchestrator', 'worker'), { recursive: true });
+    if (w !== null) writeFileSync(path.join(dir, '.orchestrator', 'worker', 'worker.json'), typeof w === 'string' ? w : JSON.stringify(w));
+    if (lock !== null) writeFileSync(path.join(dir, '.orchestrator', 'lock.json'), JSON.stringify(lock));
+  };
+  const lock = { pid: P, command: 'run' };
+  const k = killer();
+  put({ pid: P, owner: 4321, command: 'run' }, lock);
+  assert.equal(stopHandedRun(dir, 4321, { alive: aliveP, kill: k.kill }), P);
+  assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+  const cases = [
+    ['another owner', { pid: P, owner: 4322 }, lock, aliveP],
+    ['no owner (a command a person started)', { pid: P, command: 'run' }, lock, aliveP],
+    ['not alive', { pid: P, owner: 4321 }, lock, () => false],
+    ['another lock pid', { pid: P, owner: 4321 }, { pid: P + 1 }, aliveP],
+    ['no lock', { pid: P, owner: 4321 }, null, aliveP],
+    ['no worker.json', null, lock, aliveP],
+    ['broken worker.json', '{"pid":', lock, aliveP],
+    ['a pid that is no integer', { pid: String(P), owner: 4321 }, { pid: String(P) }, () => true],
+    ['a fraction pid', { pid: 1.5, owner: 4321 }, { pid: 1.5 }, () => true],
+  ];
+  for (const [name, w, l, alive] of cases) {
+    const n = killer();
+    put(w, l);
+    assert.equal(stopHandedRun(dir, 4321, { alive, kill: n.kill }), null, name);
+    assert.deepEqual(n.sent, [], name);
+  }
+  put({ pid: P, owner: 4321 }, lock);
+  assert.equal(stopHandedRun(dir, 4321, { alive: aliveP, kill: () => { throw new Error('ESRCH'); } }), null);
+  assert.equal(stopHandedRun(dir, 4321, { alive: () => { throw new Error('boom'); } }), null);
+});
+
+test('hand-over end: a normal end stops the worker it started, only that one, and not from another stage', async (t) => {
+  const k = killer();
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['AM_STAGE: HANDED'], write: ORCH_FILES() } });
+  const { result } = await run(dir, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: k.kill });
+  assert.equal(result.status, 'HANDED');
+  assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+  assert.equal(ends(events(dir)).length, 1);
+
+  const other = killer();
+  const foreign = makeRepo(t, { plan: LARGE, fake: { replies: ['AM_STAGE: HANDED'], write: ORCH_FILES(process.pid + 1) } });
+  assert.equal((await run(foreign, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: other.kill })).result.status, 'HANDED');
+  assert.deepEqual(other.sent, []);
+
+  const checked = killer();
+  const check = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTE'], write: ORCH_FILES() } });
+  assert.equal((await run(check, ['check', 'demo'], { alive: aliveP, kill: checked.kill })).result.status, 'NOTE');
+  assert.deepEqual(checked.sent, []);
+});
+
+test('hand-over end: a session time-out stops the worker it started', async (t) => {
+  const k = killer();
+  const dir = makeRepo(t, { plan: LARGE, fake: { hang: [1] } });
+  const running = run(dir, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: k.kill, timeoutMin: { handover: 0.02 } });
+  await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+  putOrch(dir);
+  const { result } = await running;
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+  assert.equal(ends(events(dir)).length, 1);
+});
+
+test('hand-over end: a stop signal stops the worker it started', async (t) => {
+  const k = killer();
+  const dir = makeRepo(t, { plan: LARGE, fake: { hang: [1] } });
+  const running = run(dir, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: k.kill });
+  let code = null;
+  try {
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    putOrch(dir);
+  } finally {
+    interrupt('SIGTERM', { exit: (c) => (code = c) });
+    await running;
+  }
+  assert.equal(code, 1);
+  assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+  assert.equal(ends(events(dir)).length, 1);
+});
+
+test('hand-over end: a stage worker stopped by its heartbeat stops the orchestrator worker it started', async (t) => {
+  const k = killer();
+  const dir = makeRepo(t, { plan: LARGE, fake: { hang: [1] } });
+  // The heartbeat changes until the files are written, then stays: the stage worker stops after idleMs.
+  let n = 0;
+  const beat = setInterval(() => writeFileSync(WF(dir, 'heartbeat'), String(++n)), 15);
+  const atExit = [];
+  const w = startWorker(dir, ['do', 'demo'], { ...ORCH, tickMs: 30, idleMs: 250, alive: aliveP, kill: k.kill, exit: (code) => atExit.push({ code, sent: [...k.sent], ends: ends(events(dir)).length }) });
+  try {
+    await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+    putOrch(dir);
+  } finally {
+    clearInterval(beat);
+  }
+  assert.equal(await w.done, 1);
+  assert.deepEqual(atExit, [{ code: 1, sent: [[P, 'SIGTERM']], ends: 1 }]);
+  assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+});
+
+test('hand-over end: a pushed-out stage worker stops the orchestrator worker too, and still leaves no result or end', async (t) => {
+  const k = killer();
+  const dir = makeRepo(t, { plan: LARGE, fake: { hang: [1] } });
+  const atExit = [];
+  const w = startWorker(dir, ['do', 'demo'], { ...ORCH, tickMs: 30, alive: aliveP, kill: k.kill, exit: (code) => atExit.push({ code, sent: [...k.sent], state: workerState(dir) }) });
+  await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+  putOrch(dir);
+  const other = JSON.stringify({ pid: LIVE, t: 9 });
+  writeFileSync(WF(dir, 'record'), other);
+  assert.equal(await w.done, 1);
+  assert.equal(atExit.length, 1);
+  const { code, sent, state } = atExit[0];
+  assert.equal(code, 1);
+  assert.deepEqual(sent, [[P, 'SIGTERM']]);
+  assert.equal(state.result, null);
+  assert.equal(state.record, other);
+  assert.deepEqual(ends(state.events), []);
+  // The fake exit does not stop the process, so main's later end runs finish once more; the real process.exit stops first,
+  // so nothing after the exit is checked.
 });
 
 // Last: by liveRecords, not the folder's file list (a record Windows could not remove at once is left out there, and the folder stays).
