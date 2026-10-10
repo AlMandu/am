@@ -9,7 +9,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, copyFileSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -193,16 +193,25 @@ export function winQuote(arg) {
   return /^[A-Za-z0-9_\-./:=\\]+$/.test(arg) ? arg : `"${arg}"`;
 }
 
+/** 자식 프로세스(또는 pid 만 든 { pid })를 트리째 끝낸다. */
 function killTree(child) {
   if (child.pid === undefined) return;
+  const one = () => {
+    try {
+      if (child.kill) child.kill('SIGKILL');
+      else process.kill(child.pid, 'SIGKILL');
+    } catch {
+      /* 이미 끝남 */
+    }
+  };
   if (WIN) {
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill('SIGKILL'));
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', one);
     return;
   }
   try {
     process.kill(-child.pid, 'SIGKILL');
   } catch {
-    child.kill('SIGKILL');
+    one();
   }
 }
 
@@ -1857,6 +1866,8 @@ function acquireLock(repo, command, run) {
     } catch {
       /* 잠금은 아래에서 늘 지운다 */
     }
+    // 작업 모드: 이 작업이 log 에 쓴 범위의 끝. 잠금을 지운 뒤 다음 작업이 같은 log 에 쓴 줄을 따라가기가 내지 않게
+    if (worker) worker.logTo = logSize(worker.logFile);
     try {
       if (readJson(lockFile(repo)).pid === process.pid) rmSync(lockFile(repo), { force: true });
     } catch {
@@ -1881,13 +1892,14 @@ function startWorker(repo, command, argv, timing) {
   const dir = path.join(repo, ORCH_DIR, 'worker');
   mkdirSync(dir, { recursive: true });
   const logFile = path.join(dir, 'log');
-  worker = { dir, command, args: argv.filter((a) => a !== '--worker'), timing, held: false, lost: false, written: false, delivered: false, error: '' };
-  // 모든 출력은 이 두 함수를 거친다. 동기로 덧붙여, 바로 뒤에 process.exit 해도 빠지지 않게
+  worker = { dir, logFile, command, args: argv.filter((a) => a !== '--worker'), timing, held: false, lost: false, written: false, delivered: false, error: '' };
+  // 모든 출력은 이 두 함수를 거친다. 동기로 덧붙여, 바로 뒤에 process.exit 해도 빠지지 않게.
+  // 잠금에 진 작업은 아무것도 쓰지 않는다: 그 거부 줄이 이긴 작업의 범위에 끼지 않게(거부는 그 작업을 띄운 따라가기가 낸다)
   for (const stream of [process.stdout, process.stderr]) {
     stream.write = (chunk, encoding, cb) => {
       const done = typeof encoding === 'function' ? encoding : cb;
       try {
-        appendFileSync(logFile, typeof chunk === 'string' ? chunk : Buffer.from(chunk), typeof encoding === 'string' ? encoding : undefined);
+        if (!worker.lost) appendFileSync(logFile, typeof chunk === 'string' ? chunk : Buffer.from(chunk), typeof encoding === 'string' ? encoding : undefined);
       } catch {
         /* 로그를 못 써도 일은 계속한다 */
       }
@@ -1906,15 +1918,27 @@ function writeResult(exitCode) {
   if (!worker || worker.written || worker.lost) return;
   worker.written = true;
   try {
-    writeJson(path.join(worker.dir, `result-${process.pid}.json`), { pid: process.pid, command: worker.command, code: exitCode ?? process.exitCode ?? 0, error: worker.error, endedAt: now(), delivered: worker.delivered });
+    const logTo = worker.logTo === undefined ? {} : { logTo: worker.logTo }; // 잠금을 잡기 전에 끝난 작업은 log 에 범위가 없다
+    writeJson(path.join(worker.dir, `result-${process.pid}.json`), { pid: process.pid, command: worker.command, code: exitCode ?? process.exitCode ?? 0, error: worker.error, endedAt: now(), delivered: worker.delivered, ...logTo });
   } catch {
     /* 결과가 끝내 없으면 부른 쪽이 실패로 본다 */
   }
 }
 
-/** 잠금을 잡은 직후: worker.json 을 쓰고 하트비트 감시를 시작한다. */
+/** 파일 크기(바이트). 없으면 0. */
+const logSize = (file) => {
+  try {
+    return statSync(file).size;
+  } catch {
+    return 0;
+  }
+};
+
+/** 잠금을 잡은 직후: read-<pid>(따라가기가 읽을 위치)와 worker.json 을 쓰고 하트비트 감시를 시작한다. */
 function workerHeld() {
   worker.held = true;
+  // 이 작업의 log 범위는 여기서 시작한다. worker.json 보다 먼저: 붙는 따라가기가 늘 새 위치를 읽게
+  writeText(path.join(worker.dir, `read-${process.pid}`), String(logSize(worker.logFile)));
   const owner = /^\d+$/.test(process.env.AM_HANDOVER_OWNER || '') && Number(process.env.AM_HANDOVER_OWNER) > 0 ? { owner: Number(process.env.AM_HANDOVER_OWNER) } : {};
   writeJson(path.join(worker.dir, 'worker.json'), { pid: process.pid, command: worker.command, args: worker.args, startedAt: now(), ...owner });
   // 폴링 횟수로만 센다: 벽시계를 보지 않아 잠자기·시계 변경에 속지 않는다
@@ -1938,6 +1962,194 @@ function workerHeld() {
       interrupt(`하트비트가 ${Math.round(heartbeatMs / 1000)}초 동안 바뀌지 않아 멈췄습니다`);
     }
   }, pollMs).unref(); // 명령이 끝나면 프로세스도 끝나게
+}
+
+// ------------------------------------------------------------------ 따라가기
+
+// --worker 없이 부른 doctor·split·answer·run: 실제 일은 분리된 작업(--worker)으로 띄우고, 그 작업의 log 범위를 stdout 으로 내며
+// 따라가다가 작업의 종료 코드로 끝난다. 받은 신호는 작업에 넘긴다. 같은 명령의 살아 있는 작업이 있으면 새로 띄우지 않고 거기에 붙는다.
+// 따라가기를 강제로 죽여도 작업은 계속 돈다(하트비트가 멈추면 작업이 스스로 멈춘다).
+export const FOLLOW_DEFAULTS = { followPollMs: 200, resultWaitMs: 2000 };
+const FOLLOW_TRIES = 3; // 띄운 작업이 잠금에 지면 처음부터 다시 판단하는 횟수
+let followed = null; // 신호를 넘길 작업 { pid, forwarded }. 아직 띄우거나 붙지 않았으면 null(신호는 보통의 중단)
+
+const workerFile = (repo, name) => path.join(repo, ORCH_DIR, 'worker', name);
+const readJsonOr = (file) => {
+  try {
+    return readJson(file);
+  } catch {
+    return null;
+  }
+};
+const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+/** ms 동안, 또는 자식이 그보다 먼저 끝나면 그때까지 기다린다(끝난 뒤 남은 타이머가 프로세스를 붙잡지 않게 치운다). */
+const nap = (ms, child) =>
+  new Promise((res) => {
+    const done = () => {
+      clearTimeout(timer);
+      child.off('exit', done);
+      res();
+    };
+    const timer = setTimeout(done, ms);
+    child.once('exit', done);
+  });
+
+/** 잠금을 쥔 살아 있는 작업이면 worker.json 의 내용, 아니면 null. */
+function liveWorker(repo) {
+  const w = readJsonOr(workerFile(repo, 'worker.json'));
+  if (!isObj(w) || !Number.isInteger(w.pid) || w.pid <= 0 || !pidAlive(w.pid)) return null;
+  return readLock(repo)?.pid === w.pid ? w : null;
+}
+
+/** 작업의 결과. 붙은 작업(since)이면 그 작업이 시작하기 전에 끝난 결과는 재사용된 pid 의 옛것으로 보고 버린다. */
+function workerResult(repo, pid, since) {
+  const res = readJsonOr(workerFile(repo, `result-${pid}.json`));
+  if (!isObj(res)) return null;
+  if (since && !(Date.parse(res.endedAt) >= Date.parse(since))) return null;
+  return res;
+}
+
+async function follow(repo, cmd, a, argv, timing) {
+  baseContext(repo); // git 저장소가 아니거나 설정이 잘못됐으면 아무것도 띄우지 않고 2
+  for (let i = 0; i < FOLLOW_TRIES; i += 1) {
+    const w = liveWorker(repo);
+    if (w && w.command === cmd) return attach(repo, w.pid, null, w.startedAt, timing);
+    const held = readLock(repo);
+    if (held) busy(held);
+    if (!a && cmd === 'split') fail(SPLIT_USAGE);
+    if (!a && cmd === 'answer') fail(ANSWER_USAGE);
+    const child = spawnWorker(repo, argv);
+    if (!child) return undefined;
+    // 내 작업이 잠금을 잡거나, 잠금 전에 끝나거나, 진 채 죽을 때까지 기다린다
+    for (;;) {
+      const exited = child.exitCode !== null || child.signalCode !== null; // 파일보다 먼저 본다: 끝난 뒤 읽은 파일은 완성돼 있다
+      const res = workerResult(repo, child.pid);
+      if ((res && res.logTo !== undefined) || existsSync(workerFile(repo, `read-${child.pid}`))) return attach(repo, child.pid, child, '', timing);
+      if (res) {
+        // 잠금을 잡기 전에 끝남(설정 오류, 중단): log 에 범위가 없으니 그 오류를 직접 낸다
+        while (child.exitCode === null && child.signalCode === null) await nap(timing.followPollMs, child);
+        if (res.error) process.stderr.write(`\n${res.error}\n`);
+        process.exitCode = res.code;
+        return undefined;
+      }
+      if (exited) break; // 결과 없이 죽음: 잠금에 진 것
+      await nap(timing.followPollMs, child);
+    }
+    if (followed?.forwarded) {
+      // 손이 막 띄운 작업을 멈췄다: 진 것으로 읽어 새 작업을 띄우지 않는다
+      process.exitCode = 130;
+      return undefined;
+    }
+  }
+  process.stderr.write(`\n띄운 작업이 ${FOLLOW_TRIES}번 모두 잠금을 잡지 못했고 붙을 작업도 찾지 못했습니다. 잠시 뒤 다시 하세요.\n`);
+  process.exitCode = 3;
+  return undefined;
+}
+
+/** 작업을 분리해 띄운다. 출력은 log 파일로 바로 가게 해, 따라가기의 pipe 를 물려받지 않는다(Bash 가 작업을 기다리지 않게). */
+function spawnWorker(repo, argv) {
+  ensureIgnored(repo, ORCH_DIR);
+  mkdirSync(workerFile(repo, ''), { recursive: true });
+  let child;
+  const fd = openSync(workerFile(repo, 'log'), 'a');
+  try {
+    child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...argv, '--worker'], { cwd: process.cwd(), env: process.env, detached: true, stdio: ['ignore', fd, fd], windowsHide: true });
+  } catch (err) {
+    child = { pid: undefined, err };
+  } finally {
+    closeSync(fd);
+  }
+  if (child.pid === undefined) {
+    process.stderr.write(`\n작업을 띄우지 못했습니다: ${child.err?.message ?? '알 수 없는 오류'}\n`);
+    process.exitCode = 3;
+    return null;
+  }
+  child.on('error', () => {}); // 띄운 뒤의 오류는 exit 로 본다
+  child.unref();
+  // 재사용된 pid 의 남은 파일을 믿지 않게. 자식은 아직 node 가 뜨기 전이라 새것을 쓰지 못했다
+  for (const name of [`read-${child.pid}`, `result-${child.pid}.json`]) rmSync(workerFile(repo, name), { force: true });
+  followed = { pid: child.pid, forwarded: Boolean(followed?.forwarded) }; // 띄운 순간부터 신호를 넘길 대상
+  return child;
+}
+
+/** 작업 pid 의 log 범위를 따라 낸다. 내가 띄운 자식이면 exit 이벤트로, 아니면 pid 생존으로 끝을 안다. */
+function attach(repo, pid, child, since, timing) {
+  followed = { pid, forwarded: Boolean(followed?.forwarded) };
+  const logFile = workerFile(repo, 'log');
+  const posFile = workerFile(repo, `read-${pid}`);
+  let pos = Number(readJsonOr(posFile)) || 0;
+  let n = 0;
+  // [pos, end) 를 바이트 그대로 낸다(한글을 문자열로 자르면 위치가 어긋난다). whole 이 아니면 마지막 줄바꿈까지만
+  const flush = (end, whole) => {
+    if (end <= pos) return;
+    let fd;
+    try {
+      fd = openSync(logFile, 'r');
+      const buf = Buffer.alloc(end - pos);
+      const got = readSync(fd, buf, 0, buf.length, pos);
+      const cut = whole ? got : buf.lastIndexOf(0x0a, got - 1) + 1;
+      if (cut <= 0) return;
+      process.stdout.write(buf.subarray(0, cut));
+      pos += cut;
+    } catch {
+      return;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+    try {
+      writeText(posFile, String(pos)); // 낸 뒤에 저장: 다음 따라가기가 줄을 잃지 않게
+    } catch {
+      /* 다른 따라가기와 겹치면 다음 차례에 */
+    }
+  };
+  const gone = () => (child ? child.exitCode !== null || child.signalCode !== null : !pidAlive(pid));
+  return new Promise((resolve) => {
+    let ending = false;
+    const tick = async () => {
+      if (ending) return;
+      try {
+        writeFileSync(workerFile(repo, 'heartbeat'), `${process.pid} ${(n += 1)}`);
+      } catch {
+        /* 하트비트를 못 써도 따라가기는 계속한다 */
+      }
+      if (!gone()) {
+        flush(logSize(logFile), false);
+        return;
+      }
+      ending = true;
+      clearInterval(timer);
+      const endSize = logSize(logFile); // 결과가 없으면 여기까지: 결과를 기다리는 사이 다음 작업이 같은 log 에 쓴 줄을 내지 않게
+      let res = workerResult(repo, pid, since);
+      for (let t = 0; !res && t < timing.resultWaitMs; t += timing.followPollMs) {
+        await wait(timing.followPollMs);
+        res = workerResult(repo, pid, since);
+      }
+      flush(res && Number.isInteger(res.logTo) ? res.logTo : endSize, true);
+      if (res) process.exitCode = res.code;
+      else if (followed.forwarded) process.exitCode = 130;
+      else {
+        process.stderr.write(`\n작업(pid ${pid})이 결과를 남기지 않고 끝났습니다.\n`);
+        process.exitCode = 3;
+      }
+      resolve();
+    };
+    const timer = setInterval(tick, timing.followPollMs);
+    if (child) child.once('exit', tick); // 내 자식이면 다음 폴링을 기다리지 않고 바로 마무리
+  });
+}
+
+/** 받은 신호를 따라가는 작업에 넘긴다. 따라가기는 끝나지 않고 작업이 끝나기를 기다린다. Windows 는 신호가 없어 트리째 끝낸다. */
+function forward(sig) {
+  followed.forwarded = true;
+  if (WIN) {
+    killTree({ pid: followed.pid });
+    return;
+  }
+  try {
+    process.kill(followed.pid, sig);
+  } catch {
+    /* 이미 끝남 */
+  }
 }
 
 // ------------------------------------------------------------------ 이 PC 전체의 동시 세션 수
@@ -2499,8 +2711,11 @@ function currentRun(repo) {
   }
 }
 
+const SPLIT_USAGE = '사용법: split <설계문서 경로>';
+const ANSWER_USAGE = '사용법: answer <작업 ID> "<답>"  (상태가 "결정 필요"인 작업에만 씁니다)';
+
 async function cmdSplit(repo, designArg, opt) {
-  if (!designArg) fail('사용법: split <설계문서 경로>');
+  if (!designArg) fail(SPLIT_USAGE);
   const design = path.resolve(designArg);
   if (!existsSync(design)) fail(`설계 문서를 찾지 못했습니다: ${design}`);
   const ctx = baseContext(repo);
@@ -2649,7 +2864,7 @@ async function cmdAnswer(repo, id, answer, opt) {
   requireReady(ctx);
   const t = ctx.plan.tasks.find((x) => x.id === id);
   const s = t && ctx.state.tasks[id];
-  if (!t || !answer || s.status !== 'needs-decision') fail('사용법: answer <작업 ID> "<답>"  (상태가 "결정 필요"인 작업에만 씁니다)');
+  if (!t || !answer || s.status !== 'needs-decision') fail(ANSWER_USAGE);
   if (!s.sessions.plan) fail('이어 갈 계획 세션이 없습니다. `retry` 로 계획부터 다시 하세요.');
   startEvents(ctx.runDir, { stage: 'answer', task: id, text: 'answer started' });
   // 답은 파일로 넘긴다: 한글·따옴표가 명령줄을 거치지 않게
@@ -3158,6 +3373,8 @@ async function main(argv, timing = WORKER_DEFAULTS) {
   const [cmd, a, ...rest] = pos;
   const repo = path.resolve(opt.repo || process.cwd());
   if (opt.worker && WORKER_COMMANDS.includes(cmd) && !(cmd === 'run' && opt['dry-run'])) startWorker(repo, cmd, argv, timing);
+  // 작업 모드가 아니면 실제 일은 분리된 작업에 맡기고 따라간다
+  if (!opt.worker && WORKER_COMMANDS.includes(cmd) && !(cmd === 'run' && opt['dry-run'])) return follow(repo, cmd, a, argv, timing);
   // 상태를 바꾸는 명령은 한 번에 하나만: 실행 중에 다른 명령이 끼어들지 못하게 잠근다
   // dry-run 을 구현한 것은 run 뿐이라 그것만 잠금 없이 돈다(다른 명령은 --dry-run 을 붙여도 실제로 실행된다)
   if (['doctor', 'split', 'decide', 'answer', 'run', 'retry', 'done'].includes(cmd) && !(cmd === 'run' && opt['dry-run'])) {
@@ -3214,11 +3431,11 @@ function interrupt(reason) {
 }
 
 /** 명령줄 진입점. 시간 값은 테스트가 짧게 넘길 수 있게 매개변수로 받는다. */
-export async function cli(argv, timing = WORKER_DEFAULTS) {
-  // Ctrl+C 나 종료 신호
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => interrupt(`${sig} 신호를 받았습니다`));
+export async function cli(argv, timing = {}) {
+  // Ctrl+C 나 종료 신호. 따라가는 작업이 있으면 그 작업에 넘기고 끝나기를 기다린다
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => (followed ? forward(sig) : interrupt(`${sig} 신호를 받았습니다`)));
   try {
-    await main(argv, timing);
+    await main(argv, { ...WORKER_DEFAULTS, ...FOLLOW_DEFAULTS, ...timing });
   } catch (err) {
     if (worker) worker.error = err && err.message ? err.message : String(err);
     if (err instanceof Halt || err instanceof PhaseError) {

@@ -116,8 +116,12 @@ test('잠금: 실행 중에는 다른 명령이 끼어들지 못하고, status �
   assert.ok(existsSync(pidFile), '느린 세션이 시작됨');
   const st = statusJson(r);
   assert.equal(st.next, 'wait');
-  assert.deepEqual([st.running.pid, st.running.command, st.running.task, st.running.stage], [proc.pid, 'run', 'T01', 'implement']);
-  for (const args of [['run'], ['retry', 'T01'], ['done', 'T01'], ['doctor']]) {
+  // 잠금을 쥔 것은 따라가기(proc)가 아니라 그것이 띄운 작업이다
+  const workerPid = JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'worker', 'worker.json'), 'utf8')).pid;
+  assert.notEqual(workerPid, proc.pid);
+  assert.deepEqual([st.running.pid, st.running.command, st.running.task, st.running.stage], [workerPid, 'run', 'T01', 'implement']);
+  // 같은 명령(run)은 그 작업에 붙으므로 다른 명령만 거부된다
+  for (const args of [['retry', 'T01'], ['done', 'T01'], ['doctor']]) {
     const second = r.orch(...args);
     assert.equal(second.code, 2, args.join(' '));
     assert.match(second.out, /이미 돌고 있는 명령이 있습니다: run \(pid \d+/);
@@ -141,7 +145,8 @@ test('잠금: dry-run 을 구현한 것은 run 뿐이라, 다른 명령에 --dry
   // 이 테스트 프로세스가 살아 있으므로 잠금의 주인이 살아 있는 것으로 보인다
   writeFileSync(lock, JSON.stringify({ pid: process.pid, command: 'run', startedAt: 'x' }));
   try {
-    for (const args of [['split', 'x', '--dry-run'], ['retry', 'T01', '--dry-run']]) {
+    // worker.json 이 없는 살아 있는 잠금(작업 모드가 아닌 주인)에는 같은 명령도 붙지 않고 거부된다
+    for (const args of [['split', 'x', '--dry-run'], ['retry', 'T01', '--dry-run'], ['run'], ['doctor']]) {
       const second = r.orch(...args);
       assert.equal(second.code, 2, `${args.join(' ')}\n${second.out}`);
       assert.match(second.out, /이미 돌고 있는 명령이 있습니다: run \(pid \d+/);

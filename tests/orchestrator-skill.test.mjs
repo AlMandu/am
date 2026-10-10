@@ -270,6 +270,28 @@ test('the am stage runner waits on the orchestrator through what is pinned here:
   assert.deepEqual(otherRuns(r.repo, 'x', { now: () => Date.now() + GRACE_MS + 60000 }).runs, []);
 });
 
+// Windows cannot be sent SIGINT from here (the same reason as the lock test in orchestrator-drive.test.mjs).
+test('the lock pid the am stage runner reads is the detached worker, not the command it follows', { skip: process.platform === 'win32' }, async () => {
+  const { otherRuns } = await import('../plugin/scripts/stage.mjs');
+  const r = makeRepo({ scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
+  assert.equal(r.orch('doctor').code, 0);
+  assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
+  mkdirSync(path.join(r.repo, '.am', 'x'), { recursive: true });
+  const proc = r.start('run', '--only', 'T01');
+  const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
+  const pidFile = path.join(r.repo, '.orchestrator', 'fake-slow.pid');
+  for (let i = 0; i < 200 && !existsSync(pidFile); i += 1) await new Promise((res) => setTimeout(res, 50));
+  assert.ok(existsSync(pidFile), proc.out);
+  const lock = JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'lock.json'), 'utf8'));
+  const worker = JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'worker', 'worker.json'), 'utf8'));
+  assert.equal(lock.pid, worker.pid);
+  assert.notEqual(lock.pid, proc.pid);
+  process.kill(lock.pid, 0); // alive
+  assert.deepEqual(otherRuns(r.repo, 'x').runs, ['am-orchestrator']);
+  proc.kill('SIGINT');
+  assert.equal(await exited, 130, proc.out);
+});
+
 test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {
   const { MARKS, lastMark, checkVerdict } = await import('../plugin/scripts/stage.mjs');
   const { lastMarker, verdictFromFile } = await import('../orchestrator/scripts/orchestrator.mjs');

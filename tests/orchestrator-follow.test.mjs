@@ -1,8 +1,9 @@
 // Run: node --test tests/orchestrator-follow.test.mjs
 // 숨은 작업 모드(--worker): 출력은 .orchestrator/worker/log 로, 잠금을 잡으면 worker.json, 끝나면 result-<pid>.json, 하트비트가 멈추면 130.
+// 따라가기(--worker 없이 부른 doctor·split·answer·run): 작업을 띄우거나 같은 명령의 살아 있는 작업에 붙어 그 log 범위를 내고 작업의 코드로 끝난다.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -46,6 +47,7 @@ const deadPid = async (pid) => {
 
 test('(a) run --worker: 출력은 log 로, worker.json 과 결과를 남기고 잠금을 푼다. AM_HANDOVER_OWNER 는 owner 로', () => {
   const r = prepared({ plan: ONE() });
+  const start = readFileSync(path.join(workerDir(r), 'log')).length; // prepared 의 doctor·split 도 작업으로 돌아 log 에 남았다
   const p = runWorker(r, ['run']);
   assert.equal(p.code, 0, logOf(r));
   assert.equal(p.stdout, '');
@@ -58,6 +60,10 @@ test('(a) run --worker: 출력은 log 로, worker.json 과 결과를 남기고 �
   const res = resultOf(r, p.pid);
   assert.deepEqual([res.pid, res.command, res.code, res.delivered, res.error], [p.pid, 'run', 0, false, '']);
   assert.ok(!Number.isNaN(Date.parse(res.endedAt)));
+  // 이 작업의 log 범위: 잠금을 잡을 때의 크기(read-<pid>)부터 잠금을 풀 때의 크기(logTo)까지
+  const from = Number(readFileSync(path.join(workerDir(r), `read-${p.pid}`), 'utf8'));
+  const size = readFileSync(path.join(workerDir(r), 'log')).length;
+  assert.deepEqual([from, res.logTo], [start, size]);
   assert.ok(!existsSync(lockPath(r)));
   const d = runWorker(r, ['doctor', '--skip-probe'], { AM_HANDOVER_OWNER: '12345' });
   assert.equal(d.code, 0, logOf(r));
@@ -83,6 +89,7 @@ test('(b) 멈춤(2): 결과에 코드와 메시지. 잠금 전 실패도 결과�
   const res2 = resultOf({ repo: dir }, q.pid);
   assert.equal(res2.code, 2);
   assert.match(res2.error, /git 저장소가 아닙니다/);
+  assert.ok(!('logTo' in res2)); // 잠금 전에 끝난 작업은 log 에 범위가 없다
   assert.ok(!existsSync(path.join(dir, '.orchestrator', 'worker', 'worker.json')));
 });
 
@@ -95,7 +102,8 @@ test('(c) 잠금 경쟁: 살아 있는 잠금에 진 작업은 worker.json 도 �
   assert.equal(p.code, 2);
   assert.equal(readFileSync(path.join(workerDir(r), 'worker.json'), 'utf8'), '{"pid":1}');
   assert.ok(!existsSync(path.join(workerDir(r), `result-${p.pid}.json`)));
-  assert.match(logOf(r), /이미 돌고 있는 명령이 있습니다: run/);
+  // 진 작업은 log 에 거부를 남기지 않는다(거부는 그 작업을 띄운 따라가기가 낸다)
+  assert.ok(!existsSync(path.join(workerDir(r), 'log')) || !/이미 돌고 있는 명령이 있습니다/.test(logOf(r)));
   // 읽을 수 없는 잠금: 1분 안이면 거부, 넘으면 치운다
   writeFileSync(lockPath(r), '{');
   assert.equal(runWorker(r, ['doctor', '--skip-probe']).code, 2);
@@ -194,4 +202,126 @@ test('(f) 사용법에는 작업 모드가 보이지 않는다', () => {
   assert.equal(p.status, 0);
   assert.match(p.stdout, /사용법/);
   assert.ok(!/worker/.test(p.stdout));
+});
+
+// ------------------------------------------------------------------ 따라가기
+
+const DESIGN = (r) => path.join(r.repo, 'docs', 'design.md');
+const logBytes = (r) => readFileSync(path.join(workerDir(r), 'log'));
+const exitOf = (proc) => new Promise((res) => proc.on('close', (code) => res(code))); // close: 받은 출력을 다 모은 뒤
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test('따라가기 (a) 빠른 명령: 작업의 log 범위를 내고 그 코드로 끝난다. 잠금 전에 끝나는 것은 작업을 띄우지 않는다', () => {
+  const r = makeRepo({ plan: planOf([task('T01', 't01-a')], [{ id: 'D1', what: '첫 화면', whyNow: '화면이 달라짐', options: [{ label: '목록', effect: '목록' }, { label: '상세', effect: '상세' }], recommended: '목록', undo: 'easy', blocks: ['T01'], answer: null }]) });
+  const d = r.orch('doctor', '--skip-probe');
+  assert.equal(d.code, 0, d.out);
+  const w = workerJson(r);
+  const res = resultOf(r, w.pid);
+  assert.equal(Number(readFileSync(path.join(workerDir(r), `read-${w.pid}`), 'utf8')), res.logTo, '따라가기가 끝까지 읽은 위치');
+  assert.equal(d.out, logBytes(r).subarray(0, res.logTo).toString('utf8'), '처음 작업이라 범위는 log 의 처음부터');
+  assert.equal(r.orch('split', DESIGN(r)).code, 0);
+  const run = r.orch('run');
+  assert.equal(run.code, 1, run.out);
+  const ans = r.orch('answer', 'T01', 'x');
+  assert.equal(ans.code, 2, ans.out);
+  assert.match(ans.out, /사용법: answer/);
+  // 인자 없는 split·answer: 작업을 띄우지 않고 사용법
+  const before = results(r).length;
+  for (const cmd of ['split', 'answer']) {
+    const p = r.orch(cmd);
+    assert.equal(p.code, 2, p.out);
+    assert.match(p.out, new RegExp(`사용법: ${cmd}`));
+  }
+  assert.equal(results(r).length, before);
+  assert.ok(!existsSync(lockPath(r)));
+  // git 저장소가 아닌 폴더: 아무것도 띄우지도 만들지도 않는다
+  const dir = tmp('orch-nogit-');
+  const q = spawnSync(process.execPath, [ORCH, 'doctor', '--repo', dir], { encoding: 'utf8', env: r.env });
+  assert.equal(q.status, 2);
+  assert.match(q.stderr, /git 저장소가 아닙니다/);
+  assert.ok(!existsSync(path.join(dir, '.orchestrator')));
+});
+
+test('따라가기 (e) 신호는 작업에 넘긴다: SIGTERM 이면 작업이 세션을 끝내고 130', { skip: process.platform === 'win32' }, async () => {
+  const r = prepared({ plan: ONE(), scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
+  const proc = r.start('run');
+  const exited = exitOf(proc);
+  await waitFile(path.join(r.repo, '.orchestrator', 'fake-slow.pid'));
+  const sessionPid = Number(readFileSync(path.join(r.repo, '.orchestrator', 'fake-slow.pid'), 'utf8'));
+  const w = workerJson(r);
+  proc.kill('SIGTERM');
+  assert.equal(await exited, 130, proc.out);
+  assert.equal(resultOf(r, w.pid).code, 130);
+  assert.ok(await deadPid(sessionPid), '세션 프로세스가 남아 있지 않다');
+  assert.match(proc.out, /중단했습니다/);
+  assert.ok(!existsSync(lockPath(r)));
+});
+
+test('따라가기 (f)(g) 도는 split 에 인자 없는 split 이 붙는다: 둘 다 0 이고 둘 다 끝 줄을 내며 실행은 하나', { skip: process.platform === 'win32' }, async () => {
+  const r = makeRepo({ scenario: { slowSplit: 1000 } });
+  assert.equal(r.orch('doctor').code, 0);
+  const first = r.start('split', DESIGN(r));
+  const firstExit = exitOf(first);
+  await waitFile(path.join(r.repo, '.orchestrator', 'fake-slow-split.pid'));
+  const second = r.orch('split');
+  assert.equal(second.code, 0, second.out);
+  assert.equal(await firstExit, 0, first.out);
+  for (const out of [first.out, second.out]) assert.match(out, /작업 \d+개로 나눴습니다/);
+  const runs = readdirSync(path.join(r.repo, '.orchestrator', 'runs'));
+  assert.equal(runs.length, 1);
+  assert.equal(readFileSync(path.join(r.repo, '.orchestrator', 'current'), 'utf8').trim(), runs[0]);
+});
+
+test('따라가기 (g) 다른 프로세스의 작업에 붙는다: 덧붙은 줄을 내고, 결과 없이 사라지면 3(옛 결과는 무시)', async () => {
+  const r = makeRepo();
+  mkdirSync(workerDir(r), { recursive: true });
+  const logFile = path.join(workerDir(r), 'log');
+  writeFileSync(logFile, '이전 작업의 줄\n');
+  const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  const pid = sleeper.pid;
+  const startedAt = new Date().toISOString();
+  writeFileSync(path.join(workerDir(r), `result-${pid}.json`), JSON.stringify({ pid, command: 'doctor', code: 0, error: '', endedAt: new Date(Date.now() - 60000).toISOString(), delivered: false }));
+  writeFileSync(path.join(workerDir(r), `read-${pid}`), String(statSync(logFile).size));
+  writeFileSync(path.join(workerDir(r), 'worker.json'), JSON.stringify({ pid, command: 'doctor', args: ['doctor'], startedAt }));
+  writeFileSync(lockPath(r), JSON.stringify({ pid, command: 'doctor', startedAt }));
+  // 결과를 기다리는 시간만 짧게(이 테스트는 작업을 띄우지 않는다)
+  const wrapper = path.join(tmp('orch-wrap-'), 'wrapper.mjs');
+  writeFileSync(wrapper, `import { cli } from ${JSON.stringify(pathToFileURL(ORCH).href)};\nawait cli(process.argv.slice(2), { resultWaitMs: 200 });\n`);
+  const proc = spawn(process.execPath, [wrapper, 'doctor', '--repo', r.repo], { env: r.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  proc.out = '';
+  for (const st of [proc.stdout, proc.stderr]) st.setEncoding('utf8').on('data', (d) => (proc.out += d));
+  const exited = exitOf(proc);
+  await sleep(300);
+  appendFileSync(logFile, '붙은 작업의 줄 한글\n');
+  for (let i = 0; i < 100 && !proc.out.includes('붙은 작업의 줄'); i += 1) await sleep(50);
+  assert.match(proc.out, /붙은 작업의 줄 한글\n/);
+  assert.ok(!proc.out.includes('이전 작업의 줄'));
+  sleeper.kill('SIGKILL');
+  assert.equal(await exited, 3, proc.out);
+  assert.match(proc.out, /결과를 남기지 않고/);
+});
+
+test('따라가기 (k) 따라가기를 강제로 죽여도 작업은 돌고, 다시 붙은 따라가기가 남은 줄을 빠짐·겹침 없이 낸다', { skip: process.platform === 'win32' }, async () => {
+  const r = makeRepo({ scenario: { slowSplit: 1000 } });
+  assert.equal(r.orch('doctor').code, 0);
+  const from = statSync(path.join(workerDir(r), 'log')).size;
+  const first = r.start('split', DESIGN(r));
+  const firstExit = exitOf(first);
+  await waitFile(path.join(r.repo, '.orchestrator', 'fake-slow-split.pid'));
+  await sleep(600); // 분할 세션이 기다리는 동안 따라가기는 낼 것을 다 내고 위치를 저장했다
+  const w = workerJson(r);
+  first.kill('SIGKILL');
+  await firstExit;
+  assert.ok(pidAlive(w.pid), '작업은 따라가기와 함께 죽지 않는다');
+  const second = r.orch('split');
+  assert.equal(second.code, 0, second.out);
+  const res = resultOf(r, w.pid);
+  assert.equal(first.out + second.out, logBytes(r).subarray(from, res.logTo).toString('utf8'));
 });

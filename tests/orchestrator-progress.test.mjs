@@ -151,6 +151,11 @@ test('(h) 중단하면 interrupted 인 end', { skip: process.platform === 'win32
   const pidFile = path.join(r.repo, '.orchestrator', 'fake-slow.pid');
   for (let i = 0; i < 200 && !existsSync(pidFile); i += 1) await new Promise((res) => setTimeout(res, 50));
   assert.ok(existsSync(pidFile), proc.out);
+  // start 의 pid 는 따라가기(proc)가 아니라 분리된 작업의 것
+  const workerPid = JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'worker', 'worker.json'), 'utf8')).pid;
+  const first = raw(r).split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.ev === 'start' && e.stage === 'run'); // 아직 끝나지 않아 events() 의 검사 전
+  assert.equal(first.pid, workerPid, raw(r));
+  assert.notEqual(first.pid, proc.pid);
   const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
   proc.kill('SIGINT');
   assert.equal(await exited, 130);
