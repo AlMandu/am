@@ -10,6 +10,9 @@
 ## am-orchestrator 0.8.5 (2026-10-10)
 
 - `.orchestrator/config.json` 에 `minFreeMemoryMB` 를 적지 않았을 때 쓰는 남은 메모리 기본 기준을 3072MB 에서 6144MB 로 올렸다. 기본 기준은 여전히 Windows 에서만 쓰고, 직접 적은 값은 모든 OS 에서 쓰며, `0` 은 끈다.
+- `.orchestrator/config.json` 에 `minFreeMemoryMB` 를 적지 않았거나 잘못 적었으면(예: "6GB") am:auto 와 같은 PC 전체 설정 파일 `~/.claude/am/settings.json` 의 `minFreeMemoryMB` 를 쓴다. 순서는 저장소 값 → PC 전체 값 → 기본이다.
+- 이 PC 전체 설정 파일이 깨졌으면 세션을 띄우기 전에 그 파일 경로를 알리며 멈춘다.
+- 남은 메모리 대기 줄이 기준을 어디서 가져왔는지(저장소 설정, PC 전체 파일, 기본값) 알린다.
 
 ## 0.1.34 (2026-10-10)
 

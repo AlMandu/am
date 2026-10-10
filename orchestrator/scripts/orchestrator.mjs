@@ -421,6 +421,34 @@ export function readUserModels(file) {
   return result;
 }
 
+// PC 단위 사용자 설정 파일 읽기. am 의 plugin/scripts/user-settings.mjs 와 경로·검사·오류 문구가 같은 사본이다(플러그인끼리 import 하지 않음).
+export const userSettingsFile = (env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am', 'settings.json');
+
+/** 메모(`_` 키)를 뺀 { minFreeMemoryMB }. 파일이나 키가 없으면 null, 첫 문제에서 { error } (없는 파일 말고는 읽기 오류도 문제). */
+export function readUserSettings(file) {
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { minFreeMemoryMB: null };
+    return { error: `${file}: cannot read the file (${oneLine(err && err.message)})` };
+  }
+  let data;
+  try {
+    data = JSON.parse(text.replace(/^﻿/, ''));
+  } catch (err) {
+    return { error: `${file}: not valid JSON (${oneLine(err && err.message)})` };
+  }
+  const problem = (what) => ({ error: `${file}: ${what}` });
+  const isNote = (k) => k.startsWith('_');
+  if (!isObj(data)) return problem('the top level must be a JSON object');
+  for (const k of Object.keys(data)) if (k !== 'minFreeMemoryMB' && !isNote(k)) return problem(`unknown key "${k}" (use "minFreeMemoryMB")`);
+  const v = data.minFreeMemoryMB;
+  if (v === undefined || v === null) return { minFreeMemoryMB: null };
+  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return { minFreeMemoryMB: v };
+  return problem(`minFreeMemoryMB must be null or a finite number of 0 or more (got ${JSON.stringify(v)})`);
+}
+
 function loadConfig(repo) {
   const file = path.join(repo, ORCH_DIR, 'config.json');
   const cfg = existsSync(file) ? merge(defaults(), readJson(file)) : defaults();
@@ -429,6 +457,10 @@ function loadConfig(repo) {
   const user = readUserModels(userModelsFile(process.env));
   if (user.error) fail(`사용자 모델 설정 파일이 잘못돼 세션을 띄우지 않고 멈춥니다: ${user.error}\n파일을 고치거나 지우고(지우면 기본값으로 돕니다) 다시 실행하세요.`);
   cfg.userModels = user; // merge 뒤에 넣어 config.json 의 값과 섞이지 않는다
+  const settingsFile = userSettingsFile(process.env);
+  const settings = readUserSettings(settingsFile);
+  if (settings.error) fail(`PC 전체 설정 파일이 잘못돼 세션을 띄우지 않고 멈춥니다: ${settings.error}\n파일을 고치거나 지우고 다시 실행하세요.`);
+  cfg.memoryLimit = memoryLimitOf(cfg.minFreeMemoryMB, settings.minFreeMemoryMB, settingsFile); // merge 뒤에 넣어 config.json 의 값과 섞이지 않는다
   return cfg;
 }
 
@@ -627,13 +659,13 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   const who = ctx.tag || path.basename(dir).startsWith('_') ? '' : `${path.basename(dir)} `; // 함께 도는 작업이면 log 가 작업 ID 를 붙인다
   const task = path.basename(dir).startsWith('_') ? undefined : path.basename(dir);
   const release = await takeSession({ repo: ctx.root || ctx.repo, phase, where: rel(ctx, dir) }, {
-    minFreeMemoryMB: ctx.cfg.minFreeMemoryMB,
+    minFreeMemoryMB: ctx.cfg.memoryLimit.setting,
     onWait: (n, max) => {
       log(ctx, `    ${who}${phase}: 이 PC 에서 오케스트레이터 세션 ${n}개가 돌고 있어 자리가 날 때까지 기다립니다 (최대 ${max}개, 바꾸려면 \`sessions <N>\`)`);
       event({ ev: 'note', stage: phase, text: `waiting for a free session slot (${n} in use, max ${max})` });
     },
     onMemoryWait: (freeMB, needMB) => {
-      log(ctx, `    ${who}${phase}: PC 의 남은 메모리가 ${freeMB}MB 로 기준 ${needMB}MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다 (끄려면 config.json 의 minFreeMemoryMB: 0)`);
+      log(ctx, `    ${who}${phase}: PC 의 남은 메모리가 ${freeMB}MB 로 기준 ${needMB}MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다 ${memorySourceText(ctx.cfg.memoryLimit)}`);
       event({ ev: 'note', stage: phase, task, text: `waiting for free memory (${freeMB} MB free, needs ${needMB} MB)` });
     },
   });
@@ -1767,15 +1799,38 @@ export const DEFAULT_MIN_FREE_MEMORY_MB = 6144;
  * setting(minFreeMemoryMB): null·없음·빈 문자열·잘못된 값은 기본 기준(win32 에서만), 0 은 끔, 양수는 어느 OS 에서나 그 값.
  */
 export function memoryShortMB({ busy, freeBytes, setting, platform }) {
-  let needMB = DEFAULT_MIN_FREE_MEMORY_MB;
-  let custom = false;
-  if (typeof setting === 'number' || (typeof setting === 'string' && setting.trim() !== '')) {
-    const n = Number(setting);
-    if (Number.isFinite(n) && n >= 0) [needMB, custom] = [n, true];
-  }
+  const n = customMemoryMB(setting);
+  const custom = n !== null;
+  const needMB = custom ? n : DEFAULT_MIN_FREE_MEMORY_MB;
   if (busy <= 0 || needMB === 0 || (!custom && platform !== 'win32')) return null;
   const freeMB = Math.floor(freeBytes / 1048576);
   return freeMB < needMB ? { freeMB, needMB } : null;
+}
+
+/** 직접 적은 기준(0 이상의 유한한 수, 또는 그렇게 읽히는 빈칸 아닌 문자열)이면 그 수, 아니면 null. */
+function customMemoryMB(setting) {
+  if (typeof setting === 'number' || (typeof setting === 'string' && setting.trim() !== '')) {
+    const n = Number(setting);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+
+/**
+ * 남은 메모리 기준과 그 출처: 쓸 수 있는 저장소 값(.orchestrator/config.json) → PC 전체 값(pcFile) → 기본.
+ * { setting, source: 'repo' | 'pc' | 'default', file }. setting 은 memoryShortMB 에 그대로 넘긴다.
+ */
+export function memoryLimitOf(repoValue, pcValue, pcFile) {
+  const repo = customMemoryMB(repoValue);
+  if (repo !== null) return { setting: repo, source: 'repo', file: '.orchestrator/config.json' };
+  if (pcValue !== null && pcValue !== undefined) return { setting: pcValue, source: 'pc', file: pcFile };
+  return { setting: null, source: 'default', file: pcFile };
+}
+
+/** 대기 줄 끝에 붙는 기준의 출처 문구(괄호 포함). */
+export function memorySourceText(limit) {
+  if (limit.source === 'default') return `(기준: 기본값, 바꾸거나 끄려면(0) ${limit.file} 의 minFreeMemoryMB)`;
+  return `(기준: ${limit.file} 의 minFreeMemoryMB, 끄려면 0)`;
 }
 export const HEARTBEAT_MS = 30000;
 export const STALE_MS = 5 * 60000;

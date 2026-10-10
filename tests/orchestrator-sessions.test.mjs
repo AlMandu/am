@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, ut
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { DEFAULT_MIN_FREE_MEMORY_MB, memoryShortMB, snapshot } from '../orchestrator/scripts/orchestrator.mjs';
+import { DEFAULT_MIN_FREE_MEMORY_MB, memoryLimitOf, memoryShortMB, memorySourceText, snapshot } from '../orchestrator/scripts/orchestrator.mjs';
 import { task, planOf, PAR, sleep, makeRepo, prepared, statusJson } from './orchestrator-helpers.mjs';
 
 // ------------------------------------------------------------------ 이 PC 전체의 동시 세션 수
@@ -115,8 +115,10 @@ test('memoryShortMB: 다른 세션·게이트가 돌 때만, 남은 메모리가
   }
 });
 
-/** 다른 호스트의 기록 하나를 둔 채 run 을 띄워 메모리 대기 줄을 기다린다. 기록을 지우면 이어서 끝난다. */
-async function waitsForMemory(r, name, record) {
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 다른 호스트의 기록 하나를 둔 채 run 을 띄워 메모리 대기 줄(끝에 기준의 출처 source)을 기다린다. 기록을 지우면 이어서 끝난다. */
+async function waitsForMemory(r, name, record, source = '(기준: .orchestrator/config.json 의 minFreeMemoryMB, 끄려면 0)') {
   const dir = path.join(r.home, 'am-orchestrator', 'sessions');
   mkdirSync(dir, { recursive: true });
   const other = path.join(dir, name);
@@ -125,7 +127,7 @@ async function waitsForMemory(r, name, record) {
   const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
   try {
     for (let i = 0; i < 200 && !/시작을 미룹니다/.test(proc.out); i += 1) await sleep(50);
-    assert.match(proc.out, /\n {4}T01 plan: PC 의 남은 메모리가 \d+MB 로 기준 1000000000MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다 \(끄려면 config\.json 의 minFreeMemoryMB: 0\)/);
+    assert.match(proc.out, new RegExp(`\\n {4}T01 plan: PC 의 남은 메모리가 \\d+MB 로 기준 1000000000MB 보다 적어, 다른 세션이나 게이트가 끝나거나 메모리가 생길 때까지 시작을 미룹니다 ${esc(source)}\\n`));
     await sleep(1500);
     assert.equal(r.calls().filter((c) => c.prompt.startsWith('/am:plan Plan task')).length, 0, '메모리가 생길 때까지 세션을 띄우지 않는다');
     assert.equal(statusJson(r).next, 'wait');
@@ -159,6 +161,66 @@ test('게이트 기록은 동시 세션 수에는 세지 않고 메모리 확인
   rmSync(gate, { force: true });
   const r2 = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1, minFreeMemoryMB: 1e9 } });
   await waitsForMemory(r2, 'other-host~4243~1.gate.json', { repo: '/elsewhere', phase: 'gate' });
+});
+
+test('memoryLimitOf: 쓸 수 있는 저장소 값 → PC 전체 값 → 기본 순으로 기준을 정하고, memorySourceText 가 그 출처를 알린다', () => {
+  const pc = '/cfg/am/settings.json';
+  const repo = { source: 'repo', file: '.orchestrator/config.json' };
+  assert.deepEqual(memoryLimitOf(500, 1000, pc), { setting: 500, ...repo });
+  assert.deepEqual(memoryLimitOf(0, 1000, pc), { setting: 0, ...repo });
+  assert.deepEqual(memoryLimitOf('500', 1000, pc), { setting: 500, ...repo }, '저장소 파일의 문자열 수는 그대로 쓴다');
+  for (const value of [null, undefined, '', '6GB', -1]) assert.deepEqual(memoryLimitOf(value, 1000, pc), { setting: 1000, source: 'pc', file: pc }, String(value));
+  assert.deepEqual(memoryLimitOf(null, 0, pc), { setting: 0, source: 'pc', file: pc });
+  assert.deepEqual(memoryLimitOf(null, null, pc), { setting: null, source: 'default', file: pc });
+  assert.equal(memorySourceText(memoryLimitOf(500, null, pc)), '(기준: .orchestrator/config.json 의 minFreeMemoryMB, 끄려면 0)');
+  assert.equal(memorySourceText(memoryLimitOf(null, 1000, pc)), '(기준: /cfg/am/settings.json 의 minFreeMemoryMB, 끄려면 0)');
+  assert.equal(memorySourceText(memoryLimitOf(null, null, pc)), '(기준: 기본값, 바꾸거나 끄려면(0) /cfg/am/settings.json 의 minFreeMemoryMB)');
+});
+
+/** 테스트용 Claude 설정 폴더 아래의 PC 전체 설정 파일에 내용을 쓰고 그 경로를 돌려준다. */
+function writePcSettings(r, content) {
+  const file = path.join(r.home, 'am', 'settings.json');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content);
+  return file;
+}
+
+test('저장소 값이 없으면 PC 전체 값을 쓰고 대기 줄이 그 파일을 알린다', { timeout: 60000 }, async () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1, minFreeMemoryMB: null } });
+  const file = writePcSettings(r, JSON.stringify({ minFreeMemoryMB: 1e9 }));
+  await waitsForMemory(r, 'other-host~4244~1.json', { repo: '/elsewhere', phase: 'implement' }, `(기준: ${file} 의 minFreeMemoryMB, 끄려면 0)`);
+});
+
+test('저장소 값과 PC 값이 함께 있으면 저장소 값을 쓴다', { timeout: 60000 }, () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1 } }); // 저장소 minFreeMemoryMB 0: 끔
+  writePcSettings(r, JSON.stringify({ minFreeMemoryMB: 1e9 }));
+  const dir = path.join(r.home, 'am-orchestrator', 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const other = path.join(dir, 'other-host~4245~1.json');
+  writeFileSync(other, JSON.stringify({ repo: '/elsewhere', phase: 'implement' }));
+  try {
+    const run = r.orch('run');
+    assert.equal(run.code, 0, run.out);
+    assert.doesNotMatch(run.out, /시작을 미룹니다/);
+    assert.equal(r.statusOf().T01, 'done');
+  } finally {
+    rmSync(other, { force: true });
+  }
+});
+
+test('PC 전체 설정 파일이 깨졌으면 세션 없이 멈추고, 파일이 없으면 설정 없음으로 돈다', { timeout: 60000 }, () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), config: { parallel: 1 } });
+  const file = writePcSettings(r, JSON.stringify({ minFreeMemoryMB: '6GB' }));
+  const calls = r.calls().length;
+  const run = r.orch('run');
+  assert.equal(run.code, 2, run.out);
+  assert.ok(run.out.includes('PC 전체 설정 파일이 잘못돼 세션을 띄우지 않고 멈춥니다'), run.out);
+  assert.ok(run.out.includes(file), run.out);
+  assert.equal(r.calls().length, calls, '세션을 띄우지 않는다');
+  rmSync(file);
+  const again = r.orch('run');
+  assert.equal(again.code, 0, again.out);
+  assert.equal(r.statusOf().T01, 'done');
 });
 
 // ------------------------------------------------------------------ 흐름

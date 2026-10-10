@@ -470,6 +470,55 @@ test('the am user models module and the orchestrator copy read the same files al
   }
 });
 
+test('the am user settings module and the orchestrator copy read the same files alike', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const am = await import('../plugin/scripts/user-settings.mjs');
+  const orch = await import('../orchestrator/scripts/orchestrator.mjs');
+  // Name, file content (null: no file), whether an error is expected.
+  const cases = [
+    ['valid', '﻿{"_note":"x","minFreeMemoryMB":6144}', false],
+    ['no file', null, false],
+    ['empty object', '{}', false],
+    ['null value', '{"minFreeMemoryMB":null}', false],
+    ['zero', '{"minFreeMemoryMB":0}', false],
+    ['fraction', '{"minFreeMemoryMB":6144.5}', false],
+    ['broken JSON', '{"minFreeMemoryMB":', true],
+    ['empty file', '', true],
+    ['array', '[]', true],
+    ['top-level number', '6144', true],
+    ['negative', '{"minFreeMemoryMB":-1}', true],
+    ['string', '{"minFreeMemoryMB":"6GB"}', true],
+    ['boolean', '{"minFreeMemoryMB":true}', true],
+    ['infinite', '{"minFreeMemoryMB":1e400}', true],
+    ['key case', '{"minFreeMemoryMb":6144}', true],
+    ['models key', '{"model":{}}', true],
+  ];
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-user-settings-'));
+  try {
+    assert.equal(orch.userSettingsFile({ CLAUDE_CONFIG_DIR: base }), am.userSettingsFile({ CLAUDE_CONFIG_DIR: base }));
+    assert.equal(orch.userSettingsFile({}), am.userSettingsFile({}));
+    for (const [name, content, broken] of cases) {
+      const file = am.userSettingsFile({ CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(base, 'c-')) });
+      if (content !== null) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, content);
+      }
+      const a = am.readUserSettings(file);
+      assert.deepEqual(orch.readUserSettings(file), a, name);
+      assert.equal('error' in a, broken, name);
+      if (!broken) assert.ok(!JSON.stringify(a).includes('"_'), name);
+    }
+    const folder = am.userSettingsFile({ CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(base, 'c-')) });
+    fs.mkdirSync(folder, { recursive: true });
+    const a = am.readUserSettings(folder);
+    assert.deepEqual(orch.readUserSettings(folder), a, 'a folder');
+    assert.ok('error' in a, 'a folder');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
 test('am memory guard and the orchestrator: same free-memory rule, record rule, folder, name and host on the same inputs', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
