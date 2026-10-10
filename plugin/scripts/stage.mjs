@@ -33,10 +33,13 @@
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
 // stage again). Exit codes: 0 result printed, 1 bad input.
+// Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix]` runs the same stage
+// while holding .am/<slug>/stage-worker.json (one worker per task), logs to stage-worker.log, leaves the result line in
+// stage-result.json and stops (`failed`) when the follower's stage-heartbeat file stays the same for 30 minutes.
 // Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -58,6 +61,20 @@ export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compac
 export const RELAY_MS = 5000;
 // How often a plan or do session's plan.md is read for new second-opinion lines.
 export const OPINION_MS = 5000;
+// Worker mode: how often a worker touches its record and reads the heartbeat.
+export const WORKER_TICK_MS = 30000;
+// A worker record untouched this long, with a live pid, is only suspect: looked at again before it is taken.
+export const WORKER_STALE_MS = 5 * 60000;
+// How long a new worker waits before the second look at a suspect record.
+export const WORKER_CONFIRM_MS = 45000;
+// How long a new worker tries again while a live worker holds the record (the last one may be releasing it).
+export const WORKER_BUSY_MS = 5000;
+// How often it tries in that time.
+export const WORKER_BUSY_POLL_MS = 200;
+// A worker whose heartbeat file keeps the same content this long stops: nobody follows it any more.
+export const WORKER_IDLE_MS = 30 * 60000;
+// The worker's files under .am/<slug>/: its record, its result, its output log, and the heartbeat its follower writes.
+export const WORKER_FILES = { record: 'stage-worker.json', result: 'stage-result.json', log: 'stage-worker.log', heartbeat: 'stage-heartbeat' };
 // End markers each session may give; anything else is `failed`.
 export const MARKS = {
   plan: ['READY', 'NEEDS_DECISION'],
@@ -536,22 +553,45 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
   return { runs: found.map((f) => f.name), text: found.map((f) => f.text).join(', ') };
 }
 
+/** The text and modification time of a lock file, or null when it cannot be read. */
+function lockSnapshot(file) {
+  try {
+    return { text: readFileSync(file, 'utf8'), mtimeMs: statSync(file).mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Takes the repository's start lock (exclusive create of {pid, t}). Returns {release} when taken, {busy: pid} while a live
- * owner holds it, or null when it cannot be made (then the stage goes on unchecked). A dead owner's lock is moved aside
- * first and dropped only when the moved file still names a dead owner; an unreadable lock counts as dead after a minute.
+ * Whether the owner of a lock file is `dead`, `live` or `suspect`. Missing is dead; unreadable is dead after a minute; a
+ * dead pid is dead. With staleMs, a live pid whose file was not touched for longer is only `suspect` (after a sleep the
+ * owner's timer has not run yet): it is dead when the earlier look `suspect` ({mtimeMs, text}) still matches the file.
  */
-export function takeLock(file, { now = Date.now, alive = pidAlive } = {}) {
-  const mine = JSON.stringify({ pid: process.pid, t: now() });
-  const dead = (f) => {
-    const owner = readJson(f);
-    if (owner) return !(Number.isInteger(owner.pid) && owner.pid > 0 && alive(owner.pid));
-    try {
-      return now() - statSync(f).mtimeMs > 60000;
-    } catch {
-      return true;
-    }
-  };
+export function ownerState(file, { now = Date.now, alive = pidAlive, staleMs = 0, suspect = null } = {}) {
+  const seen = lockSnapshot(file);
+  if (!seen) return 'dead';
+  let owner = null;
+  try {
+    owner = JSON.parse(seen.text);
+  } catch {
+    // Unreadable: judged by its age.
+  }
+  if (!owner) return now() - seen.mtimeMs > 60000 ? 'dead' : 'live';
+  if (!(Number.isInteger(owner.pid) && owner.pid > 0 && alive(owner.pid))) return 'dead';
+  if (!staleMs || now() - seen.mtimeMs <= staleMs) return 'live';
+  return suspect && suspect.mtimeMs === seen.mtimeMs && suspect.text === seen.text ? 'dead' : 'suspect';
+}
+
+/**
+ * Takes a lock file (exclusive create of {pid, t, ...fields}). Returns {release, owns} when taken (owns(): 'yes' while
+ * the file still holds this owner's text, 'missing' or 'other'), {busy: pid} while a live owner holds it (with
+ * `suspect`, the look to pass back after a while, when it is only suspect: see ownerState), or null when it cannot be
+ * made (then the start lock lets the stage go on unchecked). A dead owner's lock is moved aside first and dropped only
+ * when the moved file still names a dead owner.
+ */
+export function takeLock(file, { now = Date.now, alive = pidAlive, fields = {}, staleMs = 0, suspect = null } = {}) {
+  const mine = JSON.stringify({ pid: process.pid, t: now(), ...fields });
+  const dead = (f) => ownerState(f, { now, alive, staleMs, suspect }) === 'dead';
   for (let i = 0; i < 3; i++) {
     try {
       writeFileSync(file, mine, { flag: 'wx' });
@@ -562,11 +602,23 @@ export function takeLock(file, { now = Date.now, alive = pidAlive } = {}) {
           // Already gone.
         }
       };
-      return { release };
+      const owns = () => {
+        try {
+          return readFileSync(file, 'utf8') === mine ? 'yes' : 'other';
+        } catch {
+          return 'missing';
+        }
+      };
+      return { release, owns };
     } catch (err) {
       if (!err || err.code !== 'EEXIST') return null;
     }
-    if (!dead(file)) return { busy: readJson(file)?.pid ?? null };
+    const state = ownerState(file, { now, alive, staleMs, suspect });
+    if (state === 'suspect') {
+      const look = lockSnapshot(file);
+      if (look) return { busy: readJson(file)?.pid ?? null, suspect: look };
+    }
+    if (state === 'live') return { busy: readJson(file)?.pid ?? null };
     const aside = `${file}.${process.pid}.stale`;
     try {
       renameSync(file, aside);
@@ -831,17 +883,25 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
 
 // ------------------------------------------------------------------ main
 
+const BAD_ARGS = `bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`;
+
+/** The stage, slug and flags of the command line, or null when they are not a valid call. */
+export function stageArgs(argv) {
+  const [stage, slug, ...flags] = argv;
+  if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) return null;
+  return { stage, slug, push: flags.includes('--push'), fix: flags.includes('--fix') };
+}
+
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
 export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
-  const [stage, slug, ...flags] = argv;
-  if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) {
-    out.write(`bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`);
+  const args = stageArgs(argv);
+  if (!args) {
+    out.write(BAD_ARGS);
     return 1;
   }
+  const { stage, slug, push, fix } = args;
   // Limits the caller left out (undefined or null) are the defaults; any other value is used as given.
   const limits = Object.fromEntries(Object.keys(TIMEOUT_MIN).map((key) => [key, timeoutMin[key] ?? TIMEOUT_MIN[key]]));
-  const push = flags.includes('--push');
-  const fix = flags.includes('--fix');
   const dir = path.join(cwd, '.am', slug);
   const planFile = path.join(dir, 'plan.md');
   const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null };
@@ -1069,6 +1129,185 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   return done();
 }
 
+// ------------------------------------------------------------------ worker mode
+
+/** Whether a line is one JSON object. */
+const jsonLine = (line) => {
+  try {
+    const v = JSON.parse(line);
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Worker mode (`--worker`): runs main for one stage of one task while holding .am/<slug>/stage-worker.json, logs main's
+ * output to stage-worker.log and leaves the result in stage-result.json (atomic, written once). It stops by the stop
+ * path (`failed`) on a signal, when main throws, or when the follower's heartbeat file stays the same for idleMs; it
+ * stops quietly (no result, no end event, record untouched) when its record is taken by another worker. Returns the
+ * exit code; every wait is a parameter, the rest goes to main.
+ */
+export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, busyMs = WORKER_BUSY_MS, busyPollMs = WORKER_BUSY_POLL_MS, idleMs = WORKER_IDLE_MS, exit = (c) => process.exit(c), on = (s, f) => process.on(s, f), out = process.stdout, ...rest } = {}) {
+  const args = stageArgs(argv);
+  if (!args) {
+    out.write(BAD_ARGS);
+    return 1;
+  }
+  const { stage, slug, push, fix } = args;
+  const { cwd = process.cwd(), now = Date.now, alive = pidAlive } = rest;
+  const dir = path.join(cwd, '.am', slug);
+  const file = (name) => path.join(dir, WORKER_FILES[name]);
+  const log = (text) => {
+    try {
+      appendFileSync(file('log'), text);
+    } catch {
+      // Dropped, like a failed event write.
+    }
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const lockOpts = { now, alive, fields: { stage, push, fix }, staleMs };
+  let lock = takeLock(file('record'), lockOpts);
+  if (lock?.suspect) {
+    await sleep(confirmMs);
+    lock = takeLock(file('record'), { ...lockOpts, suspect: lock.suspect });
+  }
+  // The worker before this one releases its record only after main returned: try again for a moment.
+  const giveUp = Date.now() + busyMs;
+  while (lock && lock.busy !== undefined && Date.now() < giveUp) {
+    await sleep(busyPollMs);
+    lock = takeLock(file('record'), lockOpts);
+  }
+  if (!lock) {
+    out.write(`the stage worker record .am/${slug}/${WORKER_FILES.record} cannot be made; the stage did not run\n`);
+    return 1;
+  }
+  if (lock.busy !== undefined) {
+    log(`another stage worker of this task is running (pid ${lock.busy ?? '?'})\n`);
+    return 1;
+  }
+  try {
+    writeFileSync(file('log'), '');
+  } catch {
+    // The log is for reading only.
+  }
+  let partial = '';
+  let caught = null; // the last complete JSON line main wrote
+  const sink = {
+    write: (s) => {
+      const text = String(s);
+      log(text);
+      const lines = (partial + text).split('\n');
+      partial = lines.pop();
+      for (const line of lines) if (jsonLine(line)) caught = line;
+      return true;
+    },
+  };
+  const failedLine = (reason) => JSON.stringify({ stage, slug, status: 'failed', reason, costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null });
+  const statOf = (name) => {
+    try {
+      const s = statSync(path.join(dir, name));
+      return { size: s.size, mtimeMs: s.mtimeMs };
+    } catch {
+      return null;
+    }
+  };
+  const writeResult = (line, delivered) => {
+    const target = file('result');
+    const tmp = `${target}.${process.pid}.tmp`;
+    const res = { pid: process.pid, stage, push, fix, line, t: new Date(now()).toISOString(), delivered, plan: statOf('plan.md'), check: statOf('check.md') };
+    try {
+      writeFileSync(tmp, `${JSON.stringify(res)}\n`);
+      renameSync(tmp, target);
+    } catch (err) {
+      log(`the stage result could not be written: ${err.message}\n`);
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        // Left behind.
+      }
+    }
+  };
+  let ended = false;
+  let stopped = false; // ended by a stop, not by main's own end
+  let timer = null;
+  // Once: the result while the record is still this worker's, then the record goes.
+  const wrapUp = (line, delivered) => {
+    if (ended) return false;
+    ended = true;
+    if (lock.owns() === 'yes') writeResult(line, delivered);
+    lock.release();
+    clearInterval(timer);
+    return true;
+  };
+  const stopExit = (reason, delivered, { keepCaught = true } = {}) => () => {
+    if (wrapUp((keepCaught && caught) || failedLine(reason), delivered)) stopped = true;
+    exit(1);
+  };
+  // Pushed out by another worker: take the session down and leave everything else to the new owner.
+  const pushedOut = () => {
+    ended = true;
+    stopped = true;
+    clearInterval(timer);
+    for (const child of active) killTree(child);
+    exit(1);
+  };
+  let missing = 0;
+  let idle = 0;
+  const readBeat = () => {
+    try {
+      return readFileSync(file('heartbeat'), 'utf8');
+    } catch {
+      return null; // no file is a value too: a worker nobody ever followed stops as well
+    }
+  };
+  let beat = readBeat();
+  const tick = () => {
+    if (ended) return;
+    try {
+      const own = lock.owns();
+      if (own === 'other') return pushedOut();
+      if (own === 'missing') {
+        // Another worker may have moved it aside for a moment: only a second missing look counts.
+        if (++missing >= 2) pushedOut();
+        return;
+      }
+      missing = 0;
+      try {
+        const t = new Date(now());
+        utimesSync(file('record'), t, t);
+      } catch {
+        // Looked at again at the next tick.
+      }
+      const next = readBeat();
+      if (next === beat) idle += tickMs;
+      else {
+        idle = 0;
+        beat = next;
+      }
+      if (idle >= idleMs) {
+        const reason = `stopped: nobody followed this stage for ${Math.round(idleMs / 60000)} minutes`;
+        interrupt('heartbeat', { exit: stopExit(reason, true, { keepCaught: false }), reason });
+      }
+    } catch {
+      // A throw in a timer would end the process without a result.
+    }
+  };
+  timer = setInterval(tick, tickMs);
+  timer.unref();
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) on(sig, () => interrupt(sig, { exit: stopExit(`stopped by ${sig}`, false) }));
+  let code;
+  try {
+    code = await main(argv, { ...rest, out: sink });
+  } catch (err) {
+    const reason = `the stage runner failed: ${err?.message ?? err}`;
+    interrupt('error', { exit: stopExit(reason, false), reason });
+  }
+  if (stopped) return 1;
+  wrapUp(caught || failedLine('the stage ended without a result line'), false);
+  return code ?? 1;
+}
+
 // Compare real paths: import.meta.url has symlinks resolved, argv[1] does not.
 const isMain = () => {
   try {
@@ -1079,16 +1318,23 @@ const isMain = () => {
 };
 
 /** What a stop signal does: write the end event of every running stage, take the stage sessions down, exit 1. */
-export function interrupt(sig, { exit = process.exit } = {}) {
-  for (const finish of [...finishers]) finish({ status: 'failed', reason: `stopped by ${sig}`, stopped: true });
+export function interrupt(sig, { exit = process.exit, reason = `stopped by ${sig}` } = {}) {
+  for (const finish of [...finishers]) finish({ status: 'failed', reason, stopped: true });
   for (const child of active) killTree(child);
   exit(1);
 }
 
 if (isMain()) {
-  // A session that is stopped ends this script; take the stage session down with it.
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => interrupt(sig));
-  main(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-  });
+  if (process.argv[2] === '--worker') {
+    // The worker sets up its own stop signals.
+    worker(process.argv.slice(3)).then((code) => {
+      process.exitCode = code;
+    });
+  } else {
+    // A session that is stopped ends this script; take the stage session down with it.
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => interrupt(sig));
+    main(process.argv.slice(2)).then((code) => {
+      process.exitCode = code;
+    });
+  }
 }

@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -1177,6 +1177,44 @@ test('takeLock: one owner at a time; a dead or long unreadable owner is replaced
   assert.equal(takeLock(path.join(dir, 'no-such-folder', 'x.lock')), null);
 });
 
+test('takeLock: extra fields; a live owner untouched past staleMs is taken only on a second look that finds it unchanged', (t) => {
+  const dir = makeRepo(t);
+  const file = path.join(dir, '.am', 'demo', 'stage-worker.json');
+  const mine = takeLock(file, { fields: { stage: 'do', push: true } });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { pid: process.pid, t: JSON.parse(readFileSync(file, 'utf8')).t, stage: 'do', push: true });
+  assert.equal(mine.owns(), 'yes');
+  writeFileSync(file, JSON.stringify({ pid: LIVE, t: 1 }));
+  assert.equal(mine.owns(), 'other');
+  rmSync(file);
+  assert.equal(mine.owns(), 'missing');
+  const old = () => {
+    writeFileSync(file, JSON.stringify({ pid: LIVE, t: 1 }));
+    const then = new Date(Date.now() - 6 * 60000);
+    utimesSync(file, then, then);
+  };
+  old();
+  assert.deepEqual(takeLock(file, { alive: aliveOnly }), { busy: LIVE }, 'without staleMs the age does not count');
+  assert.equal(ownerState(file, { alive: aliveOnly }), 'live');
+  const first = takeLock(file, { alive: aliveOnly, staleMs: 5 * 60000 });
+  assert.equal(first.busy, LIVE);
+  assert.deepEqual(first.suspect, { text: readFileSync(file, 'utf8'), mtimeMs: statSync(file).mtimeMs });
+  assert.equal(ownerState(file, { alive: aliveOnly, staleMs: 5 * 60000 }), 'suspect');
+  assert.equal(ownerState(file, { alive: aliveOnly, staleMs: 5 * 60000, suspect: first.suspect }), 'dead');
+  const second = takeLock(file, { alive: aliveOnly, staleMs: 5 * 60000, suspect: first.suspect });
+  assert.equal(typeof second.release, 'function');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).pid, process.pid);
+  second.release();
+  // Touched between the two looks: still busy.
+  old();
+  const look = takeLock(file, { alive: aliveOnly, staleMs: 5 * 60000 });
+  const later = new Date(Date.now() - 5.5 * 60000);
+  utimesSync(file, later, later);
+  const again = takeLock(file, { alive: aliveOnly, staleMs: 5 * 60000, suspect: look.suspect });
+  assert.equal(again.busy, LIVE);
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify({ pid: LIVE, t: 1 }));
+  assert.deepEqual(readdirSync(path.join(dir, '.am', 'demo')).filter((f) => f.includes('.stale')), []);
+});
+
 test('wait: a blocked stage starts no session and ends with WAIT after the wait time; one note, no start or end', async (t) => {
   const dir = makeRepo(t, { fake: PLANNED });
   taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'do' })]);
@@ -2303,6 +2341,199 @@ test('memory wait: one orchestrator lookup decides whether the do stage holds a 
   assert.match(result.reason, /run skill is not installed/);
   assert.deepEqual(calls, []);
   assert.ok(!events(lost).some((e) => e.stage === 'wait'));
+});
+
+// ------------------------------------------------------------------ worker mode
+
+const WF = (dir, name) => path.join(dir, '.am', 'demo', WORKER_FILES[name]);
+const readOr = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : null);
+/** What the worker's files and events hold right now. */
+const workerState = (dir) => {
+  const result = readOr(WF(dir, 'result'));
+  return { result: result && JSON.parse(result), record: readOr(WF(dir, 'record')), log: readOr(WF(dir, 'log')), events: events(dir) };
+};
+/** Starts a worker with a fake claude, a fake exit (which records the state the real exit would leave) and fake signal handlers. */
+function startWorker(dir, argv, opts = {}) {
+  const w = { text: '', handlers: {}, exits: [] };
+  w.done = worker(argv, {
+    cwd: dir,
+    env: isolatedEnv,
+    claude: [process.execPath, path.join(dir, 'fake-claude.mjs')],
+    orchestrator: () => null,
+    am: () => [],
+    freeMem: () => 2 ** 50,
+    out: { write: (s) => (w.text += s) },
+    on: (sig, f) => (w.handlers[sig] = f),
+    exit: (code) => w.exits.push({ code, at: Date.now(), state: workerState(dir) }),
+    ...opts,
+  });
+  return w;
+}
+const callsOf = (dir) => readOr(path.join(dir, 'calls.jsonl'));
+const noTemp = (dir) => assert.deepEqual(readdirSync(path.join(dir, '.am', 'demo')).filter((f) => f.endsWith('.tmp') || f.includes('.stale')), []);
+
+test('worker: no worker file is ever a task file a session reads', () => {
+  for (const kind of ['plan', 'do', 'handover', 'check', 'compactmem', 'commit']) {
+    for (const fix of [false, true]) for (const name of Object.values(WORKER_FILES)) assert.ok(!contextFiles(kind, { fix }).includes(name), `${kind} ${fix}: ${name}`);
+  }
+});
+
+test('worker: a normal stage leaves its result line, the plan file state and the log, and releases the record', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const w = startWorker(dir, ['plan', 'demo']);
+  assert.equal(await w.done, 0);
+  assert.deepEqual(w.exits, []);
+  const { result, record, log } = workerState(dir);
+  const plan = statSync(path.join(dir, '.am', 'demo', 'plan.md'));
+  assert.equal(result.pid, process.pid);
+  assert.deepEqual([result.stage, result.push, result.fix, result.delivered, result.check], ['plan', false, false, false, null]);
+  assert.deepEqual(result.plan, { size: plan.size, mtimeMs: plan.mtimeMs });
+  assert.ok(!Number.isNaN(Date.parse(result.t)));
+  assert.equal(JSON.parse(result.line).status, 'READY');
+  assert.ok(log.includes(result.line));
+  assert.equal(record, null);
+  noTemp(dir);
+  assert.equal(w.text, '');
+  const flagged = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  assert.equal(await startWorker(flagged, ['do', 'demo', '--push', '--fix']).done, 0);
+  const r = workerState(flagged).result;
+  assert.deepEqual([r.stage, r.push, r.fix, JSON.parse(r.line).status], ['do', true, true, 'DONE']);
+});
+
+test('worker: a live worker of the task keeps a new one out; a dead or unchanged stale one does not', async (t) => {
+  const held = makeRepo(t, { plan: SMALL });
+  const owner = JSON.stringify({ pid: LIVE, t: 1, stage: 'do' });
+  writeFileSync(WF(held, 'record'), owner);
+  assert.equal(await startWorker(held, ['check', 'demo'], { alive: aliveOnly, busyMs: 100, busyPollMs: 20 }).done, 1);
+  assert.equal(callsOf(held), null);
+  assert.deepEqual([workerState(held).result, workerState(held).record], [null, owner]);
+  assert.match(workerState(held).log, /another stage worker of this task is running \(pid 101\)/);
+
+  const dead = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(dead, 'record'), JSON.stringify({ pid: DEAD, t: 1 }));
+  assert.equal(await startWorker(dead, ['check', 'demo'], { alive: aliveOnly }).done, 0);
+  assert.ok(workerState(dead).result);
+  noTemp(dead);
+
+  const old = new Date(Date.now() - 6 * 60000);
+  const stale = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(stale, 'record'), owner);
+  utimesSync(WF(stale, 'record'), old, old);
+  assert.equal(await startWorker(stale, ['check', 'demo'], { alive: aliveOnly, confirmMs: 50 }).done, 0);
+  assert.ok(workerState(stale).result);
+  assert.equal(workerState(stale).record, null);
+  noTemp(stale);
+
+  // Touched between the two looks: the owner lives.
+  const touched = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(touched, 'record'), owner);
+  utimesSync(WF(touched, 'record'), old, old);
+  setTimeout(() => utimesSync(WF(touched, 'record'), new Date(), new Date()), 100);
+  assert.equal(await startWorker(touched, ['check', 'demo'], { alive: aliveOnly, confirmMs: 300, busyMs: 100, busyPollMs: 20 }).done, 1);
+  assert.equal(callsOf(touched), null);
+  assert.equal(workerState(touched).record, owner);
+  noTemp(touched);
+});
+
+test('worker: a record released while the new worker tries again is taken', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  writeFileSync(WF(dir, 'record'), JSON.stringify({ pid: LIVE, t: 1 }));
+  setTimeout(() => rmSync(WF(dir, 'record')), 300);
+  assert.equal(await startWorker(dir, ['check', 'demo'], { alive: aliveOnly, busyMs: 3000, busyPollMs: 20 }).done, 0);
+  assert.ok(workerState(dir).result);
+});
+
+test('worker: an unchanged heartbeat stops the stage by the stop path, delivered, with the end event reason', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const began = Date.now();
+  const w = startWorker(dir, ['check', 'demo'], { tickMs: 30, idleMs: 150 });
+  assert.equal(await w.done, 1);
+  assert.equal(w.exits.length, 1);
+  const { code, state } = w.exits[0];
+  assert.equal(code, 1);
+  assert.ok(Date.now() - began < 30000, 'the hanging session was stopped');
+  const line = JSON.parse(state.result.line);
+  assert.equal(line.status, 'failed');
+  assert.equal(state.result.delivered, true);
+  const end = ends(state.events);
+  assert.equal(end.length, 1);
+  assert.equal(line.reason, end[0].text);
+  assert.match(line.reason, /^stopped: nobody followed this stage for \d+ minutes$/);
+  assert.equal(state.record, null);
+  // Once stopped, main's late end changes no result.
+  assert.deepEqual(workerState(dir).result, state.result);
+});
+
+test('worker: a heartbeat that changes keeps the stage going; once it stops changing the stage stops', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  let n = 0;
+  const beat = setInterval(() => writeFileSync(WF(dir, 'heartbeat'), String(++n)), 20);
+  const w = startWorker(dir, ['check', 'demo'], { tickMs: 30, idleMs: 200 });
+  await pause(700);
+  clearInterval(beat);
+  const quiet = Date.now();
+  assert.deepEqual(w.exits, []);
+  assert.equal(await w.done, 1);
+  assert.equal(w.exits.length, 1);
+  assert.ok(w.exits[0].at >= quiet);
+  assert.equal(w.exits[0].state.result.delivered, true);
+});
+
+test('worker: a stop signal leaves a failed result, not delivered', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const w = startWorker(dir, ['check', 'demo']);
+  await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+  assert.deepEqual(Object.keys(w.handlers).sort(), ['SIGHUP', 'SIGINT', 'SIGTERM']);
+  w.handlers.SIGTERM();
+  assert.equal(await w.done, 1);
+  const { state } = w.exits[0];
+  assert.equal(JSON.parse(state.result.line).reason, 'stopped by SIGTERM');
+  assert.equal(state.result.delivered, false);
+  assert.equal(ends(state.events)[0].text, 'stopped by SIGTERM');
+  assert.equal(state.record, null);
+});
+
+test('worker: a record another worker took stops it quietly; a record gone for one tick does not', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const w = startWorker(dir, ['check', 'demo'], { tickMs: 30 });
+  await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+  const other = JSON.stringify({ pid: LIVE, t: 9 });
+  writeFileSync(WF(dir, 'record'), other);
+  assert.equal(await w.done, 1);
+  assert.equal(w.exits.length, 1);
+  const { state } = w.exits[0];
+  assert.equal(state.result, null);
+  assert.equal(state.record, other);
+  assert.deepEqual(ends(state.events), []);
+  assert.equal(readOr(WF(dir, 'result')), null, 'not written later either');
+  assert.equal(readOr(WF(dir, 'record')), other);
+
+  const back = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const v = startWorker(back, ['check', 'demo'], { tickMs: 200 });
+  await until(() => existsSync(path.join(back, 'calls.jsonl')));
+  const text = readFileSync(WF(back, 'record'), 'utf8');
+  rmSync(WF(back, 'record'));
+  await pause(100);
+  writeFileSync(WF(back, 'record'), text);
+  await pause(600);
+  assert.deepEqual(v.exits, []);
+  v.handlers.SIGTERM();
+  assert.equal(await v.done, 1);
+  assert.equal(JSON.parse(v.exits[0].state.result.line).reason, 'stopped by SIGTERM');
+});
+
+test('worker: bad arguments print the usage and make no file', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  for (const argv of [['ship', 'demo'], ['do', '../x'], ['do', 'demo', '--force']]) {
+    const w = startWorker(dir, argv);
+    assert.equal(await w.done, 1);
+    assert.match(w.text, /^bad arguments[^]*usage: node stage\.mjs/);
+  }
+  assert.deepEqual([readOr(WF(dir, 'record')), readOr(WF(dir, 'log'))], [null, null]);
+});
+
+test('worker: reads no environment variable; its times are parameters', () => {
+  assert.ok(!String(worker).includes('process.env'));
 });
 
 // Last: by liveRecords, not the folder's file list (a record Windows could not remove at once is left out there, and the folder stays).
