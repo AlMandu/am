@@ -24,6 +24,8 @@ const ENTRIES = {
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs uses the same map).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
+// BUILTIN_MODELS of plugin/scripts/user-files.mjs: the user models file's keys (without default) in its order, with their group.
+const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['compactmem', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (o) => Object.keys(o).filter((k) => !k.startsWith('_')); // `_` keys are notes
@@ -109,6 +111,15 @@ export function targets() {
       what: 'COMPACT_MODEL',
       pattern: /\nexport const COMPACT_MODEL = \{ model: '[^'\n]*', effort: '[^'\n]*' \};/g,
       text: (m) => `\nexport const COMPACT_MODEL = { model: '${m.am.compact.model}', effort: '${m.am.compact.effort}' };`,
+    },
+    {
+      file: 'plugin/scripts/user-files.mjs',
+      what: 'BUILTIN_MODELS',
+      pattern: /\nexport const BUILTIN_MODELS = \{\n[\s\S]*?\n\};/g,
+      text: (m) => {
+        const lines = USER_FILE_KEYS.map(([key, group]) => `  ${key.includes('-') ? `'${key}'` : key}: { model: '${m[group][key].model}', effort: '${m[group][key].effort}' },`);
+        return `\nexport const BUILTIN_MODELS = {\n${lines.join('\n')}\n};`;
+      },
     },
     generated('README.md', (m) =>
       table('대상', [

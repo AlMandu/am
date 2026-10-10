@@ -11,8 +11,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS } from '../plugin/scripts/stage.mjs';
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
-import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
+import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
+import { BUILTIN_MODELS, ensureUserFiles, modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
 import { RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../plugin/scripts/memory-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1408,6 +1409,121 @@ test('user settings: every broken file is one error line naming the file and the
   const r = readUserSettings(folder);
   assert.ok(r.error.startsWith(`${folder}: `) && r.error.includes('read') && !r.error.includes('\n'), r.error);
   assert.ok(!('minFreeMemoryMB' in r));
+});
+
+// A temporary config folder (nothing in it); removed after the test.
+function configDir(t) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-user-files-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+// The template with the `_` removed from every stage key inside model and effort.
+const enableNotes = (text) => {
+  const data = JSON.parse(text);
+  for (const part of ['model', 'effort']) data[part] = Object.fromEntries(Object.entries(data[part]).map(([k, v]) => [k.replace(/^_/, ''), v]));
+  return JSON.stringify(data);
+};
+
+test('user files: the module reads no environment variable and imports only node built-ins and its sibling modules', () => {
+  const src = readFileSync(path.join(REPO, 'plugin', 'scripts', 'user-files.mjs'), 'utf8');
+  assert.ok(!src.includes('process.env'));
+  const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.ok(imports.length > 0);
+  for (const name of imports) assert.ok(name.startsWith('node:') || ['./user-models.mjs', './user-settings.mjs', './memory-guard.mjs'].includes(name), name);
+});
+
+test('user files: the templates read as no setting, carry every built-in value as a note and follow the user models keys', (t) => {
+  const models = modelsTemplate();
+  const settings = settingsTemplate();
+  assert.ok(models.endsWith('}\n') && settings.endsWith('}\n'));
+  assert.deepEqual(readUserModels(userModels(t, models)), { model: {}, effort: {} });
+  assert.deepEqual(readUserSettings(userSettings(t, settings)), { minFreeMemoryMB: null });
+  const data = JSON.parse(models);
+  assert.ok(Array.isArray(data._about) && data._about.length > 0);
+  for (const [key, v] of Object.entries(BUILTIN_MODELS)) {
+    assert.equal(data.model[`_${key}`], v.model, key);
+    assert.equal(data.effort[`_${key}`], v.effort, key);
+  }
+  assert.ok(Object.hasOwn(JSON.parse(settings), 'minFreeMemoryMB'));
+  assert.deepEqual(Object.keys(BUILTIN_MODELS), USER_MODEL_KEYS.filter((k) => k !== 'default'));
+  assert.deepEqual(readUserModels(userModels(t, enableNotes(models))), {
+    model: Object.fromEntries(Object.entries(BUILTIN_MODELS).map(([k, v]) => [k, v.model])),
+    effort: Object.fromEntries(Object.entries(BUILTIN_MODELS).map(([k, v]) => [k, v.effort])),
+  });
+  const noCodex = modelsTemplate({ ...BUILTIN_MODELS, 'codex-opinion': { model: '', effort: 'high' } });
+  assert.ok(!Object.hasOwn(JSON.parse(noCodex).model, '_codex-opinion'));
+  assert.ok(JSON.parse(noCodex)._about.some((line) => line.includes('codex config')));
+  const r = readUserModels(userModels(t, enableNotes(noCodex)));
+  assert.ok(!r.error && !('codex-opinion' in r.model) && r.effort['codex-opinion'] === 'high', JSON.stringify(r));
+});
+
+test('user files: missing files are created once with the templates; an existing file is kept byte for byte', (t) => {
+  const dir = configDir(t);
+  const env = { CLAUDE_CONFIG_DIR: dir };
+  const [modelsFile, settingsFile] = [userModelsFile(env), userSettingsFile(env)];
+  assert.deepEqual(ensureUserFiles(env), [modelsFile, settingsFile]);
+  assert.equal(readFileSync(modelsFile, 'utf8'), modelsTemplate());
+  assert.equal(readFileSync(settingsFile, 'utf8'), settingsTemplate());
+  assert.deepEqual(ensureUserFiles(env), []);
+  assert.deepEqual(readdirSync(path.join(dir, 'am')).sort(), ['models.json', 'settings.json']);
+
+  const dir2 = configDir(t);
+  const env2 = { CLAUDE_CONFIG_DIR: dir2 };
+  mkdirSync(path.join(dir2, 'am'));
+  writeFileSync(userModelsFile(env2), '{"model":');
+  assert.deepEqual(ensureUserFiles(env2), [userSettingsFile(env2)]);
+  assert.equal(readFileSync(userModelsFile(env2), 'utf8'), '{"model":');
+  assert.equal(readFileSync(userSettingsFile(env2), 'utf8'), settingsTemplate());
+  assert.deepEqual(readdirSync(path.join(dir2, 'am')).sort(), ['models.json', 'settings.json']);
+});
+
+test('user files: nothing is made when the config folder is missing or am is a file', (t) => {
+  const missing = path.join(configDir(t), 'none');
+  assert.deepEqual(ensureUserFiles({ CLAUDE_CONFIG_DIR: missing }), []);
+  assert.ok(!existsSync(missing));
+  assert.deepEqual(ensureUserFiles(), []);
+  const dir = configDir(t);
+  writeFileSync(path.join(dir, 'am'), 'mine');
+  assert.deepEqual(ensureUserFiles({ CLAUDE_CONFIG_DIR: dir }), []);
+  assert.equal(readFileSync(path.join(dir, 'am'), 'utf8'), 'mine');
+});
+
+test('user files: without hard links the files are written directly; other link errors make nothing; no temp file is left', (t) => {
+  const fail = (code) => () => {
+    throw Object.assign(new Error(code), { code });
+  };
+  const dir = configDir(t);
+  const env = { CLAUDE_CONFIG_DIR: dir };
+  assert.deepEqual(ensureUserFiles(env, { link: fail('ENOTSUP') }), [userModelsFile(env), userSettingsFile(env)]);
+  assert.equal(readFileSync(userModelsFile(env), 'utf8'), modelsTemplate());
+  assert.equal(readFileSync(userSettingsFile(env), 'utf8'), settingsTemplate());
+  assert.deepEqual(readdirSync(path.join(dir, 'am')).sort(), ['models.json', 'settings.json']);
+
+  const dir2 = configDir(t);
+  assert.deepEqual(ensureUserFiles({ CLAUDE_CONFIG_DIR: dir2 }, { link: fail('EACCES') }), []);
+  assert.deepEqual(readdirSync(path.join(dir2, 'am')), []);
+
+  // Another session writes the file between the failed link and the direct write: its file stays.
+  const dir3 = configDir(t);
+  const env3 = { CLAUDE_CONFIG_DIR: dir3 };
+  const race = (tmp, file) => {
+    writeFileSync(file, 'other');
+    fail('ENOTSUP')();
+  };
+  assert.deepEqual(ensureUserFiles(env3, { link: race }), []);
+  assert.equal(readFileSync(userModelsFile(env3), 'utf8'), 'other');
+  assert.equal(readFileSync(userSettingsFile(env3), 'utf8'), 'other');
+  assert.deepEqual(readdirSync(path.join(dir3, 'am')).sort(), ['models.json', 'settings.json']);
+});
+
+test('user files: a temp file that cannot be removed does not throw', (t) => {
+  const env = { CLAUDE_CONFIG_DIR: configDir(t) };
+  const rm = () => {
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+  };
+  assert.deepEqual(ensureUserFiles(env, { rm }), [userModelsFile(env), userSettingsFile(env)]);
+  assert.equal(readFileSync(userModelsFile(env), 'utf8'), modelsTemplate());
 });
 
 // A temporary record folder; the records pushed to the returned list are released before the folder is removed.

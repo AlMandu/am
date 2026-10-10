@@ -81,6 +81,10 @@ test('apply writes a changed value into every place that carries it, and check i
   const row = (label, v) => `| ${label} | \`${v.model}\` | \`${v.effort}\` |\n`;
   assert.ok(read(base, 'README.md').includes(row('`am:commit`', commit)) && read(base, 'README.md').includes(row('Codex 2차 의견', codex)));
   assert.ok(read(base, 'orchestrator/README.md').includes(row('커밋(`commit`)', commit)));
+  const userFiles = read(base, 'plugin/scripts/user-files.mjs');
+  assert.ok(userFiles.includes(`\n  commit: { model: '${commit.model}', effort: '${commit.effort}' },`));
+  assert.ok(userFiles.includes(`\n  split: { model: '${split.model}', effort: '${split.effort}' },`));
+  assert.ok(userFiles.includes(`\n  'codex-opinion': { model: '${codex.model}', effort: '${codex.effort}' },`));
 
   // An empty Codex model takes the flag out again, and the original values restore every file.
   apply(base, edit((m) => { m.am['codex-opinion'] = { model: '', effort: codex.effort }; }));
