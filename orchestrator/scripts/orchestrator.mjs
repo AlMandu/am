@@ -1760,7 +1760,7 @@ function acquireLock(repo, command, run) {
 // (강제 종료·터미널 닫힘·재부팅으로 지우지 못한 기록. pid 는 재사용될 수 있어 그것만으로는 가리지 못한다).
 export const DEFAULT_MAX_SESSIONS = 3;
 // Claude Code 는 메모리가 매우 부족하면 쉬는 세션의 백그라운드 실행을 끈다. 다른 세션·게이트가 돌 때 남은 메모리가 이보다 적으면 새 세션을 미룬다
-export const DEFAULT_MIN_FREE_MEMORY_MB = 3072;
+export const DEFAULT_MIN_FREE_MEMORY_MB = 6144;
 
 /**
  * 새 세션을 메모리 때문에 미뤄야 하면 { freeMB, needMB }, 아니면 null. busy 는 자기 것을 뺀, 이 PC 에서 돌고 있는 세션·게이트 기록 수.
