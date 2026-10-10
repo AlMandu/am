@@ -98,8 +98,8 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   const dirOf = memoryDir(path.join(os.tmpdir(), 'My Repo'), { CLAUDE_CONFIG_DIR: cfg });
   assert.equal(dirOf, path.join(cfg, 'projects', path.resolve(os.tmpdir(), 'My Repo').replace(/[^A-Za-z0-9]/g, '-'), 'memory'));
   assert.ok(permissions('compactmem', { memDir: dirOf }).deny.includes(absEdit(dirOf)));
-  assert.match(absEdit('C:\\Users\\me\\.claude\\projects\\C--x\\memory'), /^Edit\(\/\/c\/Users\/me\/\.claude\/projects\/C--x\/memory\/\*\*\)$/, 'on Windows');
-  if (process.platform !== 'win32') assert.equal(absEdit('/home/me/m'), 'Edit(//home/me/m/**)');
+  if (process.platform === 'win32') assert.match(absEdit('C:\\Users\\me\\.claude\\projects\\C--x\\memory'), /^Edit\(\/\/c\/Users\/me\/\.claude\/projects\/C--x\/memory\/\*\*\)$/, 'on Windows');
+  else assert.equal(absEdit('/home/me/m'), 'Edit(//home/me/m/**)');
   assert.deepEqual(MARKS.compactmem, ['PROPOSED', 'NOTHING', 'BLOCKED'], 'never stops am:auto for a question');
   const commit = permissions('commit');
   assert.ok(commit.allow.includes('Bash(git commit *)') && commit.deny.includes('Bash(git push *)') && !commit.allow.includes('Bash(git push *)'));
