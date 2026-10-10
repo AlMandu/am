@@ -12,6 +12,7 @@ import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseR
 import { formatEvent, stateLine } from '../plugin/scripts/progress.mjs';
 import { readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
+import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -1341,6 +1342,68 @@ test('user models: an opinion key takes its own value, else the built-in, never 
   const cfg = { model: { default: 'sonnet', 'second-opinion': 'haiku' }, effort: { default: 'low', 'codex-opinion': 'minimal' } };
   assert.deepEqual(resolveOwn(cfg, 'second-opinion', builtin), { model: 'haiku', effort: 'high' });
   assert.deepEqual(resolveOwn(cfg, 'codex-opinion', { model: '', effort: 'xhigh' }), { model: '', effort: 'minimal' });
+});
+
+// A temporary config folder holding am/settings.json with text (or nothing when text is null); returns the file's path.
+function userSettings(t, text) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-user-settings-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = userSettingsFile({ CLAUDE_CONFIG_DIR: dir });
+  mkdirSync(path.dirname(file), { recursive: true });
+  if (text !== null) writeFileSync(file, text);
+  return file;
+}
+
+test('user settings: the file lives under the config folder, else under ~/.claude', () => {
+  const dir = path.join(os.tmpdir(), 'cfg');
+  assert.equal(userSettingsFile({ CLAUDE_CONFIG_DIR: dir }), path.join(dir, 'am', 'settings.json'));
+  assert.equal(userSettingsFile({}), path.join(os.homedir(), '.claude', 'am', 'settings.json'));
+});
+
+test('user settings: the module reads no environment variable and imports only node built-ins', () => {
+  const src = readFileSync(path.join(REPO, 'plugin', 'scripts', 'user-settings.mjs'), 'utf8');
+  assert.ok(!src.includes('process.env'));
+  const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  assert.ok(imports.length > 0);
+  for (const name of imports) assert.ok(name.startsWith('node:'), name);
+});
+
+test('user settings: a missing file or key is null; a number of 0 or more is kept, notes are dropped and a BOM is allowed', (t) => {
+  assert.deepEqual(readUserSettings(userSettings(t, null)), { minFreeMemoryMB: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{}')), { minFreeMemoryMB: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":null}')), { minFreeMemoryMB: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '﻿' + JSON.stringify({ _note: 'mine', minFreeMemoryMB: 6144 }))), { minFreeMemoryMB: 6144 });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":0}')), { minFreeMemoryMB: 0 });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":6144.5}')), { minFreeMemoryMB: 6144.5 });
+});
+
+test('user settings: every broken file is one error line naming the file and the problem', (t) => {
+  const cases = [
+    ['{"minFreeMemoryMB":', 'JSON'],
+    ['', 'JSON'],
+    ['[]', 'object'],
+    ['6144', 'object'],
+    ['{"minFreeMemoryMB":-1}', '-1'],
+    ['{"minFreeMemoryMB":"6GB"}', '"6GB"'],
+    ['{"minFreeMemoryMB":true}', 'minFreeMemoryMB'],
+    ['{"minFreeMemoryMB":1e400}', 'finite'],
+    ['{"minFreeMemoryMb":6144}', '"minFreeMemoryMb"'],
+    ['{"model":{}}', '"model"'],
+  ];
+  for (const [text, word] of cases) {
+    const file = userSettings(t, text);
+    const r = readUserSettings(file);
+    assert.equal(typeof r.error, 'string', text);
+    assert.ok(!r.error.includes('\n'), text);
+    assert.ok(r.error.startsWith(`${file}: `), text);
+    assert.ok(r.error.includes(word), `${text}: ${r.error}`);
+    assert.ok(!('minFreeMemoryMB' in r), text);
+  }
+  const folder = userSettings(t, null);
+  mkdirSync(folder);
+  const r = readUserSettings(folder);
+  assert.ok(r.error.startsWith(`${folder}: `) && r.error.includes('read') && !r.error.includes('\n'), r.error);
+  assert.ok(!('minFreeMemoryMB' in r));
 });
 
 const cfgEnv = (file) => ({ ...process.env, CLAUDE_CONFIG_DIR: path.dirname(path.dirname(file)) });
