@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, pickInstalledAm, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 import { task, planOf, CHAIN, own, DEF, M1, M2, E1, E2, E3, prepared, tmp } from './orchestrator-helpers.mjs';
 
 // ------------------------------------------------------------------ 순수 함수
@@ -182,6 +182,39 @@ test('claudeArgs: 계획 묶음 세션은 am 의 codex-opinion.mjs 하나만 더
   }
   assert.equal(cfg.timeoutMin.plan, 75, '2차 의견 토론까지 들어가는 계획 세션의 시간');
   assert.equal(cfg.timeoutMin.answer, 75);
+});
+
+test('claudeArgs: am 폴더를 여러 개 주면 계획 묶음 세션만 각 폴더의 codex-opinion.mjs 를 연다', () => {
+  const cfg = defaults();
+  const [a, b] = ['am-a', 'am-b'].map((n) => path.join(os.tmpdir(), n));
+  const allow = (phase, amRoot) => {
+    const args = claudeArgs(cfg, phase, { prompt: 'x', amRoot });
+    return args.includes('--allowedTools') ? args[args.indexOf('--allowedTools') + 1].split(',') : [];
+  };
+  const rules = allow('plan', [a, b, a]);
+  for (const root of [a, b]) assert.ok(rules.includes(`Bash(node "${path.join(root, 'scripts', 'codex-opinion.mjs')}" *)`), root);
+  assert.equal(rules.length, new Set(rules).size, '같은 규칙을 두 번 넣지 않는다');
+  assert.deepEqual(allow('plan', [a]), allow('plan', a), '하나짜리 배열은 문자열과 같다');
+  for (const phase of ['implement', 'check', 'commit', 'split']) assert.ok(!allow(phase, [a, b]).some((r) => r.includes('codex-opinion')), phase);
+});
+
+test('pickInstalledAm: 설치된 am 이 기록과 다르면 그쪽을 쓰고, 고를 근거가 없으면 멈춘다', () => {
+  const [old, now, other] = ['am-old', 'am-new', 'am-other'].map((n) => path.join(os.tmpdir(), n));
+  const unknown = pickInstalledAm(old, null);
+  assert.deepEqual([unknown.root, unknown.roots, unknown.stop], [old, [old], undefined]);
+  assert.match(unknown.warn, /설치된 am 을 확인하지 못해/);
+  assert.match(pickInstalledAm(old, []).warn, /확인하지 못해/, '켜진 am 이 없으면 확인하지 못한 것과 같다');
+  assert.deepEqual(pickInstalledAm(old, [`${old}${path.sep}`]), { root: old, roots: [old], warn: '' }, '같은 경로면 조용히 그대로');
+  const moved = pickInstalledAm(old, [now]);
+  assert.deepEqual([moved.root, moved.roots, moved.stop], [now, [now], undefined]);
+  assert.match(moved.warn, /대신 설치된 am .*am-new.*`doctor` 를 다시 실행하면 이 경고가 사라집니다/);
+  const many = pickInstalledAm(old, [now, old]);
+  assert.deepEqual([many.root, many.roots, many.stop], [old, [now, old], undefined]);
+  assert.ok(many.warn.includes(now) && many.warn.includes(old));
+  const stop = pickInstalledAm(old, [now, other]);
+  assert.equal(stop.root, undefined);
+  assert.ok(stop.stop.includes(now) && stop.stop.includes(other));
+  assert.match(stop.stop, /`doctor` 를 다시 실행하거나 \.orchestrator\/config\.json 의 amPluginRoot/);
 });
 
 test('claudeArgs: 설정에 적지 않은 단계는 기본 모델과 effort 로 돈다', () => {

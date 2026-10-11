@@ -2,7 +2,7 @@
 // doctor, requiredGateCommands, 세션 지시문, 시작 조건 테스트. 공통 도우미·전체 명령은 tests/orchestrator-helpers.mjs
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { enforceRequired } from '../orchestrator/scripts/orchestrator.mjs';
@@ -201,6 +201,54 @@ test('doctor: 로그인이 안 돼 있으면 알려 주고, am 이 설치돼 있
   assert.equal(b.orch('run').code, 0);
   const sessions = b.calls().filter((c) => c.prompt.startsWith('/am:'));
   assert.ok(sessions.length >= 4 && sessions.every((c) => c.argv.includes('--plugin-dir')), '띄우는 세션마다 am 을 실어 준다');
+});
+
+// 곁의 am 을 doctor 가 기록하는 흐름을 보므로, 다른 am 을 지정해 돌릴 때는 건너뛴다
+test('am 을 업데이트한 뒤 doctor 없이 이어 가면 split·run 이 설치된 am 을 쓰고 알린다', { skip: Boolean(process.env.AM_PLUGIN_ROOT) }, () => {
+  const r = makeRepo({ plan: planOf([task('T01', 't01-a')]), config: { amPluginRoot: '' } });
+  assert.equal(r.orch('doctor').code, 0);
+  assert.equal(JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'env.json'), 'utf8')).pluginRoot, PLUGIN);
+  // 더 높은 버전의 am 이 다른 폴더에 설치된 상황
+  const newer = path.join(tmp('orch-newam-'), 'am');
+  cpSync(PLUGIN, newer, { recursive: true });
+  const manifest = path.join(newer, '.claude-plugin', 'plugin.json');
+  writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), version: '99.0.0' }));
+  const list = (...roots) => JSON.stringify([{ id: 'other@x', enabled: true, installPath: PLUGIN }, ...roots.map((p) => ({ id: 'am@am-workflow', enabled: true, installPath: p })), { id: 'am@old', enabled: false, installPath: PLUGIN }, { id: 'am@synced', enabled: true, installPath: '' }]); // 다른 곳에 가려진 동기화 사본은 경로가 비어 있다
+  const rule = (root) => `Bash(node "${path.join(root, 'scripts', 'codex-opinion.mjs')}" *)`;
+  // 목록을 읽지 못하면 기록된 am 을 그대로 쓰고 알린다
+  const s = r.orch('split', path.join(r.repo, 'docs', 'design.md'));
+  assert.equal(s.code, 0, s.out);
+  assert.match(s.out, /설치된 am 을 확인하지 못해/);
+  assert.ok(!r.calls().some((c) => c.argv[0] === 'plugin'), '목록 조회는 세션 호출 기록에 남지 않는다');
+  // 기록에 없는 여러 경로: 세션 없이 멈춘다
+  const before = r.calls().length;
+  const third = path.join(tmp('orch-thirdam-'), 'am');
+  cpSync(newer, third, { recursive: true });
+  r.orch.env = { FAKE_PLUGIN_LIST: list(newer, third, tmp('orch-notam-')) }; // am 폴더가 아닌 항목은 세지 않는다
+  const stop = r.orch('run');
+  assert.equal(stop.code, 2, stop.out);
+  assert.match(stop.out, /am 이 여러 곳에 켜져 있고[\s\S]*`doctor` 를 다시 실행하거나[\s\S]*amPluginRoot/);
+  assert.equal(r.calls().length, before, '세션을 띄우지 않는다');
+  // 설치된 am 하나: 그쪽을 쓴다
+  r.orch.env = { FAKE_PLUGIN_LIST: list(newer) };
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /설치된 am 99\.0\.0[\s\S]*`doctor` 를 다시 실행하면 이 경고가 사라집니다/);
+  assert.match(run.out, /am 99\.0\.0 /);
+  const allow = r.calls().find((c) => c.prompt.startsWith('/am:plan Plan task')).argv;
+  const allowed = allow[allow.indexOf('--allowedTools') + 1];
+  assert.ok(allowed.includes(rule(newer)), allowed);
+  assert.ok(!allowed.includes(rule(PLUGIN)), '옛 경로는 열지 않는다');
+
+  // 목록이 없으면 기록된 경로의 규칙으로 진행한다
+  const o = makeRepo({ plan: planOf([task('T01', 't01-a')]), config: { amPluginRoot: '' } });
+  assert.equal(o.orch('doctor').code, 0);
+  assert.equal(o.orch('split', path.join(o.repo, 'docs', 'design.md')).code, 0);
+  const oRun = o.orch('run');
+  assert.equal(oRun.code, 0, oRun.out);
+  assert.match(oRun.out, /설치된 am 을 확인하지 못해/);
+  const oArgv = o.calls().find((c) => c.prompt.startsWith('/am:plan Plan task')).argv;
+  assert.ok(oArgv[oArgv.indexOf('--allowedTools') + 1].includes(rule(PLUGIN)));
 });
 
 // ------------------------------------------------------------------ 빌드 도구가 다시 쓰는 파일

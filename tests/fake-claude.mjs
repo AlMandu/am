@@ -10,6 +10,7 @@
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
 // 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
 // 원래 저장소 경로는 FAKE_MAIN_REPO(테스트의 makeRepo 가 넣는다)로 받고, 없을 때만 git rev-parse --git-common-dir 로 찾는다.
+// `plugin list --json` 은 FAKE_PLUGIN_LIST 를 그대로 출력하고(없으면 모르는 명령으로 실패), 호출 기록에 남기지 않는다.
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,6 +19,14 @@ import path from 'node:path';
 const argv = process.argv.slice(2);
 if (argv.includes('--version')) {
   process.stdout.write('2.1.290 (fake)\n');
+  process.exit(0);
+}
+if (argv[0] === 'plugin' && argv[1] === 'list') {
+  if (process.env.FAKE_PLUGIN_LIST === undefined) {
+    process.stderr.write('error: unknown command \'plugin\'\n');
+    process.exit(1);
+  }
+  process.stdout.write(process.env.FAKE_PLUGIN_LIST);
   process.exit(0);
 }
 const flag = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);

@@ -530,6 +530,47 @@ function amVersion(root) {
   }
 }
 
+/** `claude plugin list --json` 에서 켜져 있는 am 의 폴더(중복 없이). 목록을 읽지 못하면 null. */
+async function installedAmRoots(ctx) {
+  const [bin, ...pre] = ctx.cfg.claudeCommand;
+  const r = await exec(bin, [...pre, 'plugin', 'list', '--json'], { cwd: ctx.repo, timeoutMs: 60000 });
+  if (r.code !== 0) return null;
+  let list;
+  try {
+    list = JSON.parse(r.stdout);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(list)) return null;
+  const roots = list.filter((p) => p && typeof p.id === 'string' && p.id.startsWith('am@') && p.enabled === true && typeof p.installPath === 'string' && path.isAbsolute(p.installPath) && isAmPlugin(p.installPath)).map((p) => path.resolve(p.installPath));
+  return [...new Set(roots)];
+}
+
+/**
+ * doctor 가 기록한 am(recorded)과 설치돼 켜져 있는 am 목록(listed)으로 쓸 am 을 정한다.
+ * root: 게이트·inline 스킬에 쓸 폴더, roots: 계획 세션이 Codex 2차 의견을 부를 수 있는 폴더들, warn: 알릴 말, stop: 멈출 이유.
+ */
+export function pickInstalledAm(recorded, listed) {
+  if (!listed || !listed.length) return { root: recorded, roots: [recorded], warn: `설치된 am 을 확인하지 못해 doctor 가 기록한 am 을 그대로 씁니다: ${recorded}` };
+  const same = (p) => Boolean(recorded) && path.resolve(p) === path.resolve(recorded);
+  if (listed.length === 1) {
+    if (same(listed[0])) return { root: recorded, roots: [recorded], warn: '' };
+    return { root: listed[0], roots: [listed[0]], warn: `doctor 가 기록한 am ${amVersion(recorded)}(${recorded}) 대신 설치된 am ${amVersion(listed[0])}(${listed[0]})를 씁니다. \`doctor\` 를 다시 실행하면 이 경고가 사라집니다.` };
+  }
+  if (listed.some(same)) return { root: recorded, roots: listed, warn: `am 이 여러 곳에 켜져 있습니다: ${listed.join(', ')}. 게이트와 스킬은 doctor 가 기록한 ${recorded} 를 씁니다.` };
+  return { stop: `am 이 여러 곳에 켜져 있고 doctor 가 기록한 am(${recorded || '없음'})은 그중에 없습니다: ${listed.join(', ')}. \`doctor\` 를 다시 실행하거나 ${ORCH_DIR}/config.json 의 amPluginRoot 에 쓸 am 폴더를 적으세요.` };
+}
+
+/** 사용자가 am 폴더를 정하지 않았으면, doctor 뒤에 am 이 업데이트됐을 수 있으므로 설치된 am 을 확인해 ctx 에 반영한다. env.json 은 고치지 않는다. */
+async function resolveInstalledAm(ctx) {
+  if (ctx.cfg.amPluginRoot || ctx.cfg.pluginDir || !ctx.env) return;
+  const { root, roots, warn, stop } = pickInstalledAm(ctx.pluginRoot, await installedAmRoots(ctx));
+  if (stop) fail(stop);
+  ctx.pluginRoot = root;
+  ctx.amRoots = roots;
+  if (warn) say(`  ! ${warn}`);
+}
+
 /** 이 프로세스에서 git 저장소임을 이미 확인한 경로(실패한 경로는 넣지 않는다). */
 const knownRepos = new Set();
 
@@ -639,7 +680,9 @@ export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'j
   const args = ['-p', prompt, '--output-format', format];
   if (format === 'stream-json') args.push('--verbose');
   args.push('--permission-mode', perm.mode);
-  const allow = [...(perm.allow || []), ...(profile === 'plan' ? codexOpinionRules(amRoot) : [])];
+  // amRoot 는 am 폴더 하나 또는 여러 개(am 이 여러 곳에 켜져 있을 때)
+  const opinions = profile === 'plan' ? [...new Set([amRoot].flat().flatMap(codexOpinionRules))] : [];
+  const allow = [...(perm.allow || []), ...opinions];
   if (allow.length) args.push('--allowedTools', allow.join(','));
   if (perm.deny?.length) args.push('--disallowedTools', perm.deny.join(','));
   // extraArgs 에 같은 플래그가 있으면 그쪽이 정한다(두 번 넘기지 않는다).
@@ -681,7 +724,7 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   const started = Date.now();
   let r;
   try {
-    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
+    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
   } finally {
     release();
   }
@@ -2865,6 +2908,7 @@ async function cmdSplit(repo, designArg, opt) {
   if (!existsSync(design)) fail(`설계 문서를 찾지 못했습니다: ${design}`);
   const ctx = baseContext(repo);
   if (!ctx.env) fail('먼저 `doctor` 를 실행하세요.');
+  await resolveInstalledAm(ctx);
   ensureIgnored(repo, ORCH_DIR);
   ctx.runId = opt.run || newRunId();
   ctx.runDir = path.join(repo, ORCH_DIR, 'runs', ctx.runId);
@@ -3010,6 +3054,7 @@ async function cmdAnswer(repo, id, answer, opt) {
   const t = ctx.plan.tasks.find((x) => x.id === id);
   const s = t && ctx.state.tasks[id];
   if (!t || !answer || s.status !== 'needs-decision') fail(ANSWER_USAGE);
+  await resolveInstalledAm(ctx);
   if (!s.sessions.plan) fail('이어 갈 계획 세션이 없습니다. `retry` 로 계획부터 다시 하세요.');
   startEvents(ctx.runDir, { stage: 'answer', task: id, text: 'answer started' });
   // 답은 파일로 넘긴다: 한글·따옴표가 명령줄을 거치지 않게
@@ -3142,6 +3187,7 @@ async function cmdRun(repo, opt) {
   const errs = validatePlan(ctx.plan);
   if (errs.length) fail(`작업 목록에 형식 오류가 있습니다:\n- ${errs.join('\n- ')}`);
   if (opt['dry-run']) return dryRun(ctx);
+  await resolveInstalledAm(ctx);
   const { cfg, state } = ctx;
   // 아래 검사에서 멈춰도 종료 처리가 끝 소식을 남기도록 먼저 시작을 알린다
   startEvents(ctx.runDir, { stage: 'run', text: `run started: ${ctx.plan.tasks.length} tasks` });
