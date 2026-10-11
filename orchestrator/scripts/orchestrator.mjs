@@ -1198,8 +1198,9 @@ function autoDecided(ctx, t) {
   return markedLines(readText(file), AUTO_MARK);
 }
 
-// am 공통 규칙의 2차 의견 표시: "(second opinion)", "(second opinion, Codex agreed)". "(no second opinion)" 은 맞지 않는다
-const SECOND_MARK = /\(second opinion/i;
+// am 공통 규칙의 2차 의견 표시: "(second opinion)", "(second opinion, Codex agreed)", 한국어 계획의 "(2차 의견)", "(2차 의견, Codex 동의)".
+// "(no second opinion)" 과 "(2차 의견 없음)" 은 맞지 않는다. am 의 stage.mjs 의 SECOND_MARK 와 같아야 한다(tests/orchestrator-skill.test.mjs)
+export const SECOND_MARK = /\((?:second opinion|2차 의견(?! 없음))/i;
 /** 계획 문서에서 2차 의견으로 정한 기술 선택 줄. */
 function secondOpinions(ctx, t) {
   const file = amPath(ctx, t, 'plan.md');

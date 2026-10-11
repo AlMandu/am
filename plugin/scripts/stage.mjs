@@ -465,8 +465,9 @@ export function runRelay(cwd, slug, { resume = false, now = Date.now } = {}) {
   };
 }
 
-// A choice the second opinion settled. `(no second opinion)` does not match: the open paren must come right before "second".
-export const SECOND_MARK = /\(second opinion/i;
+// A choice the second opinion settled, in English or as a Korean plan writes it. `(no second opinion)` and `(2차 의견 없음)`
+// do not match: the open paren must come right before the mark, and the Korean one must not say 없음.
+export const SECOND_MARK = /\((?:second opinion|2차 의견(?! 없음))/i;
 
 /** The lines of `text` that carry a second-opinion mark, without list markers, trimmed. */
 export function secondOpinionLines(text) {
@@ -853,7 +854,7 @@ const count = (text, re) => (String(text).match(re) || []).length;
 const COUNTED = [
   [/\((?:done|완료)\)/gi, 'done marks'],
   [/\((?:auto-decided|자동 결정)\)/gi, 'auto-decided marks'],
-  [/\(second opinion/gi, 'second opinion marks'],
+  [/\((?:second opinion|2차 의견(?! 없음))/gi, 'second opinion marks'],
   [/\bOPEN\b/g, 'OPEN marks'],
   [/^\d+\.\s/gm, 'numbered lines'],
 ];

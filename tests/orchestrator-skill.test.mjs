@@ -102,7 +102,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(SCRIPT, /auto-decided\|자동 결정/);
   // The second-opinion marks of the common rules, which progress news reads.
   for (const mark of ['(second opinion)', '(second opinion, Codex agreed)', '(no second opinion)']) assert.ok(amSkill('plan').includes(mark), mark);
-  assert.match(SCRIPT, /\\\(second opinion/);
+  assert.match(SCRIPT, /\\\(\(\?:second opinion\|2차 의견\(\?! 없음\)\)/);
   // The gate's command line and the fields of its report.
   const gate = read('plugin', 'hooks', 'gate.mjs');
   assert.match(gate, /node gate\.mjs --run \[--json\] \[--cwd <dir>\]/);
@@ -294,6 +294,14 @@ test('the hand-over owner the am stage runner gives its session is the worker.js
   assert.deepEqual(sent, []);
   assert.equal(stopHandedRun(r.repo, N, { alive: (p) => p === W, kill }), W);
   assert.deepEqual(sent, [[W, 'SIGTERM']]);
+});
+
+test('the second-opinion mark is the same regular expression in the orchestrator and the am stage runner', async () => {
+  const orch = (await import('../orchestrator/scripts/orchestrator.mjs')).SECOND_MARK;
+  const stage = (await import('../plugin/scripts/stage.mjs')).SECOND_MARK;
+  assert.deepEqual([orch.source, orch.flags], [stage.source, stage.flags]);
+  for (const yes of ['(second opinion)', '(Second Opinion, Codex agreed)', '(2차 의견)', '(2차 의견, Codex 동의)']) assert.ok(orch.test(yes), yes);
+  for (const no of ['(no second opinion)', '(2차 의견 없음)', '2차 의견']) assert.ok(!orch.test(no), no);
 });
 
 // Windows cannot be sent SIGINT from here (the same reason as the lock test in orchestrator-drive.test.mjs).

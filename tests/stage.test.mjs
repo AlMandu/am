@@ -3175,6 +3175,14 @@ test('memory wait: the stage tests leave no live record behind', () => {
 
 // ------------------------------------------------------------------ review fixes
 
+test('second-opinion marks: the Korean form counts like the English one; neither negative form does', () => {
+  for (const l of ['- 저장 방식: 파일 (2차 의견)', '- a: b (2차 의견, Codex 동의)', '- a: b (second opinion, Codex agreed)']) assert.ok(SECOND_MARK.test(l), l);
+  for (const l of ['- a: b (no second opinion)', '- a: b (2차 의견 없음)']) assert.ok(!SECOND_MARK.test(l), l);
+  assert.deepEqual(secondOpinionLines('# p\n- 저장: 파일 (2차 의견, Codex 동의)\n- x (2차 의견 없음)\n'), ['저장: 파일 (2차 의견, Codex 동의)']);
+  // A compaction that drops a Korean second-opinion line is undone like one that drops an English line.
+  assert.match(compactionProblem('plan.md', '# p\n- a (2차 의견)\n', '# p\n'), /second opinion marks 1 -> 0/);
+});
+
 test('permissions: the commit stage only unstages; a hand-over checks out only its start branch and may put a stash back', () => {
   const commit = permissions('commit');
   assert.ok(commit.allow.includes('Bash(git restore --staged *)') && !commit.allow.includes('Bash(git restore *)'));
