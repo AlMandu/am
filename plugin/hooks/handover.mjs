@@ -59,6 +59,11 @@ export function handedRun(text) {
   return changeLog(text).map((line) => HANDED.exec(line)?.[1]).filter(Boolean).pop() ?? null;
 }
 
+/** The start branch of the last fixed hand-over line in the plan's Change log, or null. */
+export function handedStartBranch(text) {
+  return changeLog(text).map((line) => HANDED.exec(line)?.[2]).filter(Boolean).pop() ?? null;
+}
+
 /** How many steps of the plan carry the am:do done mark. */
 export function countDone(text) {
   return (String(text).match(DONE_ALL) || []).length;

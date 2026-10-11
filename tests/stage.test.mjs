@@ -8,9 +8,9 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
-import { readPlan } from '../plugin/hooks/handover.mjs';
+import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
 import { BUILTIN_MODELS, ensureUserFiles, modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
@@ -3171,4 +3171,130 @@ test('hand-over end: a pushed-out stage worker stops the orchestrator worker too
 // Last: by liveRecords, not the folder's file list (a record Windows could not remove at once is left out there, and the folder stays).
 test('memory wait: the stage tests leave no live record behind', () => {
   assert.deepEqual(liveRecords(sessionsDirOf(isolatedEnv)), []);
+});
+
+// ------------------------------------------------------------------ review fixes
+
+test('permissions: the commit stage only unstages; a hand-over checks out only its start branch and may put a stash back', () => {
+  const commit = permissions('commit');
+  assert.ok(commit.allow.includes('Bash(git restore --staged *)') && !commit.allow.includes('Bash(git restore *)'));
+  const hand = permissions('handover', { orchRoot: '/orch', startBranch: 'feature/x-1' });
+  assert.ok(hand.allow.includes('Bash(git checkout feature/x-1)') && !hand.allow.includes('Bash(git checkout *)'));
+  for (const r of ['Bash(git stash push *)', 'Bash(git stash show *)', 'Bash(git stash apply *)']) assert.ok(hand.allow.includes(r), r);
+  assert.ok(!hand.allow.some((r) => /stash (pop|drop)/.test(r)), 'a stash is never dropped');
+  // A branch name a rule cannot carry gets no checkout rule at all.
+  for (const b of ['', 'a,b', 'a)b', '-x', 'a b']) assert.ok(!permissions('handover', { startBranch: b }).allow.some((r) => r.includes('checkout')), b);
+  const text = instructions('handover', 'demo', { orchRoot: '/orch' }).system;
+  assert.match(text, /- Stash: <oid>, base <commit>/);
+  assert.match(text, /share no file, run \`git stash apply <oid>\`/);
+  assert.match(text, /Never drop a stash\./);
+  assert.match(AUTO, /- Stash: <oid>, base <commit>/, 'am:auto step 4 keeps the same rule');
+});
+
+test('handedStartBranch: the start branch of the last fixed hand-over line', () => {
+  assert.equal(handedStartBranch('# p\n## Change log\n- Hand-over: am-orchestrator run skill, run r1, start branch main\n- Hand-over: am-orchestrator run skill, run r2, start branch dev\n'), 'dev');
+  assert.equal(handedStartBranch('# p\n## Change log\n- merged\n'), null);
+});
+
+test('the hand-over session may check out the start branch its Change log names', async (t) => {
+  const handed = `${LARGE}## Change log\n- Hand-over: am-orchestrator run skill, run r1, start branch release-2\n`;
+  const dir = makeRepo(t, { plan: handed, fake: { replies: ['Merged.\nAM_STAGE: HANDED'] } });
+  const orchRoot = path.join(dir, 'orch');
+  mkdirSync(path.join(orchRoot, 'skills', 'run'), { recursive: true });
+  writeFileSync(path.join(orchRoot, 'skills', 'run', 'SKILL.md'), '---\nmodel: opus\neffort: high\n---\nRequest: $ARGUMENTS\n');
+  const { calls } = await run(dir, ['do', 'demo'], { orchestrator: () => orchRoot });
+  assert.ok(flag(calls[0], '--allowedTools').split(',').includes('Bash(git checkout release-2)'));
+});
+
+test('compaction: a record is written before the session and removed after; a leftover record puts the files back', async (t) => {
+  const dir = makeRepo(t, { plan: BIG, fake: { replies: ['Shortened.\nAM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  await run(dir, ['do', 'demo']);
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', COMPACT_PENDING)), 'gone after a finished compaction');
+  // What a killed compaction leaves: the half-shortened file, its copy and the record.
+  const pdir = path.join(dir, '.am', 'demo');
+  writeFileSync(path.join(pdir, 'plan.md'), '# half');
+  writeFileSync(path.join(pdir, 'request.md'), 'changed');
+  writeFileSync(path.join(pdir, 'plan.orig-2.md'), BIG);
+  writeFileSync(path.join(pdir, COMPACT_PENDING), JSON.stringify({ pid: 1, texts: { 'plan.md': BIG }, request: 'Fix the typo', originals: ['.am/demo/plan.orig-2.md'] }));
+  assert.deepEqual(recoverCompaction(dir, 'demo'), ['plan.md', 'request.md']);
+  assert.equal(plan(dir), BIG);
+  assert.equal(readFileSync(path.join(pdir, 'request.md'), 'utf8'), 'Fix the typo');
+  assert.ok(!existsSync(path.join(pdir, 'plan.orig-2.md')) && !existsSync(path.join(pdir, COMPACT_PENDING)));
+  assert.ok(existsSync(path.join(pdir, 'plan.orig-1.md')), 'the copy of a finished compaction stays');
+  assert.deepEqual(recoverCompaction(dir, 'demo'), [], 'nothing pending');
+  // A record naming files outside the task folder touches nothing there.
+  writeFileSync(path.join(pdir, COMPACT_PENDING), JSON.stringify({ texts: { '../x.md': 'x' }, originals: ['../../etc.md'] }));
+  assert.deepEqual(recoverCompaction(dir, 'demo'), []);
+  assert.ok(!existsSync(path.join(dir, '.am', 'x.md')));
+});
+
+test('compaction: the next stage puts back what a killed compaction left, and notes it', async (t) => {
+  const dir = makeRepo(t, { plan: '# half\n', fake: { replies: ['Checked.\nAM_STAGE: NOTE'] } });
+  const pdir = path.join(dir, '.am', 'demo');
+  writeFileSync(path.join(pdir, 'plan.orig-1.md'), SMALL);
+  writeFileSync(path.join(pdir, COMPACT_PENDING), JSON.stringify({ pid: 1, texts: { 'plan.md': SMALL }, request: 'Fix the typo', originals: ['.am/demo/plan.orig-1.md'] }));
+  const { result } = await run(dir, ['check', 'demo']);
+  assert.equal(result.status, 'NOTE');
+  assert.equal(plan(dir), SMALL);
+  assert.ok(events(dir).some((e) => e.ev === 'note' && /unfinished shortening was undone: plan\.md put back/.test(e.text)));
+});
+
+test('compaction: a stop during the compaction session puts the files back once the session is killed', { skip: process.platform === 'win32' }, async (t) => {
+  const dir = makeRepo(t, { plan: BIG, fake: { hang: [1] } });
+  const began = Date.now();
+  const running = run(dir, ['do', 'demo']);
+  while (!existsSync(path.join(dir, 'calls.jsonl')) && Date.now() - began < 10000) await new Promise((r) => setTimeout(r, 50));
+  // What the hanging session wrote so far.
+  writeFileSync(path.join(dir, '.am', 'demo', 'plan.md'), '# half\n');
+  let code = null;
+  interrupt('SIGTERM', { exit: (c) => (code = c) });
+  assert.equal(code, 1);
+  assert.equal(plan(dir), BIG, 'put back by the stop itself');
+  assert.ok(!existsSync(path.join(dir, '.am', 'demo', COMPACT_PENDING)));
+  await running;
+});
+
+test('otherRuns: a worker record or an orchestrator lease left untouched by a live pid does not block, unless trusted for now', (t) => {
+  assert.equal(RECORD_SETTLE_MS, 45000);
+  const dir = makeRepo(t, { plan: SMALL });
+  const now = Date.now();
+  const at = (fields) => `${JSON.stringify({ t: new Date(now).toISOString(), ...fields })}\n`;
+  taskEvents(dir, 'a', [at({ ev: 'start', text: 's', pid: LIVE, stage: 'do' })]);
+  const look = (o = {}) => otherRuns(dir, 'demo', { alive: aliveOnly, ...o }).runs;
+  // No worker record (main without a worker): the pid alone decides, as before.
+  assert.deepEqual(look(), ['a']);
+  const rec = path.join(dir, '.am', 'a', WORKER_FILES.record);
+  writeFileSync(rec, JSON.stringify({ pid: LIVE, t: now, stage: 'do' }));
+  assert.deepEqual(look(), ['a'], 'a touched record blocks');
+  const old = new Date(now - WORKER_STALE_MS - 60000);
+  utimesSync(rec, old, old);
+  assert.deepEqual(look(), [], 'untouched past the stale time: a dead run whose pid was reused');
+  assert.deepEqual(look({ trustStale: true }), ['a'], 'right after a start or a wake it still blocks');
+  rmSync(path.join(dir, '.am', 'a'), { recursive: true, force: true });
+  // The orchestrator lock: only one that carries its lease can go stale.
+  const orch = path.join(dir, '.orchestrator');
+  mkdirSync(orch, { recursive: true });
+  const lock = path.join(orch, 'lock.json');
+  writeFileSync(lock, JSON.stringify({ pid: LIVE, command: 'run', leaseMs: 300000 }));
+  assert.deepEqual(look(), ['am-orchestrator']);
+  utimesSync(lock, old, old);
+  assert.deepEqual(look(), []);
+  assert.deepEqual(look({ trustStale: true }), ['am-orchestrator']);
+  writeFileSync(lock, JSON.stringify({ pid: LIVE, command: 'run' }));
+  utimesSync(lock, old, old);
+  assert.deepEqual(look(), ['am-orchestrator'], 'a lock of an older orchestrator, which is never touched, keeps the pid rule');
+});
+
+test('wait: a stage worker record left untouched by a live pid holds a new stage only for the settle time', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  taskEvents(dir, 'a', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'do' })]);
+  const rec = path.join(dir, '.am', 'a', WORKER_FILES.record);
+  writeFileSync(rec, JSON.stringify({ pid: LIVE, t: 0, stage: 'do' }));
+  const old = new Date(Date.now() - WORKER_STALE_MS - 60000);
+  utimesSync(rec, old, old);
+  const began = Date.now();
+  const { result } = await run(dir, ['plan', 'demo'], { alive: aliveOnly, waitMs: 10000, pollMs: 20, settleMs: 300 });
+  assert.equal(result.status, 'READY');
+  assert.ok(Date.now() - began >= 300, 'held while it may still be an owner that just woke');
+  assert.deepEqual(evs(events(dir)), ['note', 'start', 'end']);
 });

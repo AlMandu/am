@@ -55,7 +55,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
-import { findAm, findOrchestrator, handedRun, readPlan, withinOneRun } from '../hooks/handover.mjs';
+import { findAm, findOrchestrator, handedRun, handedStartBranch, readPlan, withinOneRun } from '../hooks/handover.mjs';
 import { HEARTBEAT_MS, holdRecord, liveRecords, memoryShortMB, sessionsDirOf } from './memory-guard.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
 import { FRONTMATTER, frontmatterModels, readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
@@ -253,8 +253,9 @@ export const CODEX_STAGES = ['plan', 'compactmem'];
 /**
  * Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root.
  * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
+ * `startBranch`: the branch a hand-over merges back into, the only one it may check out (none when it is not a plain name).
  */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', memDir = '', slug = '', installedAm = [] } = {}) {
+export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', memDir = '', slug = '', installedAm = [], startBranch = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
   const codex = CODEX_STAGES.includes(stage) ? [...new Set([amRoot, ...installedAm].flatMap((root) => nodeScript(path.join(root, 'scripts', 'codex-opinion.mjs'))))] : [];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
@@ -273,16 +274,20 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
       // Reads the memory folder outside the repository; writes only the proposal under .am/. A deny rule wins over any allowance, so memory is never changed here.
       return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)', ...codex]), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
     case 'commit':
-      // The only file it may write is the task's commit record, which the am:merge skill reads.
-      return { mode: 'dontAsk', allow: sh([...read, ...gitRead, ...(slug ? [`Edit(/.am/${slug}/commits.md)`, `Edit(.am/${slug}/commits.md)`] : []), 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
+      // The only file it may write is the task's commit record, which the am:merge skill reads. Restore only unstages:
+      // this runs in the user's own working tree, where a plain restore would throw away changes of unknown origin.
+      return { mode: 'dontAsk', allow: sh([...read, ...gitRead, ...(slug ? [`Edit(/.am/${slug}/commits.md)`, `Edit(.am/${slug}/commits.md)`] : []), 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore --staged *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'compact':
       // Shortens task files under .am/ before a stage; nothing else. The request is denied, which wins over the allowance.
       return { mode: 'dontAsk', allow: [...read, ...edit('.am')], deny: [...noHuman, ...(slug ? [`Edit(/.am/${slug}/request.md)`, `Edit(.am/${slug}/request.md)`] : [])] };
     case 'handover': {
       const orch = orchRoot ? nodeScript(path.join(orchRoot, 'scripts', 'orchestrator.mjs')) : [];
-      const merge = ['Bash(git checkout *)', 'Bash(git merge --ff-only *)', 'Bash(git branch -d *)', 'Bash(git branch --show-current)'];
-      // What the run skill's Prepare questions may need once the user has answered: the gate file, committing or setting changes aside.
-      const prepare = ['Edit(/am-gate.json)', 'Edit(am-gate.json)', 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git stash push *)'];
+      // Checking out only the start branch: `git checkout -- <path>` would throw away the user's changes in this tree.
+      const checkout = /^[\w./-]+$/.test(startBranch) && !startBranch.startsWith('-') ? [`Bash(git checkout ${startBranch})`] : [];
+      const merge = [...checkout, 'Bash(git merge --ff-only *)', 'Bash(git branch -d *)', 'Bash(git branch --show-current)'];
+      // What the run skill's Prepare questions may need once the user has answered: the gate file, committing or setting
+      // changes aside, and putting changes set aside back after the merge when they touch no file the run changed.
+      const prepare = ['Edit(/am-gate.json)', 'Edit(am-gate.json)', 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git stash push *)', 'Bash(git stash show *)', 'Bash(git stash apply *)'];
       return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...edit('.orchestrator'), ...gitRead, ...orch, ...merge, ...prepare, ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     }
     default:
@@ -323,8 +328,8 @@ const STAGE_RULES = {
 - ${MARK('do')}`,
   handover: (slug, { push, resume }) => `This is the implementation stage for .am/${slug}/plan.md, handed to the am-orchestrator run skill because the plan is larger than one implementation run or one commit. You were started with the run skill. Drive it to the end by its Steps, with these additions from am:auto:
 - ${resume ? 'The Change log of the plan already records the hand-over with a run ID. Check that `status --json` shows the same `run.id` (if not, end with AM_STAGE: BLOCKED and say why). If the log also records the merge, only the push below is left.' : 'Before `split`, note `run.id` from `status --json` (none if `run` is null). If `split` ends with exit code 4, it is still running: run `split` again with no argument until it ends with another code, before you read `run.id`. Once `split` has made the run (`run.id` present and not the noted one; otherwise end with AM_STAGE: BLOCKED and say why), log exactly this one line in the Change log of the plan, in English whatever the plan\'s language, with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run.id>, start branch <branch>`.'} No other line you log (a stop reason before AM_STAGE: BLOCKED, for example) starts with \`Hand-over:\`.
-- Its \`decide\` questions are scope or screen questions: decide them as above and pass each answer with \`decide\`. Its \`answer\` and \`blocked\` questions, and any question of its Prepare step, are stops: write the card into plan.md as above. When plan.md holds the user's answer to such a card, pass it to the run skill (\`answer\`, \`decide\`), or carry out exactly the action the answer names (for example write am-gate.json and commit it, or commit or stash the changes it names) and nothing more.
-- Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, check out the start branch and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits).
+- Its \`decide\` questions are scope or screen questions: decide them as above and pass each answer with \`decide\`. Its \`answer\` and \`blocked\` questions, and any question of its Prepare step, are stops: write the card into plan.md as above. When plan.md holds the user's answer to such a card, pass it to the run skill (\`answer\`, \`decide\`), or carry out exactly the action the answer names (for example write am-gate.json and commit it, or commit or stash the changes it names) and nothing more. To stash, use \`git stash push\` (with \`-u\` when the answer names untracked files), then log right after it this one line in the Change log: \`- Stash: <oid>, base <commit>\`, with \`git rev-parse stash@{0}\` and \`git rev-parse HEAD\`.
+- Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, check out the start branch and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits). Then, for each \`Stash:\` line in the Change log not yet logged as put back: when \`git stash show --include-untracked --name-only <oid>\` and \`git diff --name-only <base> HEAD\` share no file, run \`git stash apply <oid>\` and log it; otherwise leave it and name the oid and \`git stash apply <oid>\` in your final reply. Never drop a stash.
 - Do not run the \`progress\` command of the run skill's script, even where the skill says to start it: nobody reads this session, and the am stage runner copies the run's news into this task's event file itself.
 - In your final reply give: tasks done of all and the branch, the human checklist of the report at \`run.report\` (shortened, with its path), and every line of \`autoDecided\` and \`secondOpinions\`.
 - ${MARK('handover')}  HANDED means the run is done and merged${push ? ' and pushed' : ''}.`,
@@ -548,14 +553,22 @@ function readJson(file) {
   }
 }
 
+// How long this process trusts a record that a live pid holds but stopped touching (a task's stage worker record, an
+// orchestrator lock that carries its `leaseMs`): from its start and again after it woke from sleep, so that an owner that
+// slept with the PC has touched it again. After that such a record is one a dead run left, with its pid reused.
+export const RECORD_SETTLE_MS = 45000;
+
 /**
  * The other unattended runs of this working tree that keep slug's stage from starting: {runs: [names], text: one line}.
  * Another task blocks while a stage session of it runs, and in a gap when its seat comes before ours (slug order on a
  * tie) or we have none. The orchestrator blocks while a live pid holds its lock, and for graceMs after a split or answer
- * end that leads to its next command, unless that run is the one this task handed over.
+ * end that leads to its next command, unless that run is the one this task handed over. Unless trustStale, a stage
+ * whose worker record went untouched for WORKER_STALE_MS, and a lock untouched for its own `leaseMs`, do not block.
  */
-export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS } = {}) {
+export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, trustStale = false } = {}) {
   const o = { now, alive, graceMs };
+  // A record of a live pid whose owner stopped touching it, with no reason to wait for the owner.
+  const left = (file, ms) => !trustStale && existsSync(file) && ownerState(file, { now, alive, staleMs: ms }) !== 'live';
   const am = path.join(cwd, '.am');
   const eventsOf = (name) => readFrom(path.join(am, name, 'progress.jsonl'), 0).events;
   const mine = taskState(eventsOf(slug), o);
@@ -568,12 +581,15 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
   }
   for (const name of names) {
     const s = taskState(eventsOf(name), o);
+    if (s.live && left(path.join(am, name, WORKER_FILES.record), staleMs)) s.live = false;
     if (s.live) found.push({ name, text: `${name} (${s.stage || 'a'} stage running)` });
     else if (s.gap && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
   }
   const orch = path.join(cwd, '.orchestrator');
   const lock = readJson(path.join(orch, 'lock.json'));
-  if (lock && Number.isInteger(lock.pid) && lock.pid > 0 && alive(lock.pid)) found.push({ name: 'am-orchestrator', text: `am-orchestrator ${lock.command || 'command'} (pid ${lock.pid})` });
+  const lockFile = path.join(orch, 'lock.json');
+  const leased = lock && Number.isInteger(lock.leaseMs) && lock.leaseMs > 0;
+  if (lock && Number.isInteger(lock.pid) && lock.pid > 0 && alive(lock.pid) && !(leased && left(lockFile, lock.leaseMs))) found.push({ name: 'am-orchestrator', text: `am-orchestrator ${lock.command || 'command'} (pid ${lock.pid})` });
   else {
     let run = '';
     try {
@@ -864,6 +880,49 @@ export function compactionProblem(name, before, after) {
   return null;
 }
 
+// The record of a compaction in progress, under .am/<slug>/: the texts to put back, written before the session starts and
+// removed once its outcome is settled. A stage that finds it (a stop or a forced kill during the session) puts them back first.
+export const COMPACT_PENDING = 'compact-pending.json';
+// Compaction sessions of this process still running; a stop puts their files back once the sessions are killed.
+const compacting = new Set();
+
+/**
+ * Puts back what an unfinished compaction of this task left: each picked file and request.md as they were before it, and
+ * removes its `.orig-<n>.md` copies and the record. Returns the files put back ([] when nothing was pending). Never throws.
+ */
+export function recoverCompaction(cwd, slug) {
+  const file = path.join(cwd, '.am', slug, COMPACT_PENDING);
+  let pending;
+  try {
+    pending = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    pending = null; // unreadable: written halfway, before any file was touched
+  }
+  const restored = [];
+  try {
+    if (pending && typeof pending === 'object') {
+      const abs = (name) => path.join(cwd, '.am', slug, name);
+      const now = (name) => (existsSync(abs(name)) ? readFileSync(abs(name), 'utf8') : null);
+      for (const [name, text] of Object.entries(pending.texts || {})) {
+        if (!/^[\w.-]+\.md$/.test(name) || typeof text !== 'string' || now(name) === text) continue;
+        writeFileSync(abs(name), text);
+        restored.push(name);
+      }
+      if (Object.hasOwn(pending, 'request') && now('request.md') !== pending.request) {
+        if (pending.request === null) rmSync(abs('request.md'), { force: true });
+        else if (typeof pending.request === 'string') writeFileSync(abs('request.md'), pending.request);
+        restored.push('request.md');
+      }
+      for (const rel of pending.originals || []) if (typeof rel === 'string' && /^\.am\/[a-z0-9-]+\/[\w.-]+\.orig-\d+\.md$/.test(rel)) rmSync(path.join(cwd, rel), { force: true });
+    }
+    rmSync(file, { force: true });
+  } catch {
+    // Left for the next stage.
+  }
+  return restored;
+}
+
 /** `<name>.orig-<n>.md` with the first n not taken, from the repository root. */
 function originalName(slug, name, taken) {
   const base = name.replace(/\.md$/, '');
@@ -883,6 +942,9 @@ function originalName(slug, name, taken) {
 async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', note = () => {} } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
+  // An earlier compaction of this task that never finished: its files go back before anything is measured.
+  const recovered = recoverCompaction(cwd, slug);
+  if (recovered.length) note(`an unfinished shortening was undone: ${recovered.join(', ')} put back`);
   const texts = {};
   for (const name of contextFiles(kind, { fix })) {
     const t = read(`.am/${slug}/${name}`);
@@ -898,10 +960,13 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   const request = read(requestRel);
   const originals = [];
   for (const n of names) {
-    const rel = originalName(slug, n, (p) => existsSync(abs(p)));
-    writeFileSync(abs(rel), texts[n], { flag: 'wx' });
+    const rel = originalName(slug, n, (p) => existsSync(abs(p)) || originals.includes(p));
     originals.push(rel);
   }
+  // The record first: a kill at any later point leaves what the next stage needs to put everything back.
+  const pendingRel = `.am/${slug}/${COMPACT_PENDING}`;
+  writeFileSync(abs(pendingRel), JSON.stringify({ pid: process.pid, texts, request, originals }));
+  names.forEach((n, i) => writeFileSync(abs(originals[i]), texts[n], { flag: 'wx' }));
   const { prompt, system } = compactInstructions(
     slug,
     names.map((n, i) => ({ file: files[i], size: sizes[n], goal: Math.floor((budget * sizes[n]) / picked) })),
@@ -911,7 +976,14 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   note(`shortening ${files.join(', ')} before the stage`);
   if (modelNote) note(modelNote);
   const [bin, ...pre] = claude;
-  const r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000 });
+  const undo = () => recoverCompaction(cwd, slug);
+  compacting.add(undo);
+  let r;
+  try {
+    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000 });
+  } finally {
+    compacting.delete(undo);
+  }
   const parsed = parseResult(r.stdout);
   const costUsd = parsed && Number.isFinite(parsed.total_cost_usd) ? parsed.total_cost_usd : 0;
 
@@ -939,8 +1011,10 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
       else writeFileSync(abs(requestRel), request);
     }
     for (const rel of originals) rmSync(abs(rel), { force: true });
+    rmSync(abs(pendingRel), { force: true });
     return { compacted: { files, failed }, costUsd };
   }
+  rmSync(abs(pendingRel), { force: true });
   return { compacted: { files, before: Object.values(sizes).reduce((a, b) => a + b, 0), after, originals }, costUsd };
 }
 
@@ -961,7 +1035,7 @@ export function stageLine(stage, slug, status, reason) {
 }
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
   const args = stageArgs(argv);
   if (!args) {
     out.write(BAD_ARGS);
@@ -1019,7 +1093,12 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     reason: `waiting for free memory on this PC: ${freeMB} MB free, needs ${needMB} MB (${settings.minFreeMemoryMB === null ? 'built-in default' : `minFreeMemoryMB in ${settingsFile}`}), ${busy} other sessions on this PC`,
   });
   let noted = ''; // the kind of the last wait note
+  let settleUntil = Date.now() + settleMs; // records untouched by a live pid are trusted until then (RECORD_SETTLE_MS)
+  let looked = Date.now();
   for (;;) {
+    // A gap far longer than a poll: this process slept with the PC, and so may have the owners of those records.
+    if (Date.now() - looked > pollMs * 2 + settleMs) settleUntil = Date.now() + settleMs;
+    looked = Date.now();
     const lock = takeLock(lockFile, { now, alive });
     let blocked;
     if (!lock) {
@@ -1031,7 +1110,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       blocked = memoryWait(short);
     } else if (lock.busy !== undefined) blocked = repoWait(`another stage of this repository is starting (pid ${lock.busy ?? '?'})`);
     else {
-      const other = otherRuns(cwd, slug, { now, alive, graceMs });
+      const other = otherRuns(cwd, slug, { now, alive, graceMs, trustStale: Date.now() < settleUntil });
       const short = !other.runs.length && joins ? memoryCheck() : null;
       if (!other.runs.length && !short) {
         if (event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage })) lock.release();
@@ -1118,7 +1197,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (installedAm.length && !installedAm.some((p) => same(p, path.resolve(amRoot)))) {
     event({ ev: 'note', text: `this am:auto session runs am from ${amRoot}, but stage sessions load the installed am from ${installedAm.join(', ')}; the Codex second opinion is allowed for both. Restart the session that runs am:auto to use one version.` });
   }
-  const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug, installedAm });
+  // A hand-over merges back into the branch its Change log names, or into the branch checked out now.
+  let startBranch = '';
+  if (kind === 'handover') {
+    startBranch = handedStartBranch(readFileSync(planFile, 'utf8')) || '';
+    if (!startBranch) startBranch = String(spawnSync('git', ['branch', '--show-current'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 }).stdout || '').trim();
+  }
+  const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug, installedAm, startBranch });
   const inst = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
   let { prompt } = inst;
   if (stageModel) {
@@ -1668,6 +1753,9 @@ const isMain = () => {
 export function interrupt(sig, { exit = process.exit, reason = `stopped by ${sig}` } = {}) {
   for (const finish of [...finishers]) finish({ status: 'failed', reason, stopped: true });
   for (const child of active) killTree(child);
+  // A compaction session's files go back only once it cannot write any more: POSIX kills it at once. On Windows the kill
+  // runs on its own, so the record stays for the next stage of the task to put them back.
+  if (!WIN) for (const undo of [...compacting]) undo();
   exit(1);
 }
 
