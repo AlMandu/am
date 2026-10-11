@@ -26,7 +26,11 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 
 // ---------------------------------------------------------------- detection
 
-/** Splits a command line into words and separators. Backslash is not an escape (Windows paths). */
+/**
+ * Splits a command line into words and separators. Backslash is not an escape (Windows
+ * paths), except before a newline outside single quotes: a line continuation, removed
+ * as a shell does. An unquoted `#` that starts a word comments out the rest of its line.
+ */
 function tokenize(command) {
   const tokens = [];
   let buf = '';
@@ -39,6 +43,13 @@ function tokenize(command) {
   };
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i];
+    if (ch === '\\' && quote !== "'") {
+      const nl = command[i + 1] === '\n' ? 1 : command.slice(i + 1, i + 3) === '\r\n' ? 2 : 0;
+      if (nl > 0) {
+        i += nl;
+        continue;
+      }
+    }
     if (quote) {
       if (ch === quote) quote = null;
       else buf += ch;
@@ -51,6 +62,10 @@ function tokenize(command) {
     }
     if (ch === ' ' || ch === '\t') {
       flush();
+      continue;
+    }
+    if (ch === '#' && buf === '' && !hadQuote) {
+      while (i + 1 < command.length && command[i + 1] !== '\n') i += 1;
       continue;
     }
     const two = command.slice(i, i + 2);
@@ -87,7 +102,14 @@ function segments(tokens) {
   return out;
 }
 
-const PREFIX_WORDS = new Set(['sudo', 'command', 'env', 'nice', 'time', 'exec', 'builtin', 'if', 'then', 'do', 'else', 'elif', 'while', 'until', '!', '&']);
+const PREFIX_WORDS = new Set(['sudo', 'command', 'env', 'nice', 'time', 'timeout', 'nohup', 'exec', 'builtin', 'if', 'then', 'do', 'else', 'elif', 'while', 'until', '!', '&']);
+// Options of a prefix word that take the next word as their value.
+const PREFIX_OPTS_WITH_VALUE = {
+  env: new Set(['-u', '--unset']),
+  sudo: new Set(['-u', '--user', '-g', '--group']),
+  nice: new Set(['-n', '--adjustment']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
+};
 const CD_WORDS = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-location']);
 const UNRESOLVED_DIR_WORDS = new Set(['popd', 'pop-location']);
 const SHELL_BINS = new Set(['bash', 'sh', 'zsh', 'dash', 'pwsh', 'powershell', 'cmd']);
@@ -108,12 +130,25 @@ function resolveDir(base, target) {
   return path.resolve(base, msys ? `${msys[1]}:/${target.slice(3)}` : target);
 }
 
+function isAssignment(word) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+}
+
+/** Drops leading assignments and prefix words with their options (and timeout's duration). */
 function stripPrefixes(words) {
   let i = 0;
   while (i < words.length) {
     const w = words[i];
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || PREFIX_WORDS.has(w.toLowerCase())) i += 1;
-    else break;
+    if (isAssignment(w)) {
+      i += 1;
+      continue;
+    }
+    const name = w.toLowerCase();
+    if (!PREFIX_WORDS.has(name)) break;
+    i += 1;
+    const withValue = PREFIX_OPTS_WITH_VALUE[name];
+    while (i < words.length && words[i].startsWith('-')) i += withValue && withValue.has(words[i]) ? 2 : 1;
+    if (name === 'timeout') i += 1;
   }
   return words.slice(i);
 }
@@ -325,22 +360,23 @@ function runCommand(run, { cwd, timeoutMs }) {
   });
 }
 
-const SHELL_BUILTINS = new Set(['echo', 'exit', 'cd', 'call', 'set', 'true', 'false', 'test', '[', 'type', 'start', 'if', 'for']);
+const SHELL_BUILTINS = new Set(['echo', 'exit', 'cd', 'pushd', 'popd', 'call', 'set', 'true', 'false', 'test', '[', 'type', 'start', 'if', 'for']);
 
 /**
- * True when the program a `run` string starts with exists. Checked up front because
- * cmd.exe reports a missing program as plain exit 1 with a localized message.
+ * True when the program a `run` string starts with exists. Checked up front on Windows
+ * only, because cmd.exe reports a missing program as plain exit 1 with a localized
+ * message; /bin/sh reports it as exit 127, which runGate already handles.
  */
-export function programExists(run, cwd, env = process.env) {
-  const first = segments(tokenize(run))[0];
-  const program = first && first[0];
+export function programExists(run, cwd, env = process.env, platform = process.platform) {
+  if (platform !== 'win32') return true;
+  const first = segments(tokenize(run))[0] || [];
+  const program = first.find((w) => !isAssignment(w));
   if (!program || SHELL_BUILTINS.has(program.toLowerCase()) || isDynamic(program)) return true;
-  const win = process.platform === 'win32';
-  const exts = win ? ['', ...String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)] : [''];
+  const exts = ['', ...String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)];
   const has = (p) => exts.some((e) => existsSync(p + e));
   if (/[\\/]/.test(program) || program.startsWith('.')) return has(path.resolve(cwd, program));
   const dirs = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
-  return (win && has(path.join(cwd, program))) || dirs.some((d) => has(path.join(d, program)));
+  return has(path.join(cwd, program)) || dirs.some((d) => has(path.join(d, program)));
 }
 
 /**

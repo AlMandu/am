@@ -58,6 +58,54 @@ test('ignores things that are not commits', () => {
   }
 });
 
+test('skips prefix words with their options and values', () => {
+  for (const cmd of [
+    'env -i git commit -m x',
+    'env -u X git commit -m x',
+    'env -i A=1 git commit -m x',
+    'sudo -u me git commit -m x',
+    'sudo -g staff -E git commit -m x',
+    'nice -n 5 git commit -m x',
+    'nice -5 git commit -m x',
+    'time -p git commit -m x',
+    'command -p git commit -m x',
+    'timeout 600 git commit -m x',
+    'timeout -s KILL 10 git commit -m x',
+    'timeout -k 5 --preserve-status 60 git commit -m x',
+    'nohup git commit -m x',
+    'sudo -u me timeout 60 nice -n 5 git commit -m x',
+  ]) {
+    assert.ok(isCommit(cmd), cmd);
+  }
+  for (const cmd of ['timeout 600 git status', 'env -u X git log --grep=commit', 'nohup echo git commit']) {
+    assert.equal(isCommit(cmd), false, cmd);
+  }
+});
+
+test('shell comments and line continuations do not hide a commit', () => {
+  for (const cmd of [
+    "# let's commit\ngit commit -m x",
+    "git add . # don't forget\ngit commit -m x",
+    'git \\\ncommit -m x',
+    'git \\\r\ncommit -m x',
+    'git add . && \\\n  git commit -m x',
+    'bash -c "git \\\ncommit -m x"',
+  ]) {
+    assert.ok(isCommit(cmd), cmd);
+  }
+  for (const cmd of [
+    '# git commit -m x',
+    'git status # then git commit',
+    'echo "# git commit"',
+    "echo 'git \\\ncommit'",
+    'git log --grep=commit',
+  ]) {
+    assert.equal(isCommit(cmd), false, cmd);
+  }
+  // A # inside a word is not a comment.
+  assert.ok(isCommit('git commit -m issue#12'));
+});
+
 test('resolves the folder the commit runs in', () => {
   const sub = path.resolve(BASE, 'sub');
   assert.equal(findCommits('git -C sub commit -m x', BASE)[0].dir, sub);
@@ -169,18 +217,41 @@ test('a missing gate command is an error that warns but does not block', async (
   rmSync(repo, { recursive: true, force: true });
 });
 
-test('programExists finds PATH programs, repo scripts and shell builtins', () => {
+test('programExists on Windows finds PATH programs, repo scripts and shell builtins', () => {
   const repo = makeRepo();
   mkdirSync(path.join(repo, 'DevTools'));
   writeFileSync(path.join(repo, 'DevTools', 'gate-build.cmd'), '@echo off\r\n');
-  assert.equal(programExists('node -e "1"', repo), true);
+  const win = (run) => programExists(run, repo, process.env, 'win32');
+  assert.equal(win('node -e "1"'), true);
   const sep = process.platform === 'win32' ? '\\' : '/';
-  assert.equal(programExists(`DevTools${sep}gate-build.cmd Assembly-CSharp.csproj`, repo), true);
-  // /bin/sh reads the backslash as an escape, so this path cannot run off Windows.
-  if (process.platform !== 'win32') assert.equal(programExists('DevTools\\gate-build.cmd x', repo), false);
-  assert.equal(programExists('DevTools/missing.cmd x', repo), false);
-  assert.equal(programExists('exit 0', repo), true);
-  assert.equal(programExists('am-gate-no-such-command-xyz --flag', repo), false);
+  assert.equal(win(`DevTools${sep}gate-build.cmd Assembly-CSharp.csproj`), true);
+  assert.equal(win('DevTools/missing.cmd x'), false);
+  assert.equal(win('exit 0'), true);
+  assert.equal(win('pushd sub && make'), true);
+  assert.equal(win('am-gate-no-such-command-xyz --flag'), false);
+  // Leading NAME=value words are not the program.
+  assert.equal(win('CI=true node -e "1"'), true);
+  assert.equal(win('CI=true am-gate-no-such-command-xyz'), false);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('programExists off Windows leaves a missing program to exit 127', () => {
+  const repo = makeRepo();
+  for (const run of ['am-gate-no-such-command-xyz --flag', 'CI=true npm test', 'export X=1 && npm test', 'source env.sh && make', '[[ -f x ]] && npm test']) {
+    assert.equal(programExists(run, repo, process.env, 'linux'), true, run);
+  }
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('gate commands that start with a shell word or assignment run off Windows', { skip: process.platform === 'win32' }, async () => {
+  for (const run of [`CI=true ${OK}`, `export X=1 && ${OK}`, `[ -d . ] && ${OK}`]) {
+    const repo = makeRepo({ commands: [{ name: 'ok', run }] });
+    const out = parseStdout((await decide(payload(repo, 'git commit -m x'))).stdout);
+    assert.match(out.hookSpecificOutput.additionalContext, /am gate: pass/, run);
+    rmSync(repo, { recursive: true, force: true });
+  }
+  const repo = makeRepo({ commands: [{ name: 'build', run: `export X=1 && ${FAIL}` }] });
+  assert.match(denialReason(await decide(payload(repo, 'git commit -m x'))), /"build" exited with 3/);
   rmSync(repo, { recursive: true, force: true });
 });
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.38 (2026-10-11)
+
+- 커밋 게이트가 `CI=true npm test`, `export X=1 && …`, `source …` 처럼 시작하는 명령을 "프로그램 없음"으로 잘못 보고 커밋을 그냥 통과시키던 문제를 고쳤다(Windows 밖에서는 프로그램 확인을 하지 않는다).
+- `timeout 600 git commit`, `env -i git commit`, `sudo -u … git commit`, `nohup git commit`, 그리고 `#` 주석 안의 따옴표나 줄 끝 `\` 로 이어 쓴 명령의 커밋도 게이트가 잡는다.
+
 ## am-orchestrator 0.9.1 (2026-10-11)
 
 - am 을 업데이트한 뒤 `doctor` 를 다시 돌리지 않아도, `run`·`split`·`answer` 가 설치돼 켜져 있는 am 을 확인해 쓴다. `doctor` 가 기록한 옛 am 과 다르면 경고 한 줄을 내고, 계획 세션의 Codex 2차 의견이 더 이상 옛 경로 때문에 권한 거부되지 않는다.
