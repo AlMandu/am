@@ -173,11 +173,11 @@ export function parseResult(stdout) {
 
 // ------------------------------------------------------------------ 프로세스 실행
 
-/** Windows 에서 PATH 의 실제 파일을 찾는다. .cmd/.bat 은 셸을 거쳐야 실행된다. */
-function resolveCommand(cmd) {
-  if (!WIN) return { file: cmd, shell: false };
-  const exts = path.extname(cmd) ? [''] : String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
-  const dirs = /[\\/]/.test(cmd) ? [''] : String(process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
+/** Windows 에서 PATH 의 실제 파일을 찾는다. .cmd/.bat 은 셸을 거쳐야 실행된다. win·env 는 테스트가 바꿔 넘길 수 있다. */
+export function resolveCommand(cmd, { win = WIN, env = process.env } = {}) {
+  if (!win) return { file: cmd, shell: false };
+  const exts = path.extname(cmd) ? [''] : String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const dirs = /[\\/]/.test(cmd) ? [''] : String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
   for (const dir of dirs) {
     for (const ext of exts) {
       const p = dir ? path.join(dir, cmd + ext) : cmd + ext;
@@ -192,6 +192,17 @@ export function winQuote(arg) {
   if (/["%]/.test(arg)) fail(`Windows 의 .cmd 실행 파일에는 " 나 % 가 든 인자를 넘길 수 없습니다: ${arg}`);
   return /^[A-Za-z0-9_\-./:=\\]+$/.test(arg) ? arg : `"${arg}"`;
 }
+
+/**
+ * cmd.exe 는 인자 안의 `"` 를 넘기지 못한다: --allowedTools 값에서 경로를 따옴표로 감싼 허용 규칙을 뺀다(따옴표 없는 짝은 남는다).
+ * 다른 인자에 남은 `"`·`%` 는 winQuote 가 거부한다. am 의 stage.mjs 의 cmdExeArgs 와 같은 규칙.
+ */
+export function cmdExeArgs(args) {
+  return args.map((a, i) => (args[i - 1] === '--allowedTools' && a.includes('"') ? a.split(',').filter((r) => !r.includes('"')).join(',') : a));
+}
+
+/** claude 명령이 cmd.exe 를 거치는가(Windows 의 npm .cmd 실행 파일). 그러면 세션은 따옴표 없는 node 명령만 허용받는다. */
+export const viaCmdExe = (cfg, opts) => resolveCommand(cfg.claudeCommand[0], opts).shell;
 
 /** 자식 프로세스(또는 pid 만 든 { pid })를 트리째 끝낸다. */
 function killTree(child) {
@@ -246,7 +257,7 @@ function exec(cmd, args, { cwd, timeoutMs, env }) {
       const opts = { cwd, env, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
       const target = args === null ? null : resolveCommand(cmd);
       if (!target) child = spawn(cmd, { ...opts, shell: true });
-      else child = target.shell ? spawn([target.file, ...args].map(winQuote).join(' '), { ...opts, shell: true }) : spawn(target.file, args, opts);
+      else child = target.shell ? spawn([target.file, ...cmdExeArgs(args)].map(winQuote).join(' '), { ...opts, shell: true }) : spawn(target.file, args, opts);
     } catch (err) {
       resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message });
       return;
@@ -889,7 +900,10 @@ const redoNote = (ctx, t) => {
 /** volatilePaths 가 있으면 세션에 알려 주는 한 줄. */
 const volatileNote = (ctx, text) => (ctx.cfg.volatilePaths?.length ? `\n- Build tools rewrite these files on every build: ${ctx.cfg.volatilePaths.join(', ')}. ${text}` : '');
 
-const SYSTEM = {
+// cmd.exe 를 거치는 claude 에는 따옴표 든 허용 규칙을 넘기지 못한다(cmdExeArgs). 그런 세션은 따옴표 없는 node 명령만 허용받는다. am 의 stage.mjs 와 같은 문장
+export const UNQUOTED_NOTE = '- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.';
+
+export const SYSTEM = {
   split: (ctx, design, out) => `You are the task splitter of am-orchestrator, an unattended batch run. No human is present in this session; never wait for input.
 
 Input: the design document at ${design}. Output: one JSON file at ${out}. Do not create or change any other file.
@@ -931,14 +945,14 @@ JSON shape, exactly these keys:
 Before you finish, read the file back and check: it is valid JSON; ids and slugs are unique; every dependsOn id exists and appears earlier in the list; no size other than S or M; every task has designRefs and at least one acceptance item; every id in "blocks" and in "coverage" exists.
 End your final reply with exactly one line: ORCH_STATUS: DONE`,
 
-  plan: (ctx, t) => `${UNATTENDED}
+  plan: (ctx, t, unquoted = viaCmdExe(ctx.cfg)) => `${UNATTENDED}
 
 This is task ${t.id} of a larger design. Its slug is ${t.slug}; use exactly this slug. Read the brief at ${AM_DIR}/${t.slug}/brief.md first, then the sections it names in the design document.
 - Plan this task only. The rest of the design is other tasks' work; mention it under Risks only if this task cannot be verified without it.
 - Always write ${AM_DIR}/${t.slug}/plan.md, even when the change looks small. Skip the stop that offers to do a small change directly.
 - Do not implement in this session. Do not create or change any file outside ${AM_DIR}/${t.slug}/.
 - What this session can do: read anything in the repository; create or change files only under ${AM_DIR}/${t.slug}/ and only with the Write or Edit tool (the folder already exists, do not create it); run only read-only git commands (status, diff, log, ls-files, check-ignore, rev-parse) and the Codex second-opinion command of the skill's rules, with its brief saved as ${AM_DIR}/${t.slug}/opinion-<round>.md (never over brief.md). The permission rules refuse everything else, including writing files through Bash. A refusal is never a reason to leave the plan unsaved: save it with the Write tool at ${AM_DIR}/${t.slug}/plan.md.
-- Work from the repository root and do not cd into subdirectories: a command that combines cd with git is refused. To look around, use the Read, Grep and Glob tools rather than shell pipelines: read hook scripts (for example .githooks/pre-commit) and tool sources with the Read tool. Running project tools (node, make and the like) is refused in this session; that Codex second-opinion command is the only exception.
+- Work from the repository root and do not cd into subdirectories: a command that combines cd with git is refused. To look around, use the Read, Grep and Glob tools rather than shell pipelines: read hook scripts (for example .githooks/pre-commit) and tool sources with the Read tool. Running project tools (node, make and the like) is refused in this session; that Codex second-opinion command is the only exception.${unquoted ? `\n${UNQUOTED_NOTE}` : ''}
 - Commit rules: this task is committed on its own, the commit runs the repository's commit hooks, and the session that commits cannot edit files. Find out what the hooks and the project's rules (CLAUDE.md, AGENTS.md, contract documents such as a MODULE.md next to the code) require together with a code change, for example a contract or history line, a changelog entry, or line references that move, and make each of those a step of the plan with its own check, even when the brief's file list does not mention the file.
 - Decisions: the answers under "Decisions already made" in the brief are final. For any other question about what the user sees or what is in scope, take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says (through its second opinion where it has one), with at most 1 more round after the reviewers' first answers in this session because the session has a time limit; never wait for the user on them, except a choice its two reviewers still split on after that round. Leave a decision open only when the plan cannot avoid one of the following and neither the brief nor the design document settles it: deleting user data or files that existed before this run, changing a saved-data format or migrating data, changing anything outside this repository, an action that the user's or the project's instructions say needs confirmation, or a technical choice its two reviewers still split on. For an open decision write the decision card in plan.md under Decisions, marked OPEN, and repeat the card in your final reply.
 - Too big: if a faithful plan needs more than ${ctx.cfg.taskLimits.maxPlanLines} lines, or clearly more than ${ctx.cfg.taskLimits.maxFiles} files, do not write plan.md. Write ${AM_DIR}/${t.slug}/split.json instead, with 2-5 items that can each be verified on their own while the repository keeps building after each one, text in the language of the brief:
@@ -1801,15 +1815,24 @@ async function runTask(ctx, t) {
 // 두 세션이 같은 작업 트리를 고치거나 state.json 을 서로 덮어쓴다(이 스크립트를 에이전트가 몰 때 특히 흔한 실수).
 const lockFile = (repo) => path.join(repo, ORCH_DIR, 'lock.json');
 
-/** 살아 있는 잠금이면 그 내용, 없거나 주인이 죽었으면 null. */
+// 잠금의 임대: 잠금을 쥔 프로세스는 lockTouchMs 마다 lock.json 의 수정 시각을 새로 고치고, 잠금에 그 임대 시간(leaseMs)을 적는다.
+// pid 가 살아 있어도 수정 시각이 leaseMs 보다 오래됐으면 주인이 사라진 것으로 본다(강제 종료 뒤 pid 재사용). leaseMs 가 없는 잠금(옛 버전이 쓴 것)은 pid 만 본다.
+// am 의 stage.mjs 도 lock.json 을 같은 규칙으로 읽는다(tests/orchestrator-skill.test.mjs).
+export const LOCK_LEASE_MS = 5 * 60000;
+/** 잠금이 적은 임대 시간이 지났는가. leaseMs 숫자가 없으면 지나지 않는다. */
+const leaseOver = (lock, mtimeMs) => isObj(lock) && typeof lock.leaseMs === 'number' && Number.isFinite(lock.leaseMs) && Date.now() - mtimeMs > lock.leaseMs;
+
+/** 살아 있는 잠금이면 그 내용, 없거나 주인이 죽었거나 임대가 지났으면 null. */
 function readLock(repo, alive = pidAlive) {
   let lock;
+  let mtimeMs;
   try {
+    mtimeMs = statSync(lockFile(repo)).mtimeMs;
     lock = readJson(lockFile(repo));
   } catch {
     return null;
   }
-  return alive(lock?.pid) ? lock : null;
+  return alive(lock?.pid) && !leaseOver(lock, mtimeMs) ? lock : null;
 }
 
 /** 살아 있는 다른 명령에 져서 끝낸다. 작업 모드면 진 작업으로 표시해 worker.json 과 결과를 남기지 않는다. */
@@ -1832,8 +1855,9 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
  * 잠금 파일을 배타적으로 만든다: 동시에 시작한 두 프로세스가 둘 다 잡지 못하게. 잡았으면 null, 살아 있는 주인이 있으면 그 내용({} 는 읽을 수 없는 잠금).
  * 완성된 임시 파일을 hard link 로 걸고(반쯤 쓴 잠금이 보이지 않게), hard link 가 안 되는 파일 시스템에서만 `wx` 로 직접 쓴다.
  * 죽은 주인의 잠금은 치우기 잠금(.break) 안에서 다시 확인한 뒤에만 지운다: 그사이 잡은 살아 있는 새 주인을 밀어내지 않게.
+ * pid 는 살아 있지만 임대가 지난 잠금은 confirmMs 뒤 다시 봐도 수정 시각과 내용이 같을 때만 지운다: 잠자기에서 깬 주인은 그 안에 새로 고친다.
  */
-function createLock(file, value, alive = pidAlive) {
+function createLock(file, value, alive = pidAlive, confirmMs = 45000) {
   const text = `${JSON.stringify(value, null, 2)}\n`;
   const tmp = `${file}.${process.pid}.tmp`;
   const make = () => {
@@ -1847,16 +1871,21 @@ function createLock(file, value, alive = pidAlive) {
       rmSync(tmp, { force: true });
     }
   };
-  // 주인: 살아 있으면 그 내용, 죽었으면 'dead', 그사이 없어졌으면 'gone'
+  // 주인: 살아 있으면 { lock }, 죽었으면 'dead', 그사이 없어졌으면 'gone', pid 는 살았지만 임대가 지났으면 { lock, stale: 수정 시각과 내용 }
   const owner = () => {
     let lock;
+    let text;
+    let mtimeMs;
     try {
-      lock = readJson(file);
+      mtimeMs = statSync(file).mtimeMs;
+      text = readFileSync(file, 'utf8');
+      lock = JSON.parse(text.replace(/^\uFEFF/, ''));
     } catch (err) {
       if (err.code === 'ENOENT') return 'gone';
-      return olderThan(file, LOCK_STALE_MS) ? 'dead' : {};
+      return olderThan(file, LOCK_STALE_MS) ? 'dead' : { lock: {} };
     }
-    return isObj(lock) && Number.isInteger(lock.pid) && lock.pid > 0 && alive(lock.pid) ? lock : 'dead';
+    if (!(isObj(lock) && Number.isInteger(lock.pid) && lock.pid > 0 && alive(lock.pid))) return 'dead';
+    return leaseOver(lock, mtimeMs) ? { lock, stale: `${mtimeMs}\n${text}` } : { lock };
   };
   const brk = `${file}.break`;
   for (let i = 0; i < 3; i += 1) {
@@ -1866,9 +1895,21 @@ function createLock(file, value, alive = pidAlive) {
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
     }
-    const o = owner();
+    let o = owner();
     if (o === 'gone') continue;
-    if (o !== 'dead') return o;
+    if (o !== 'dead' && !o.stale) return o.lock;
+    if (o.stale) {
+      // 임대가 지난 살아 있는 pid: 한 번 더 본다. 그사이 고쳐졌거나 바뀌었으면 처음부터 다시 판단한다
+      pause(confirmMs);
+      const again = owner();
+      if (again === 'dead' || again === 'gone') {
+        if (again === 'gone') continue;
+        o = 'dead';
+      } else if (again.stale !== o.stale) {
+        if (!again.stale) return again.lock;
+        continue;
+      }
+    }
     // 치우기 잠금을 기다린다(최대 약 1초). 쥔 채 죽은 것은 60초가 지나야 지운다
     let took = false;
     for (let w = 0; w < 50 && !took; w += 1) {
@@ -1883,21 +1924,54 @@ function createLock(file, value, alive = pidAlive) {
     }
     if (!took) break;
     try {
-      if (owner() === 'dead') rmSync(file, { force: true });
+      const cur = owner(); // 죽었거나, 다시 본 것과 같은 임대 지난 잠금일 때만
+      if (cur === 'dead' || (o !== 'dead' && cur !== 'gone' && cur.stale === o.stale)) rmSync(file, { force: true });
     } finally {
       rmSync(brk, { force: true });
     }
   }
   const o = owner();
-  return isObj(o) ? o : {};
+  return isObj(o) ? o.lock : {};
+}
+
+/**
+ * 잠금을 쥔 동안 lockTouchMs 마다 lock.json 의 수정 시각을 새로 고친다(임대). 고치기 전에 잠금이 아직 내 것인지 본다:
+ * 다른 pid 가 적혀 있거나 두 번 잇달아 없으면(읽을 수 없으면) Ctrl+C 와 같이 멈춘다. 그 잠금은 종료 처리가 지우지 않는다(pid 확인).
+ */
+function holdLock(repo, { lockTouchMs }) {
+  const file = lockFile(repo);
+  let missing = 0;
+  setInterval(() => {
+    let pid;
+    try {
+      pid = readJson(file).pid;
+    } catch {
+      pid = undefined;
+    }
+    if (pid === process.pid) {
+      missing = 0;
+      try {
+        const t = new Date();
+        utimesSync(file, t, t);
+      } catch {
+        /* 다음 차례에 */
+      }
+      return;
+    }
+    if (pid === undefined && (missing += 1) < 2) return;
+    const reason = pid === undefined ? '잠금 파일이 사라져 멈췄습니다' : `잠금을 다른 명령(pid ${pid})이 가져가 멈췄습니다`;
+    process.stderr.write(`\n${reason}\n`);
+    interrupt(reason);
+  }, lockTouchMs).unref(); // 명령이 끝나면 프로세스도 끝나게
 }
 
 function acquireLock(repo, command, run, timing) {
   const held = readLock(repo);
   if (held) busy(held);
   ensureIgnored(repo, ORCH_DIR);
-  const other = createLock(lockFile(repo), { pid: process.pid, command, startedAt: now(), ...(run ? { run } : {}) });
+  const other = createLock(lockFile(repo), { pid: process.pid, command, startedAt: now(), leaseMs: timing.lockLeaseMs, ...(run ? { run } : {}) }, pidAlive, timing.lockConfirmMs);
   if (other) busy(other);
+  holdLock(repo, timing);
   process.on('exit', (exitCode) => {
     // 끝 소식을 남기지 못한 채 끝나면(오류, 중단) 잠금을 지우기 전에 남긴다
     try {
@@ -1932,7 +2006,8 @@ function acquireLock(repo, command, run, timing) {
 
 // 숨은 --worker: doctor·split·answer·run 을 터미널 없이 돌리는 작업 프로세스. 하는 일은 같고, 출력은 .orchestrator/worker/log 로,
 // 잠금을 잡으면 worker.json, 끝나면 result-<pid>.json 을 남긴다. heartbeat 파일이 heartbeatMs 동안 바뀌지 않으면 Ctrl+C 와 같이 멈춘다.
-export const WORKER_DEFAULTS = { heartbeatMs: 30 * 60000, pollMs: 5000 };
+// lockTouchMs·lockLeaseMs·lockConfirmMs: 잠금의 임대(holdLock, readLock, createLock). 모든 모드에서 쓴다
+export const WORKER_DEFAULTS = { heartbeatMs: 30 * 60000, pollMs: 5000, lockTouchMs: 30000, lockLeaseMs: LOCK_LEASE_MS, lockConfirmMs: 45000 };
 const WORKER_COMMANDS = ['doctor', 'split', 'answer', 'run'];
 let worker = null; // 작업 모드의 상태. 작업 모드가 아니면 null
 
@@ -1968,7 +2043,7 @@ function writeResult(exitCode) {
   worker.written = true;
   try {
     const logTo = worker.logTo === undefined ? {} : { logTo: worker.logTo }; // 잠금을 잡기 전에 끝난 작업은 log 에 범위가 없다
-    writeJson(path.join(worker.dir, `result-${process.pid}.json`), { pid: process.pid, command: worker.command, code: exitCode ?? process.exitCode ?? 0, error: worker.error, endedAt: now(), delivered: worker.delivered, ...logTo });
+    writeJson(path.join(worker.dir, `result-${process.pid}.json`), { pid: process.pid, command: worker.command, args: worker.args, code: exitCode ?? process.exitCode ?? 0, error: worker.error, endedAt: now(), delivered: worker.delivered, ...logTo });
   } catch {
     /* 결과가 끝내 없으면 부른 쪽이 실패로 본다 */
   }
@@ -2033,6 +2108,18 @@ const readJsonOr = (file) => {
   }
 };
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+/**
+ * 작업·결과를 고르는 인자 열쇠: 명령 뒤의 인자와 옵션(--worker, --repo 는 빼고, 옵션 순서는 무시). 인자가 없으면 null.
+ * 인자 있는 호출은 열쇠가 같은 작업에만 붙고 같은 결과만 받는다. 인자 없는 호출은 그 명령의 어느 작업·결과든 이어 받는다(한도 4 뒤의 다시 부르기).
+ */
+export function argsKey(argv) {
+  const { pos, opt } = parseArgs(argv.filter((a) => a !== '--worker'));
+  const keys = Object.keys(opt).filter((k) => k !== 'repo' && k !== 'worker').sort();
+  if (pos.length <= 1 && !keys.length) return null;
+  return JSON.stringify([pos.slice(1), keys.map((k) => [k, opt[k]])]);
+}
+/** worker.json 이나 결과(args 를 담은)가 이 호출의 것인가. 인자 없는 호출(key null)은 늘 맞다. */
+const sameCall = (x, key) => key === null || (Array.isArray(x.args) && argsKey(x.args) === key);
 /** 따라가기 시작(began, 단조 시계)부터 한도가 지났는가. 붙기 전 기다림도 센다: Bash 시간 제한은 호출 시작부터 센다. */
 const overLimit = (began, timing) => performance.now() - began >= timing.followLimitMs;
 /** 한도로 끝난다: 작업은 계속 돌고, 같은 명령을 인자 없이 다시 부르면 이어 따라간다. */
@@ -2052,7 +2139,7 @@ const nap = (ms, child) =>
     child.once('exit', done);
   });
 
-/** 잠금을 쥔 살아 있는 작업이면 worker.json 의 내용, 아니면 null. */
+/** 살아 있는 잠금을 쥔 살아 있는 작업이면 worker.json 의 내용, 아니면 null. */
 function liveWorker(repo) {
   const w = readJsonOr(workerFile(repo, 'worker.json'));
   if (!isObj(w) || !Number.isInteger(w.pid) || w.pid <= 0 || !pidAlive(w.pid)) return null;
@@ -2113,12 +2200,15 @@ function freshResults(repo, timing, filter = () => true) {
   return out;
 }
 
-/** 같은 명령의 미전달 결과(새것부터). 지금 잠금을 쥔 작업의 pid, worker.json 의 작업이 시작하기 전에 끝난 같은 pid 의 결과는 재사용된 pid 의 옛것으로 거른다. */
-function pendingResults(repo, cmd, timing) {
+/**
+ * 같은 명령의 미전달 결과(새것부터). 인자 있는 호출(key)이면 인자가 같은 결과만.
+ * 지금 잠금을 쥔 작업의 pid, worker.json 의 작업이 시작하기 전에 끝난 같은 pid 의 결과는 재사용된 pid 의 옛것으로 거른다.
+ */
+function pendingResults(repo, cmd, timing, key = null) {
   const lockPid = readLock(repo)?.pid;
   const w = readJsonOr(workerFile(repo, 'worker.json'));
   const skip = (res) => res.pid === lockPid || (isObj(w) && w.pid === res.pid && Date.parse(res.endedAt) < Date.parse(w.startedAt));
-  return freshResults(repo, timing, (res) => res.command === cmd && !skip(res)).sort((x, y) => Date.parse(y.endedAt) - Date.parse(x.endedAt));
+  return freshResults(repo, timing, (res) => res.command === cmd && sameCall(res, key) && !skip(res)).sort((x, y) => Date.parse(y.endedAt) - Date.parse(x.endedAt));
 }
 
 /** 미전달 결과 하나를 낸다: log 의 남은 범위를 stdout 으로, 멈춘 이유(코드 2, 또는 범위 없는 결과)는 stderr 로, 그 코드로 끝난다. */
@@ -2153,10 +2243,10 @@ function deliver(repo, res) {
   process.exitCode = res.code;
 }
 
-/** 같은 명령의 미전달 결과가 있으면 가장 새것을 전달하고(더 옛것은 함께 전달된 것으로 차지) true. */
-function deliverPending(repo, cmd, timing) {
+/** 같은 명령(인자 있는 호출이면 같은 인자)의 미전달 결과가 있으면 가장 새것을 전달하고(더 옛것은 함께 전달된 것으로 차지) true. */
+function deliverPending(repo, cmd, timing, key = null) {
   for (;;) {
-    const [newest, ...older] = pendingResults(repo, cmd, timing);
+    const [newest, ...older] = pendingResults(repo, cmd, timing, key);
     if (!newest) return false;
     const won = claimResult(repo, newest);
     for (const res of older) claimResult(repo, res);
@@ -2176,16 +2266,18 @@ function settleResults(repo, timing) {
 async function follow(repo, cmd, a, argv, timing) {
   const began = performance.now();
   baseContext(repo); // git 저장소가 아니거나 설정이 잘못됐으면 아무것도 띄우지 않고 2
+  // 인자 있는 호출은 인자가 같은 작업·결과만 이어 받는다: 인자가 다른 같은 명령의 작업이 돌면 아래 잠금 확인에서 거부된다
+  const key = argsKey(argv);
   for (let i = 0; i < FOLLOW_TRIES; i += 1) {
     // 따라가기 없이 끝난 같은 명령의 결과가 있으면 새로 띄우지 않고 그것을 한 번 낸다
-    if (deliverPending(repo, cmd, timing)) return undefined;
+    if (deliverPending(repo, cmd, timing, key)) return undefined;
     const w = liveWorker(repo);
-    if (w && w.command === cmd) return attach(repo, w.pid, null, w.startedAt, timing, began);
+    if (w && w.command === cmd && sameCall(w, key)) return attach(repo, w.pid, null, w.startedAt, timing, began);
     // 끝 틈: 같은 명령의 작업이 잠금을 지웠지만 아직 결과를 쓰지 않았다. 결과를 기다려 다시 본다
     const last = readJsonOr(workerFile(repo, 'worker.json'));
-    if (isObj(last) && last.command === cmd && Number.isInteger(last.pid) && last.pid > 0 && pidAlive(last.pid)) {
+    if (isObj(last) && last.command === cmd && sameCall(last, key) && Number.isInteger(last.pid) && last.pid > 0 && pidAlive(last.pid)) {
       for (let t = 0; t < timing.resultWaitMs && !overLimit(began, timing) && pidAlive(last.pid) && !workerResult(repo, last.pid, last.startedAt); t += timing.followPollMs) await wait(timing.followPollMs);
-      if (deliverPending(repo, cmd, timing)) return undefined;
+      if (deliverPending(repo, cmd, timing, key)) return undefined;
     }
     const held = readLock(repo);
     if (held) busy(held);

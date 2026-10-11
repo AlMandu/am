@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { applySplit, claudeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, pickInstalledAm, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, validatePlan, verdictFromFile, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, argsKey, claudeArgs, cmdExeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, pickInstalledAm, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, resolveCommand, SYSTEM, UNQUOTED_NOTE, validatePlan, verdictFromFile, viaCmdExe, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 import { task, planOf, CHAIN, own, DEF, M1, M2, E1, E2, E3, prepared, tmp } from './orchestrator-helpers.mjs';
 
 // ------------------------------------------------------------------ 순수 함수
@@ -215,6 +215,54 @@ test('pickInstalledAm: 설치된 am 이 기록과 다르면 그쪽을 쓰고, �
   assert.equal(stop.root, undefined);
   assert.ok(stop.stop.includes(now) && stop.stop.includes(other));
   assert.match(stop.stop, /`doctor` 를 다시 실행하거나 \.orchestrator\/config\.json 의 amPluginRoot/);
+});
+
+test('cmd.exe 를 거치는 claude(Windows 의 npm .cmd): 따옴표 든 허용 규칙만 빼고, 계획 세션에 따옴표 없는 node 명령을 쓰라고 알린다', () => {
+  // Windows 판단은 win·env 로 바꿔 넘긴다: 이 PC 가 Windows 가 아니어도 .cmd 를 찾는 길을 확인한다
+  const bin = tmp('orch-shim-');
+  writeFileSync(path.join(bin, 'claude.cmd'), '@echo off\n');
+  const env = { PATH: bin, PATHEXT: '.exe;.cmd' };
+  assert.deepEqual(resolveCommand('claude', { win: true, env }), { file: path.join(bin, 'claude.cmd'), shell: true });
+  assert.equal(resolveCommand('claude', { win: false, env }).shell, false, 'Windows 가 아니면 셸을 거치지 않는다');
+  writeFileSync(path.join(bin, 'claude.exe'), '');
+  assert.equal(resolveCommand('claude', { win: true, env }).shell, false, '.exe 가 먼저면 셸을 거치지 않는다');
+  const cfg = defaults();
+  assert.equal(viaCmdExe(cfg, { win: true, env: { PATH: bin, PATHEXT: '.cmd' } }), true);
+  assert.equal(viaCmdExe(cfg, { win: false, env }), false);
+  // 계획 세션의 인자: 따옴표 든 규칙만 빠지고 따옴표 없는 짝과 다른 인자는 그대로, 그래서 winQuote 가 거부하지 않는다
+  const am = path.join(os.tmpdir(), 'am-plugin');
+  for (const phase of ['plan', 'answer', 'probe']) {
+    const args = claudeArgs(cfg, phase, { prompt: '/am:plan t01-a', systemFile: 's.md', amRoot: am });
+    const safe = cmdExeArgs(args);
+    const i = args.indexOf('--allowedTools');
+    const before = args[i + 1].split(',');
+    const after = safe[i + 1].split(',');
+    assert.ok(before.some((r) => r.includes('"')), phase);
+    assert.deepEqual(after, before.filter((r) => !r.includes('"')), phase);
+    assert.ok(after.includes(`Bash(node ${am.split(path.sep).join('/')}/scripts/codex-opinion.mjs *)`), phase);
+    assert.deepEqual(safe.filter((_, k) => k !== i + 1), args.filter((_, k) => k !== i + 1), '다른 인자는 그대로');
+    assert.doesNotThrow(() => safe.map(winQuote), phase);
+    assert.throws(() => args.map(winQuote), '빼지 않으면 winQuote 가 멈춘다(고치기 전의 모습)');
+  }
+  assert.deepEqual(cmdExeArgs(['-p', 'x', '--disallowedTools', 'Bash(node "a" *)']), ['-p', 'x', '--disallowedTools', 'Bash(node "a" *)'], '--allowedTools 값만 고친다');
+  // 계획 세션의 시스템 지시: cmd.exe 를 거칠 때만 따옴표 없는 node 명령을 쓰라고 한다
+  const ctx = { cfg };
+  const t = { id: 'T01', slug: 't01-a' };
+  assert.ok(SYSTEM.plan(ctx, t, true).includes(UNQUOTED_NOTE));
+  assert.ok(!SYSTEM.plan(ctx, t, false).includes(UNQUOTED_NOTE));
+  assert.equal(SYSTEM.plan(ctx, t), SYSTEM.plan(ctx, t, process.platform === 'win32' && resolveCommand('claude').shell), '기본값은 이 PC 의 claude 명령으로 정한다');
+  assert.match(UNQUOTED_NOTE, /node scripts with the path unquoted/);
+});
+
+test('argsKey: 명령 뒤의 인자와 옵션(--worker·--repo 제외, 옵션 순서 무시). 인자가 없으면 null', () => {
+  assert.equal(argsKey(['split']), null);
+  assert.equal(argsKey(['split', '--repo', '/r', '--worker']), null);
+  assert.equal(argsKey(['answer', 'T02', 'A']), argsKey(['answer', 'T02', 'A', '--repo', '/x', '--worker']));
+  assert.notEqual(argsKey(['answer', 'T02', 'A']), argsKey(['answer', 'T03', 'B']));
+  assert.notEqual(argsKey(['split', 'a.md']), argsKey(['split', 'b.md']));
+  assert.equal(argsKey(['run', '--only', 'T01', '--max-tasks', '2']), argsKey(['run', '--max-tasks', '2', '--only', 'T01']));
+  assert.notEqual(argsKey(['run', '--only', 'T01']), argsKey(['run']));
+  assert.notEqual(argsKey(['doctor', '--skip-probe']), null);
 });
 
 test('claudeArgs: 설정에 적지 않은 단계는 기본 모델과 effort 로 돈다', () => {

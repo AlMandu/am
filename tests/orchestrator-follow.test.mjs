@@ -5,7 +5,7 @@
 // 전달: 따라가기 없이 끝난 결과(하트비트 시간 안)는 같은 명령의 다음 호출이 새로 띄우지 않고 한 번 낸다. 다른 명령이 성공하면 전달된 것으로 본다.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -434,14 +434,14 @@ test('전달 (d) 성공한 명령만 다른 작업의 미전달 결과를 전달
 test('전달 (c4) 하트비트 시간 밖의 결과는 내지 않고, 잠금을 쥔 작업의 결과는 미리 내지 않고 붙는다', async () => {
   const r = makeRepo();
   const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
-  fakeResult(r, DEAD, { command: 'doctor', endedAt: ago(31) }, '옛 doctor 줄\n');
+  fakeResult(r, DEAD, { command: 'doctor', args: ['doctor', '--skip-probe'], endedAt: ago(31) }, '옛 doctor 줄\n');
   const before = results(r).length;
   const old = r.orch('doctor', '--skip-probe');
   assert.equal(old.code, 0, old.out);
   assert.ok(!old.out.includes('옛 doctor 줄'));
   assert.equal(results(r).length, before + 1);
   assert.ok(!marked(r, DEAD), '창 밖의 결과는 표시하지 않는다');
-  fakeResult(r, DEAD + 1, { command: 'doctor', endedAt: ago(29) }, '옛 doctor 줄\n');
+  fakeResult(r, DEAD + 1, { command: 'doctor', args: ['doctor', '--skip-probe', '--repo', 'elsewhere'], endedAt: ago(29) }, '옛 doctor 줄\n');
   const fresh = r.orch('doctor', '--skip-probe');
   assert.equal(fresh.code, 0, fresh.out);
   assert.equal(fresh.out, '옛 doctor 줄\n');
@@ -475,4 +475,141 @@ test('전달 (gap) 같은 명령의 작업이 잠금을 지운 뒤 결과를 쓰
   s.kill('SIGKILL');
   assert.equal(proc.out, '끝 틈 줄\n');
   assert.deepEqual(results(r), [`result-${s.pid}.json`]);
+});
+
+// ------------------------------------------------------------------ 인자: 인자 있는 호출은 인자가 같은 작업·결과만 이어 받는다
+
+test('따라가기 인자: 다른 인자의 같은 명령이 돌면 거부되고, 같은 인자와 인자 없는 호출은 그 작업에 붙는다', async () => {
+  const r = makeRepo();
+  const s = sleeper();
+  mkdirSync(workerDir(r), { recursive: true });
+  const logFile = path.join(workerDir(r), 'log');
+  writeFileSync(logFile, '');
+  const startedAt = new Date().toISOString();
+  writeFileSync(path.join(workerDir(r), `read-${s.pid}`), '0');
+  writeFileSync(path.join(workerDir(r), 'worker.json'), JSON.stringify({ pid: s.pid, command: 'answer', args: ['answer', 'T02', 'A', '--repo', r.repo], startedAt }));
+  writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'answer', startedAt, leaseMs: 300000 }));
+  const other = follow(r, 'answer', 'T03', 'B');
+  assert.equal(other.status, 2, other.stdout + other.stderr);
+  assert.match(other.stderr, /이미 돌고 있는 명령이 있습니다: answer/);
+  const same = r.start('answer', 'T02', 'A');
+  const bare = r.start('answer');
+  const exits = [exitOf(same), exitOf(bare)];
+  await sleep(500);
+  assert.deepEqual([same.exitCode, bare.exitCode], [null, null], '둘 다 붙어 있다');
+  appendFileSync(logFile, 'T02 줄\n');
+  for (let i = 0; i < 100 && !(same.out.includes('T02 줄') && bare.out.includes('T02 줄')); i += 1) await sleep(50);
+  s.kill('SIGKILL');
+  assert.deepEqual(await Promise.all(exits), [3, 3], same.out + bare.out);
+  for (const p of [same, bare]) assert.match(p.out, /^T02 줄\n/);
+});
+
+test('전달 인자: 인자 있는 호출은 인자가 같은 미전달 결과만 받는다', () => {
+  const r = makeRepo();
+  fakeResult(r, DEAD, { command: 'answer', args: ['answer', 'T02', 'A', '--repo', r.repo], code: 2, error: '멈춘 이유 T02' }, 'T02 남은 줄\n\n멈춘 이유 T02\n');
+  const p = follow(r, 'answer', 'T03', 'B');
+  assert.notEqual(p.status, 0);
+  assert.ok(!(p.stdout + p.stderr).includes('T02'), p.stdout + p.stderr);
+  assert.ok(!marked(r, DEAD), '다른 인자의 결과는 건드리지 않는다');
+  const q = follow(r, 'answer', 'T02', 'A');
+  assert.equal(q.status, 2, q.stdout + q.stderr);
+  assert.equal(q.stdout, 'T02 남은 줄\n');
+  assert.match(q.stderr, /멈춘 이유 T02/);
+  assert.ok(marked(r, DEAD));
+  // 인자를 담지 않은 옛 결과는 인자 없는 호출만 받는다
+  fakeResult(r, DEAD + 1, { command: 'answer', code: 2, error: '옛 결과' }, '옛 줄\n\n옛 결과\n');
+  assert.ok(!(follow(r, 'answer', 'T02', 'A').stdout).includes('옛 줄'));
+  const bare = follow(r, 'answer');
+  assert.equal(bare.stdout, '옛 줄\n');
+});
+
+// ------------------------------------------------------------------ 잠금의 임대
+
+/** 짧은 잠금 시간으로 cli 를 부르는 wrapper. */
+const lockWrapper = (timing) => {
+  const file = path.join(tmp('orch-wrap-'), 'wrapper.mjs');
+  writeFileSync(file, `import { cli } from ${JSON.stringify(pathToFileURL(ORCH).href)};\nawait cli(process.argv.slice(2), ${JSON.stringify(timing)});\n`);
+  return file;
+};
+const statusJson = (r) => JSON.parse(spawnSync(process.execPath, [ORCH, 'status', '--json', '--repo', r.repo], { encoding: 'utf8', env: r.env }).stdout);
+
+test('잠금 임대: pid 가 살아 있어도 leaseMs 보다 오래 고쳐지지 않은 잠금은 돌지 않는 것으로 보고 다시 본 뒤 가져간다. 새 잠금과 leaseMs 없는 옛 잠금은 막는다', () => {
+  const r = makeRepo();
+  const s = sleeper();
+  try {
+    const w = lockWrapper({ lockConfirmMs: 300 });
+    const doctor = () => spawnSync(process.execPath, [w, 'doctor', '--skip-probe', '--skip-gate', '--worker', '--repo', r.repo], { encoding: 'utf8', env: { ...r.env, AM_HANDOVER_OWNER: '' } });
+    writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'run', startedAt: 'x', leaseMs: 1000 }));
+    assert.equal(doctor().status, 2, '새 잠금은 막는다');
+    assert.equal(statusJson(r).running?.pid, s.pid);
+    assert.equal(statusJson(r).next, 'wait');
+    const old = new Date(Date.now() - 10000);
+    utimesSync(lockPath(r), old, old);
+    const st = statusJson(r);
+    assert.ok(!st.running && st.next !== 'wait', JSON.stringify(st));
+    const t0 = Date.now();
+    const p = doctor();
+    assert.equal(p.status, 0, logOf(r));
+    assert.ok(Date.now() - t0 >= 300, '한 번 더 본 뒤에 가져간다');
+    assert.ok(!existsSync(lockPath(r)));
+    // 옛 버전이 쓴 잠금(leaseMs 없음)은 pid 만 본다
+    writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'run', startedAt: 'x' }));
+    const older = new Date(Date.now() - 3600000);
+    utimesSync(lockPath(r), older, older);
+    assert.equal(doctor().status, 2);
+    assert.equal(statusJson(r).next, 'wait');
+  } finally {
+    s.kill('SIGKILL');
+  }
+});
+
+test('잠금 임대: 다시 보는 사이 주인이 수정 시각을 고치면(잠자기에서 깸) 가져가지 않는다', async () => {
+  const r = makeRepo();
+  const s = sleeper();
+  try {
+    writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'run', startedAt: 'x', leaseMs: 5000 }));
+    const old = new Date(Date.now() - 10000);
+    utimesSync(lockPath(r), old, old);
+    const proc = startWorker(r, ['doctor', '--skip-probe', '--skip-gate'], lockWrapper({ lockConfirmMs: 3000 }));
+    await sleep(1000); // 작업이 처음 본 뒤, 다시 보기 전
+    const t = new Date();
+    utimesSync(lockPath(r), t, t);
+    assert.equal(await proc.exited, 2);
+    assert.equal(JSON.parse(readFileSync(lockPath(r), 'utf8')).pid, s.pid);
+  } finally {
+    s.kill('SIGKILL');
+  }
+});
+
+test('잠금 임대: 주인은 잠금의 수정 시각을 새로 고치고, 잠금이 다른 pid 로 바뀌면 130 으로 멈추며 그 잠금은 지우지 않는다', { skip: process.platform === 'win32' }, async () => {
+  const r = prepared({ plan: ONE(), scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
+  const proc = startWorker(r, ['run'], lockWrapper({ lockTouchMs: 100 }));
+  await waitFile(path.join(r.repo, '.orchestrator', 'fake-slow.pid'));
+  const sessionPid = Number(readFileSync(path.join(r.repo, '.orchestrator', 'fake-slow.pid'), 'utf8'));
+  const lock = JSON.parse(readFileSync(lockPath(r), 'utf8'));
+  assert.deepEqual([lock.pid, lock.leaseMs], [proc.pid, 5 * 60000]);
+  const old = new Date(Date.now() - 60000);
+  utimesSync(lockPath(r), old, old);
+  await sleep(400);
+  assert.ok(Date.now() - statSync(lockPath(r)).mtimeMs < 5000, '수정 시각을 새로 고친다');
+  const s = sleeper();
+  try {
+    writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'run', startedAt: 'y', leaseMs: 300000 }));
+    assert.equal(await proc.exited, 130);
+    assert.equal(JSON.parse(readFileSync(lockPath(r), 'utf8')).pid, s.pid, '다른 주인의 잠금은 지우지 않는다');
+    assert.match(resultOf(r, proc.pid).error, /잠금을 다른 명령\(pid \d+\)이 가져가 멈췄습니다/);
+    assert.match(logOf(r), /잠금을 다른 명령\(pid \d+\)이 가져가 멈췄습니다/);
+    assert.ok(await deadPid(sessionPid), '세션 프로세스가 남아 있지 않다');
+  } finally {
+    s.kill('SIGKILL');
+  }
+});
+
+test('잠금 임대: 잠금 파일이 두 번 잇달아 없으면 130 으로 멈춘다', { skip: process.platform === 'win32' }, async () => {
+  const r = prepared({ plan: ONE(), scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
+  const proc = startWorker(r, ['run'], lockWrapper({ lockTouchMs: 100 }));
+  await waitFile(path.join(r.repo, '.orchestrator', 'fake-slow.pid'));
+  rmSync(lockPath(r));
+  assert.equal(await proc.exited, 130);
+  assert.match(resultOf(r, proc.pid).error, /잠금 파일이 사라져 멈췄습니다/);
 });

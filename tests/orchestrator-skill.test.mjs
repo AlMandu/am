@@ -312,6 +312,10 @@ test('the lock pid the am stage runner reads is the detached worker, not the com
   const worker = JSON.parse(readFileSync(path.join(r.repo, '.orchestrator', 'worker', 'worker.json'), 'utf8'));
   assert.equal(lock.pid, worker.pid);
   assert.notEqual(lock.pid, proc.pid);
+  // The lease the stage runner applies to lock.json: only a lock that carries a numeric leaseMs goes stale, after that long without a touch.
+  const { LOCK_LEASE_MS } = await import('../orchestrator/scripts/orchestrator.mjs');
+  assert.equal(LOCK_LEASE_MS, 5 * 60000);
+  assert.equal(lock.leaseMs, LOCK_LEASE_MS);
   process.kill(lock.pid, 0); // alive
   assert.deepEqual(otherRuns(r.repo, 'x').runs, ['am-orchestrator']);
   proc.kill('SIGINT');
