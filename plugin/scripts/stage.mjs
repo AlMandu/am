@@ -3,14 +3,13 @@
 // clean conversation: no conversation carries over, only the working tree and the files in
 // .am/<slug>/. request.md (the user's request, written by am:auto) goes to the plan stage;
 // plan.md goes to every stage after it and brings the user's answers back; check.md goes to
-// the --fix run of do, to compactmem and to commit; compactmem.md (the memory proposal) is
-// for the user and a later am:compactmem run. This script adds stage-<kind>.system.md (the
+// the --fix run of do and to commit. This script adds stage-<kind>.system.md (the
 // session's instructions) and stage-<kind>.reply.md (its last reply, which am:auto reads
 // for its final reply). Each stage gets its allowed tools up front (a stage session cannot
 // show a permission prompt), calls its am skill (the run skill for a hand-over) by slash command (the skill's own model
 // and effort apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
 // file gives the stage other values, and ends with one marker line that this script reads. Called by am:auto:
-//   node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]
+//   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
 // Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
 // (originals kept as <name>.orig-<n>.md); `compacted` reports it. The request (request.md) is the user's own words: never
@@ -21,12 +20,11 @@
 // The hand-over session gets this process's pid as AM_HANDOVER_OWNER, which an orchestrator worker writes as its `owner`;
 // however the hand-over ends (a pushed-out worker too), that worker gets SIGTERM, only while it is alive and holds the
 // orchestrator lock.
-// The do, compactmem and commit sessions and the compaction session write the prompt cache for 5 minutes, not 1 hour
+// The do and commit sessions and the compaction session write the prompt cache for 5 minutes, not 1 hour
 // (FORCE_PROMPT_CACHING_5M): they rarely wait that long, and the 5-minute write costs less.
-// The memory stage starts no session when the project's memory folder holds no .md file and no settings file moves it.
 // After the arguments the user models file (user-models.mjs) is read: broken, the stage ends `failed` with no session and
 // no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different,
-// its stage-key (else default) values the skill's frontmatter for the plan, do, check, compactmem and commit sessions, and
+// its stage-key (else default) values the skill's frontmatter for the plan, do, check and commit sessions, and
 // its run (else default) values the run skill's frontmatter for the hand-over.
 // Then the per-PC user settings file (user-settings.mjs) is read: broken, the stage ends `failed` the same way.
 // A stage that starts a session of its own (not a hand-over) first writes a `.gate` record in the orchestrator's record folder
@@ -63,11 +61,11 @@ import { readUserSettings, userSettingsFile } from './user-settings.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node stage.mjs <plan|do|check|compactmem|commit> <slug> [--push] [--fix]';
-export const STAGES = ['plan', 'do', 'check', 'compactmem', 'commit'];
+const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]';
+export const STAGES = ['plan', 'do', 'check', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
 // A caller of main that gives only some of them gets the rest from here.
-export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, compactmem: 20, commit: 25, compact: 15 };
+export const TIMEOUT_MIN = { plan: 75, do: 90, handover: 1440, check: 45, commit: 25, compact: 15 };
 // How often a hand-over copies the run's new event lines into the task's event file.
 export const RELAY_MS = 5000;
 // How often a plan or do session's plan.md is read for new second-opinion lines.
@@ -112,7 +110,6 @@ export const MARKS = {
   do: ['DONE', 'BLOCKED', 'NEEDS_DECISION'],
   handover: ['HANDED', 'BLOCKED', 'NEEDS_DECISION'],
   check: ['NOTE', 'BLOCK', 'NEEDS_DECISION'],
-  compactmem: ['PROPOSED', 'NOTHING', 'BLOCKED'],
   commit: ['COMMITTED', 'NOTHING', 'BLOCKED', 'NEEDS_DECISION'],
 };
 // End markers of the compaction session. Kept apart from MARKS: they never reach am:auto as a stage status.
@@ -122,7 +119,7 @@ const TAIL_CHARS = 600;
 // the user models file's compact/default value replaces it.
 export const COMPACT_MODEL = { model: 'sonnet', effort: 'medium' };
 // Session kinds whose prompt cache is written for 5 minutes. Plan and check wait on reviewers and gates for longer, so they keep 1 hour.
-export const CACHE_5M_KINDS = ['do', 'compactmem', 'commit', 'compact'];
+export const CACHE_5M_KINDS = ['do', 'commit', 'compact'];
 // The variable a hand-over session gets with this process's pid; an orchestrator worker it starts writes it to worker.json as `owner`.
 export const HANDOVER_OWNER = 'AM_HANDOVER_OWNER';
 /**
@@ -193,72 +190,15 @@ const sh = (rules) => (WIN ? rules.flatMap((r) => (r.startsWith('Bash') ? [r, r.
 /** One script by every path shape a session may write: the native path, mixed slashes, forward slashes only. */
 const nodeScript = (file) => [...new Set([file, file.replace(/[\\/]scripts[\\/]/, '/scripts/'), file.split(path.sep).join('/')])].flatMap((f) => [`Bash(node "${f}" *)`, `Bash(node ${f} *)`]);
 
-/** Claude Code's auto memory folder of the project at root: what the am:compactmem skill falls back to when no folder is named. */
-export const memoryDir = (root, env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects', path.resolve(root).replace(/[^A-Za-z0-9]/g, '-'), 'memory');
-
-/**
- * The main checkout of the git repository at cwd: Claude Code shares one memory folder across a repository's worktrees.
- * '' outside any repository, null when git cannot tell (missing, failing, bare, or before 2.31: echoes --path-format back).
- */
-export function mainCheckout(cwd, env, git = (args) => spawnSync('git', args, { encoding: 'utf8', env, windowsHide: true, timeout: 30000 })) {
-  const r = git(['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir']);
-  if (r.error) return null;
-  if (r.status === 128 && /not a git repository/i.test(r.stderr || '')) return '';
-  const common = String(r.stdout || '').trim();
-  if (r.status !== 0 || /[\r\n]/.test(common) || !path.isAbsolute(common) || !/[\\/]\.git$/.test(common)) return null;
-  return path.resolve(path.dirname(common));
-}
-
-/**
- * Why the memory stage needs no session, or null: the memory folder (of cwd and of the main checkout) has no .md file
- * and none of the settings files names autoMemoryDirectory. Any doubt (a read error other than a missing file, git
- * unable to tell) means null, so the session runs as before.
- */
-export function memorySkip(cwd, env) {
-  const main = mainCheckout(cwd, env);
-  if (main === null) return null;
-  const roots = [...new Set([path.resolve(cwd), ...(main ? [main] : [])])];
-  const dirs = [...new Set(roots.map((r) => memoryDir(r, env)))];
-  const settings = [path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json'), ...roots.flatMap((r) => [path.join(r, '.claude', 'settings.json'), path.join(r, '.claude', 'settings.local.json')])];
-  try {
-    for (const d of dirs) {
-      let names;
-      try {
-        names = readdirSync(d);
-      } catch (err) {
-        if (err && err.code === 'ENOENT') continue;
-        throw err;
-      }
-      if (names.some((f) => /\.md$/i.test(f))) return null;
-    }
-    for (const file of settings) {
-      let text;
-      try {
-        text = readFileSync(file, 'utf8');
-      } catch (err) {
-        if (err && err.code === 'ENOENT') continue;
-        throw err;
-      }
-      if (text.includes('autoMemoryDirectory')) return null;
-    }
-  } catch {
-    return null;
-  }
-  return `no memory file in ${dirs.join(' or ')}: the memory stage was skipped without a session`;
-}
-
-/** An Edit rule for everything under an absolute folder: `//` starts a path from the file system root, a Windows drive as `/c` (measured on Windows). */
-export const absEdit = (dir) => `Edit(/${path.resolve(dir).split(path.sep).join('/').replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`)}/**)`;
-
 /** The stages whose skill runs the Codex second opinion and whose session may write its brief under .am/. */
-export const CODEX_STAGES = ['plan', 'compactmem'];
+export const CODEX_STAGES = ['plan'];
 
 /**
  * Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root.
  * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
  * `startBranch`: the branch a hand-over merges back into, the only one it may check out (none when it is not a plain name).
  */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', memDir = '', slug = '', installedAm = [], startBranch = '' } = {}) {
+export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', installedAm = [], startBranch = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
   const codex = CODEX_STAGES.includes(stage) ? [...new Set([amRoot, ...installedAm].flatMap((root) => nodeScript(path.join(root, 'scripts', 'codex-opinion.mjs'))))] : [];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
@@ -273,9 +213,6 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
     case 'do':
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
-    case 'compactmem':
-      // Reads the memory folder outside the repository; writes only the proposal under .am/. A deny rule wins over any allowance, so memory is never changed here.
-      return { mode: 'dontAsk', allow: sh([...read, ...edit('.am'), ...gitRead, 'Bash(git show *)', ...codex]), deny: [...noHuman, ...(memDir ? [absEdit(memDir)] : [])] };
     case 'commit':
       // The only file it may write is the task's commit record, which the am:merge skill reads. Restore only unstages:
       // this runs in the user's own working tree, where a plain restore would throw away changes of unknown origin.
@@ -346,13 +283,6 @@ ${scratch(slug)}
 ${scratch(slug)}
 - Always write .am/${slug}/check.md.
 - ${MARK('check')}`,
-  compactmem: (slug, { memDir }) => `This is the memory stage for .am/${slug}/, with the am:compactmem skill, between the check and the commit.${memDir ? `
-- The memory folder of this project is ${memDir}, unless your system prompt names another one; this session cannot read environment variables, so use this path for the skill's fallback.` : ''}
-- This run is unattended: write the proposal to .am/${slug}/compactmem.md and stop there. Never change, create or delete a file in the memory folder; the user applies the proposal later.
-- Do not settle open items by asking, and never end with AM_STAGE: NEEDS_DECISION here, even when the two reviewers of a choice stay split: keep that memory in the proposal, with both picks and reasons, for the user to decide when applying it.
-- What this session can do: read anything, including the memory folder outside the repository; create or change files only under .am/${slug}/ with the Write or Edit tool; run read-only git commands (including git show) and the Codex second-opinion command of the skill's rules. Everything else is refused.
-- This stage cannot finish when the proposal cannot be written: end with AM_STAGE: BLOCKED and say why. NOTHING means no memory folder, no memory file, or no memory about this task.
-- ${MARK('compactmem')}`,
   commit: (slug, { push }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
 - After each commit, record it in .am/${slug}/commits.md as the skill says; that is the only file this session can write.
@@ -368,7 +298,6 @@ export function skillCall(stage, slug, { push = false, resume = false } = {}) {
     plan: { plugin: 'am', skill: 'plan', args: `Read the request in .am/${slug}/request.md (slug ${slug})` },
     do: { plugin: 'am', skill: 'do', args: slug },
     check: { plugin: 'am', skill: 'check', args: slug },
-    compactmem: { plugin: 'am', skill: 'compactmem', args: slug },
     commit: { plugin: 'am', skill: 'commit', args: push ? 'push' : '' },
     handover: { plugin: 'am-orchestrator', skill: 'run', args: resume ? '' : `.am/${slug}/plan.md` },
   };
@@ -376,13 +305,13 @@ export function skillCall(stage, slug, { push = false, resume = false } = {}) {
 }
 
 /** The prompt and appended system prompt of one session, with the plugin and skill it calls and that skill's arguments. */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, memDir = '', compacted = null } = {}) {
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null } = {}) {
   const { plugin, skill, args } = skillCall(stage, slug, { push, resume });
   const prompt = `/${plugin}:${skill}${args ? ` ${args}` : ''}`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && [...CODEX_STAGES, 'handover'].includes(stage) ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, memDir })}\n${ONE_COMMAND}${note}${shortened}\n` };
+  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume })}\n${ONE_COMMAND}${note}${shortened}\n` };
 }
 
 /**
@@ -530,6 +459,7 @@ export const GRACE_MS = 10 * 60000;
 export const POLL_MS = 5000;
 export const WAIT_MS = 8 * 60000;
 // End statuses after which am:auto starts another stage of the same task (null: every end).
+// compactmem: end lines an older version wrote, still followed by its commit stage.
 const GOES_ON = { plan: ['READY'], do: ['DONE'], check: ['NOTE', 'BLOCK'], compactmem: null };
 // Ends of an orchestrator command after which the run skill starts the next command.
 const ORCH_GOES_ON = { split: ['done'], answer: ['planned', 'split'] };
@@ -1169,16 +1099,6 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   }
   result.stage = kind;
   if (kind === 'handover') event({ ev: 'note', text: 'handed to the am-orchestrator run skill', stage: 'handover' });
-  if (kind === 'compactmem') {
-    const skip = memorySkip(cwd, env);
-    if (skip) {
-      // Appended, like the skill's own record: an earlier proposal in the file stays.
-      const file = path.join(dir, 'compactmem.md');
-      const prev = existsSync(file) ? readFileSync(file, 'utf8') : '';
-      appendFileSync(file, `${prev && !prev.endsWith('\n') ? '\n' : ''}${skip}\n`);
-      return done({ status: 'NOTHING', reason: skip });
-    }
-  }
   // A stage the user models file gives other values than its skill's frontmatter runs inline with --model/--effort.
   let stageModel = null;
   const sc = skillCall(kind, slug, opts);
@@ -1198,7 +1118,6 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const c = compaction.compacted;
   if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });
   result.costUsd = compaction.costUsd;
-  const memDir = kind === 'compactmem' ? memoryDir(cwd, env) : '';
   // A new session loads the installed am, which may be newer than this runner's folder: allow its Codex script too.
   const installedAm = CODEX_STAGES.includes(kind) && !pluginDirFor(amRoot, env) ? am().map((p) => path.resolve(p)) : [];
   const same = (a, b) => (WIN ? a.toLowerCase() === b.toLowerCase() : a === b);
@@ -1211,8 +1130,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     startBranch = handedStartBranch(readFileSync(planFile, 'utf8')) || '';
     if (!startBranch) startBranch = String(spawnSync('git', ['branch', '--show-current'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 }).stdout || '').trim();
   }
-  const perm = permissions(kind, { push, amRoot, orchRoot, memDir, slug, installedAm, startBranch });
-  const inst = instructions(kind, slug, { ...opts, memDir, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
+  const perm = permissions(kind, { push, amRoot, orchRoot, slug, installedAm, startBranch });
+  const inst = instructions(kind, slug, { ...opts, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
   let { prompt } = inst;
   if (stageModel) {
     const skillRel = `.am/${slug}/skill-${kind}.md`;

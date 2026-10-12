@@ -70,8 +70,6 @@ test('am:compactmem never runs inside an am-orchestrator session (user decision)
   assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
   // Its copy of the user models key list may name the key; nothing else may.
   assert.doesNotMatch(orch.replace(/^export const USER_MODEL_KEYS = \[.*\];$/m, ''), /compactmem/, 'the orchestrator never calls it');
-  assert.match(read('check'), /in Claude Code outside an am-orchestrator run the am:compactmem skill/);
-  assert.match(read('auto'), /skip check, compactmem and commit/);
 });
 
 test('am:merge moves the commits am:commit records and never pushes', () => {

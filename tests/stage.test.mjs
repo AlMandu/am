@@ -4,12 +4,12 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, memoryDir, absEdit, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, memorySkip, mainCheckout, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -70,17 +70,12 @@ async function run(dir, argv, opts = {}) {
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
 const flag = (args, name) => args[args.indexOf(name) + 1];
-/** An env with its own Claude config folder (no 5-minute cache setting from outside), holding the memory folder of dir with the given files. */
-function memEnv(t, dir, files = { 'MEMORY.md': '- [a](a.md)\n' }) {
+/** An env with its own Claude config folder and no 5-minute cache setting from outside. */
+function cleanEnv(t) {
   const cfg = mkdtempSync(path.join(os.tmpdir(), 'am-stage-cfg-'));
   t.after(() => rmSync(cfg, { recursive: true, force: true }));
   const env = { ...process.env, CLAUDE_CONFIG_DIR: cfg };
   delete env.FORCE_PROMPT_CACHING_5M;
-  if (files) {
-    const mem = memoryDir(dir, env);
-    mkdirSync(mem, { recursive: true });
-    for (const [name, text] of Object.entries(files)) writeFileSync(path.join(mem, name), text);
-  }
   return env;
 }
 const cacheEnv = (dir) => readFileSync(path.join(dir, 'env.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -98,19 +93,7 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
     assert.equal(p.mode, 'acceptEdits');
     for (const r of ['Bash(git commit *)', 'Bash(git push *)', 'Bash(git checkout *)', 'Bash(git reset *)', 'Bash(git stash push)', 'AskUserQuestion']) assert.ok(p.deny.includes(r), `${s}: ${r}`);
   }
-  // The memory stage reads anything (the memory folder is outside the repository) and writes only under .am/.
-  const mem = permissions('compactmem');
-  assert.equal(mem.mode, 'dontAsk');
-  assert.ok(mem.allow.includes('Read') && mem.allow.includes('Edit(/.am/**)') && mem.allow.includes('Bash(git show *)'));
-  assert.ok(!mem.allow.includes('Bash') && !mem.allow.includes('Edit') && !mem.allow.some((r) => r.includes('git commit')));
-  // The memory folder itself is denied, which wins over any allowance (rule form measured on Windows with claude -p).
-  const cfg = path.join(os.tmpdir(), 'cfg');
-  const dirOf = memoryDir(path.join(os.tmpdir(), 'My Repo'), { CLAUDE_CONFIG_DIR: cfg });
-  assert.equal(dirOf, path.join(cfg, 'projects', path.resolve(os.tmpdir(), 'My Repo').replace(/[^A-Za-z0-9]/g, '-'), 'memory'));
-  assert.ok(permissions('compactmem', { memDir: dirOf }).deny.includes(absEdit(dirOf)));
-  if (process.platform === 'win32') assert.match(absEdit('C:\\Users\\me\\.claude\\projects\\C--x\\memory'), /^Edit\(\/\/c\/Users\/me\/\.claude\/projects\/C--x\/memory\/\*\*\)$/, 'on Windows');
-  else assert.equal(absEdit('/home/me/m'), 'Edit(//home/me/m/**)');
-  assert.deepEqual(MARKS.compactmem, ['PROPOSED', 'NOTHING', 'BLOCKED'], 'never stops am:auto for a question');
+  assert.deepEqual(STAGES, ['plan', 'do', 'check', 'commit']);
   const commit = permissions('commit');
   assert.ok(commit.allow.includes('Bash(git commit *)') && commit.deny.includes('Bash(git push *)') && !commit.allow.includes('Bash(git push *)'));
   const pushed = permissions('commit', { push: true });
@@ -132,8 +115,8 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   // The compaction session reads and writes only under .am/: no shell at all.
   const compact = permissions('compact');
   assert.equal(compact.mode, 'dontAsk');
-  // Only the plan and memory stages may run the Codex script: of the runner's am and of every installed am, in both quote forms.
-  assert.deepEqual(CODEX_STAGES, ['plan', 'compactmem']);
+  // Only the plan stage may run the Codex script: of the runner's am and of every installed am, in both quote forms.
+  assert.deepEqual(CODEX_STAGES, ['plan']);
   for (const s of CODEX_STAGES) {
     const p = permissions(s, { amRoot: '/am', installedAm: ['/inst/a', '/inst/b', '/am'] });
     for (const root of ['/am', '/inst/a', '/inst/b']) {
@@ -175,10 +158,6 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.match(instructions('plan', 'demo').system, /If \.am\/demo\/plan\.md already exists[^\n]*continue that plan/);
   assert.equal(instructions('do', 'demo').prompt, '/am:do demo');
   assert.equal(instructions('check', 'demo').prompt, '/am:check demo');
-  assert.equal(instructions('compactmem', 'demo').prompt, '/am:compactmem demo');
-  assert.match(instructions('compactmem', 'demo').system, /write the proposal to \.am\/demo\/compactmem\.md and stop there\. Never change, create or delete a file in the memory folder/);
-  assert.match(instructions('compactmem', 'demo', { memDir: '/m' }).system, /The memory folder of this project is \/m, unless your system prompt names another one/);
-  assert.match(instructions('compactmem', 'demo').system, /never end with AM_STAGE: NEEDS_DECISION here/);
   assert.equal(instructions('commit', 'demo').prompt, '/am:commit');
   assert.equal(instructions('commit', 'demo', { push: true }).prompt, '/am:commit push');
   assert.equal(instructions('handover', 'demo').prompt, '/am-orchestrator:run .am/demo/plan.md');
@@ -207,10 +186,8 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   // Through cmd.exe (claude.cmd) only the unquoted rules for node scripts survive; those sessions are told the form.
   assert.match(instructions('handover', 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/);
   assert.doesNotMatch(instructions('handover', 'demo').system, /path unquoted/);
-  for (const s of ['plan', 'compactmem']) assert.match(instructions(s, 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/, s);
+  for (const s of ['plan']) assert.match(instructions(s, 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/, s);
   for (const s of ['check', 'commit', 'do']) assert.doesNotMatch(instructions(s, 'demo', { unquoted: true }).system, /path unquoted/, s);
-  // The memory stage may run the Codex second opinion of the am:compactmem skill's rules.
-  assert.match(instructions('compactmem', 'demo').system, /run read-only git commands \(including git show\) and the Codex second-opinion command of the skill's rules\./);
   assert.match(instructions('plan', 'demo').system, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
   // The size of one implementation run, word for word as in am:auto.
   const oneRun = AUTO.match(/One implementation run is [^\n]*? separately\./);
@@ -220,7 +197,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.match(instructions('do', 'demo', { fix: true }).system, /Read \.am\/demo\/check\.md first and fix only the causes it reports/);
   // Only the do and check sessions are told to keep helper files inside the repository.
   for (const [s, o] of [['do', {}], ['do', { fix: true }], ['check', {}]]) assert.match(instructions(s, 'demo', o).system, /under \.am\/demo\/scratch\/[^\n]*overrides any scratchpad or temporary folder[^\n]*refused/, s);
-  for (const s of ['plan', 'commit', 'compactmem', 'handover']) assert.doesNotMatch(instructions(s, 'demo').system, /scratch\//, s);
+  for (const s of ['plan', 'commit', 'handover']) assert.doesNotMatch(instructions(s, 'demo').system, /scratch\//, s);
   assert.match(instructions('handover', 'demo', { push: true }).system, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`[\s\S]*push the start branch/);
   assert.match(instructions('handover', 'demo').system, /Do not push\./);
   // The same run fields as the hand-over items of am:auto's step 7.
@@ -274,7 +251,7 @@ test('context size: estimate, files per stage, and which files to shorten', () =
   assert.deepEqual(contextFiles('do', { fix: true }), ['plan.md', 'check.md']);
   assert.deepEqual(contextFiles('handover'), [], 'the orchestrator copies the handed plan.md whole');
   assert.deepEqual(contextFiles('check'), ['plan.md']);
-  for (const k of ['compactmem', 'commit']) assert.deepEqual(contextFiles(k), ['plan.md', 'check.md']);
+  assert.deepEqual(contextFiles('commit'), ['plan.md', 'check.md']);
   assert.equal(CONTEXT_LIMIT, 13000);
   assert.equal(CONTEXT_TARGET, 8500);
   assert.deepEqual(pickCompaction({ 'plan.md': 13000 }), { files: [], budget: 0 }, 'at the limit nothing is shortened');
@@ -345,101 +322,6 @@ test('a missing marker is asked for once in the same session', async (t) => {
   const r2 = await run(none, ['do', 'demo']);
   assert.equal(r2.result.status, 'failed');
   assert.match(r2.result.reason, /without an AM_STAGE line/);
-});
-
-test('the memory stage runs between check and commit and reports PROPOSED or NOTHING', async (t) => {
-  assert.deepEqual(STAGES, ['plan', 'do', 'check', 'compactmem', 'commit']);
-  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Proposal saved.\nAM_STAGE: PROPOSED'] } });
-  const { result, calls } = await run(dir, ['compactmem', 'demo'], { env: memEnv(t, dir) });
-  assert.equal(result.stage, 'compactmem');
-  assert.equal(result.status, 'PROPOSED');
-  assert.equal(flag(calls[0], '-p'), '/am:compactmem demo');
-  assert.equal(flag(calls[0], '--permission-mode'), 'dontAsk');
-  const none = makeRepo(t, { plan: SMALL, fake: { replies: ['No memory.\nAM_STAGE: NOTHING'] } });
-  const r2 = await run(none, ['compactmem', 'demo'], { env: memEnv(t, none) });
-  assert.equal(r2.result.status, 'NOTHING');
-  assert.equal(r2.calls.length, 1);
-});
-
-test('the memory stage starts no session when the memory folder has no memory file', async (t) => {
-  const lines = (dir) => readFileSync(path.join(dir, '.am', 'demo', 'progress.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  // No memory folder, and an empty one (a non-.md file does not count).
-  for (const files of [null, {}, { 'notes.txt': 'x' }]) {
-    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: PROPOSED'] } });
-    const env = memEnv(t, dir, files);
-    const { result, calls } = await run(dir, ['compactmem', 'demo'], { env });
-    assert.equal(calls.length, 0, JSON.stringify(files));
-    assert.equal(result.status, 'NOTHING');
-    assert.equal(result.costUsd, 0);
-    assert.equal(result.reason, `no memory file in ${memoryDir(dir, env)}: the memory stage was skipped without a session`);
-    assert.equal(memorySkip(dir, env), result.reason);
-    assert.equal(readFileSync(path.join(dir, '.am', 'demo', 'compactmem.md'), 'utf8'), `${result.reason}\n`);
-    const end = lines(dir).at(-1);
-    assert.deepEqual([end.ev, end.status, end.text], ['end', 'NOTHING', result.reason.slice(0, 200)]);
-  }
-  // An earlier proposal stays in front of the new line.
-  const kept = makeRepo(t, { plan: SMALL });
-  writeFileSync(path.join(kept, '.am', 'demo', 'compactmem.md'), '# Earlier proposal');
-  const { result } = await run(kept, ['compactmem', 'demo'], { env: memEnv(t, kept, null) });
-  assert.equal(readFileSync(path.join(kept, '.am', 'demo', 'compactmem.md'), 'utf8'), `# Earlier proposal\n${result.reason}\n`);
-});
-
-test('the memory stage still runs when a settings file may move the memory folder', async (t) => {
-  for (const where of ['user', 'project', 'local']) {
-    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTHING'] } });
-    const env = memEnv(t, dir, {});
-    const file = { user: path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), project: path.join(dir, '.claude', 'settings.json'), local: path.join(dir, '.claude', 'settings.local.json') }[where];
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, '{ "autoMemoryDirectory": "D:/mem" }');
-    const { result, calls } = await run(dir, ['compactmem', 'demo'], { env });
-    assert.equal(calls.length, 1, where);
-    assert.equal(result.status, 'NOTHING');
-    assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'compactmem.md')), where);
-  }
-  // A settings file without that key changes nothing.
-  const dir = makeRepo(t, { plan: SMALL });
-  const env = memEnv(t, dir, null);
-  writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), '{ "model": "opus" }');
-  assert.match(memorySkip(dir, env), /^no memory file in /);
-});
-
-test('in a git worktree the memory stage also looks at the main checkout, which shares its memory folder', (t) => {
-  const base = mkdtempSync(path.join(os.tmpdir(), 'am-stage-git-'));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
-  const main = realpathSync.native(base);
-  const wt = path.join(main, 'wt');
-  const git = (...args) => {
-    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd: main, encoding: 'utf8' });
-    assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
-  };
-  git('init', '-q');
-  git('commit', '-q', '--allow-empty', '-m', 'init');
-  git('worktree', 'add', '-q', wt);
-  assert.equal(mainCheckout(wt, process.env), main);
-  assert.equal(mainCheckout(main, process.env), main);
-  assert.equal(mainCheckout(os.tmpdir(), process.env), '', 'outside a repository');
-  // Memory only in the main checkout's folder: the worktree runs the session.
-  const env = memEnv(t, main);
-  assert.equal(memorySkip(wt, env), null);
-  // The main checkout's untracked local settings may move the folder.
-  const empty = memEnv(t, main, null);
-  assert.equal(memorySkip(wt, empty), `no memory file in ${memoryDir(wt, empty)} or ${memoryDir(main, empty)}: the memory stage was skipped without a session`);
-  mkdirSync(path.join(main, '.claude'), { recursive: true });
-  writeFileSync(path.join(main, '.claude', 'settings.local.json'), '{ "autoMemoryDirectory": "D:/mem" }');
-  assert.equal(memorySkip(wt, empty), null);
-});
-
-test('mainCheckout: when git cannot tell, the memory stage runs its session', () => {
-  const fake = (r) => () => ({ status: 0, stdout: '', stderr: '', ...r });
-  const abs = path.resolve('/repo/.git');
-  assert.equal(mainCheckout('.', process.env, fake({ stdout: `${abs}\n` })), path.resolve('/repo'));
-  // A git before 2.31 echoes the unknown --path-format back and prints a relative path.
-  assert.equal(mainCheckout('.', process.env, fake({ stdout: '--path-format=absolute\n../.git\n' })), null);
-  assert.equal(mainCheckout('.', process.env, fake({ stdout: '../.git\n' })), null);
-  assert.equal(mainCheckout('.', process.env, fake({ status: 1, stdout: `${abs}\n` })), null);
-  assert.equal(mainCheckout('.', process.env, fake({ error: new Error('ENOENT') })), null);
-  assert.equal(mainCheckout('.', process.env, fake({ stdout: path.resolve('/repo/.git/modules/sub') })), null, 'a submodule');
-  assert.equal(mainCheckout('.', process.env, fake({ status: 128, stderr: 'fatal: not a git repository' })), '');
 });
 
 test('the do stage becomes a hand-over for a large plan, with push only in push mode', async (t) => {
@@ -617,14 +499,13 @@ test('within the limit no compaction session runs', async (t) => {
   assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'stage-compact.system.md')));
 });
 
-test('do, compactmem, commit and the compaction session write the cache for 5 minutes; plan, check and a hand-over do not', async (t) => {
-  assert.deepEqual(CACHE_5M_KINDS, ['do', 'compactmem', 'commit', 'compact']);
+test('do, commit and the compaction session write the cache for 5 minutes; plan, check and a hand-over do not', async (t) => {
+  assert.deepEqual(CACHE_5M_KINDS, ['do', 'commit', 'compact']);
   const cases = [
     [['plan', 'demo'], { replies: ['AM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } }, undefined, [null]],
     // The second call asks the same session again for its end line.
     [['do', 'demo'], { replies: ['Implemented.', 'AM_STAGE: DONE'] }, SMALL, ['1', '1']],
     [['check', 'demo'], { replies: ['AM_STAGE: NOTE'] }, SMALL, [null]],
-    [['compactmem', 'demo'], { replies: ['AM_STAGE: PROPOSED'] }, SMALL, ['1']],
     [['commit', 'demo'], { replies: ['AM_STAGE: COMMITTED'] }, SMALL, ['1']],
     [['do', 'demo'], { replies: ['AM_STAGE: HANDED'] }, LARGE, [null], { orchestrator: () => '/orch' }],
     // The compaction session before a check: 5 minutes for it, 1 hour for the check.
@@ -632,7 +513,7 @@ test('do, compactmem, commit and the compaction session write the cache for 5 mi
   ];
   for (const [argv, fake, planText, want, opts = {}] of cases) {
     const dir = makeRepo(t, { plan: planText, fake });
-    await run(dir, argv, { env: memEnv(t, dir), ...opts });
+    await run(dir, argv, { env: cleanEnv(t), ...opts });
     assert.deepEqual(cacheEnv(dir), want, `${argv[0]} ${planText === LARGE ? 'hand-over' : ''}`);
   }
 });
@@ -642,7 +523,7 @@ test('sessionEnv: a hand-over gets the owner pid; every other kind loses an inhe
   assert.deepEqual(sessionEnv('handover', { A: '1' }, 4321), { A: '1', AM_HANDOVER_OWNER: '4321' });
   assert.deepEqual(sessionEnv('handover', { AM_HANDOVER_OWNER: '999' }, 7), { AM_HANDOVER_OWNER: '7' });
   // A small env of the test's own: inside a real hand-over isolatedEnv would carry the variable.
-  for (const kind of ['plan', 'do', 'check', 'compactmem', 'commit', 'compact']) {
+  for (const kind of ['plan', 'do', 'check', 'commit', 'compact']) {
     const env = { A: '1', AM_HANDOVER_OWNER: '999' };
     const got = sessionEnv(kind, env, 7);
     assert.ok(!(HANDOVER_OWNER in got), kind);
@@ -660,14 +541,13 @@ test('only the hand-over session gets AM_HANDOVER_OWNER (this process), even whe
     [['plan', 'demo'], { replies: ['AM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } }, undefined, [null]],
     [['do', 'demo'], { replies: ['Implemented.', 'AM_STAGE: DONE'] }, SMALL, [null, null]],
     [['check', 'demo'], { replies: ['AM_STAGE: NOTE'] }, SMALL, [null]],
-    [['compactmem', 'demo'], { replies: ['AM_STAGE: PROPOSED'] }, SMALL, [null]],
     [['commit', 'demo'], { replies: ['AM_STAGE: COMMITTED'] }, SMALL, [null]],
     [['do', 'demo'], { replies: ['AM_STAGE: HANDED'] }, LARGE, handover, { orchestrator: () => '/orch' }],
     [['check', 'demo'], { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] }, BIG, [null, null]],
   ];
   for (const [argv, fake, planText, want, opts = {}] of cases) {
     const dir = makeRepo(t, { plan: planText, fake });
-    await run(dir, argv, { env: { ...memEnv(t, dir), AM_HANDOVER_OWNER: '999' }, ...opts });
+    await run(dir, argv, { env: { ...cleanEnv(t), AM_HANDOVER_OWNER: '999' }, ...opts });
     assert.deepEqual(ownerEnv(dir), want, `${argv[0]} ${planText === LARGE ? 'hand-over' : ''}`);
   }
 });
@@ -1138,6 +1018,7 @@ test('otherRuns: a live stage of another task blocks; a dead one without an end 
 
 test('otherRuns: the gap after an end that leads on holds for the grace time; final ends hold nothing', (t) => {
   const dir = makeRepo(t);
+  // The compactmem lines are old-version end lines: an older runner still goes on to commit after them.
   for (const [stage, status] of [['plan', 'READY'], ['do', 'DONE'], ['check', 'NOTE'], ['check', 'BLOCK'], ['compactmem', 'PROPOSED'], ['compactmem', 'NOTHING'], ['compactmem', 'BLOCKED'], ['compactmem', 'failed']]) {
     taskEvents(dir, 'a', stageLines(stage, status));
     assert.deepEqual(others(dir, 15), { runs: ['a'], text: 'a (between stages)' }, `${stage} ${status}`);
@@ -1889,9 +1770,9 @@ test('skillDefaults reads the frontmatter exactly; inlineSkill drops it and fill
   assert.equal(inlinePrompt('demo', 'check', 'am:check'), 'Follow the instructions in .am/demo/skill-check.md exactly. They are the am:check skill, invoked by the user with the arguments already filled in.');
 });
 
-test('the plan and memory stages allow the Codex command exactly as an inline skill body writes it', () => {
+test('the plan stage allows the Codex command exactly as an inline skill body writes it', () => {
   const roots = [AM, ...(process.platform === 'win32' ? ['C:\\Users\\me\\.claude\\plugins\\cache\\am-workflow\\am\\0.1.28'] : [])];
-  for (const stage of ['plan', 'compactmem']) {
+  for (const stage of ['plan']) {
     for (const root of roots) {
       const body = inlineSkill(skillText(stage), 'x', root);
       const file = /node "([^"]+codex-opinion\.mjs)"/.exec(body)[1];
@@ -2076,7 +1957,7 @@ test('run values equal to the run skill, or values for other stages only, keep t
 
 // ------------------------------------------------------------------ the installed am of a new session
 
-test('the plan and memory stages also allow the Codex script of the installed am, and note a different folder', async (t) => {
+test('the plan stage also allows the Codex script of the installed am, and note a different folder', async (t) => {
   const cfg = mkdtempSync(path.join(os.tmpdir(), 'am-stage-inst-'));
   t.after(() => rmSync(cfg, { recursive: true, force: true }));
   const env = { ...isolatedEnv, CLAUDE_CONFIG_DIR: cfg };
@@ -2100,17 +1981,7 @@ test('the plan and memory stages also allow the Codex script of the installed am
     assert.deepEqual(notes(d), [], same);
   }
 
-  // The memory stage gets the same rules.
-  const m = makeRepo(t, { plan: SMALL, fake: { replies: ['Proposal saved.\nAM_STAGE: PROPOSED'] } });
-  const memCfg = { ...memEnv(t, m), CLAUDE_CONFIG_DIR: cfg };
-  mkdirSync(memoryDir(m, memCfg), { recursive: true });
-  writeFileSync(path.join(memoryDir(m, memCfg), 'MEMORY.md'), '- [a](a.md)\n');
-  const mr = await run(m, ['compactmem', 'demo'], { env: memCfg, amRoot, am: () => [installed] });
-  assert.equal(mr.result.status, 'PROPOSED');
-  assert.ok(flag(mr.calls[0], '--allowedTools').split(',').includes(`Bash(node ${script(installed)} *)`));
-  assert.equal(notes(m).length, 1);
-
-  // No lookup for other stages, for a development copy, or when the memory stage ends without a session; none found keeps the runner's rule only.
+  // No lookup for other stages or for a development copy; none found keeps the runner's rule only.
   const looked = [];
   const spy = () => (looked.push(1), [installed]);
   await run(makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } }), ['do', 'demo'], { env, amRoot, am: spy });
@@ -2118,8 +1989,6 @@ test('the plan and memory stages also allow the Codex script of the installed am
   const devDir = makeRepo(t, { fake: PLANNED });
   const dev = await run(devDir, ['plan', 'demo'], { env, am: spy });
   assert.ok(!flag(dev.calls[0], '--allowedTools').includes(script(installed)));
-  const empty = makeRepo(t, { plan: SMALL });
-  assert.equal((await run(empty, ['compactmem', 'demo'], { env, amRoot, am: spy })).result.status, 'NOTHING');
   assert.deepEqual(looked, []);
   const noneDir = makeRepo(t, { fake: PLANNED });
   const none = await run(noneDir, ['plan', 'demo'], { env, amRoot, am: () => [] });
@@ -2423,7 +2292,7 @@ const callsOf = (dir) => readOr(path.join(dir, 'calls.jsonl'));
 const noTemp = (dir) => assert.deepEqual(readdirSync(path.join(dir, '.am', 'demo')).filter((f) => f.endsWith('.tmp') || f.includes('.stale')), []);
 
 test('worker: no worker file is ever a task file a session reads', () => {
-  for (const kind of ['plan', 'do', 'handover', 'check', 'compactmem', 'commit']) {
+  for (const kind of ['plan', 'do', 'handover', 'check', 'commit']) {
     for (const fix of [false, true]) for (const name of Object.values(WORKER_FILES)) assert.ok(!contextFiles(kind, { fix }).includes(name), `${kind} ${fix}: ${name}`);
   }
 });
@@ -2638,7 +2507,8 @@ test('worker: a record another worker took stops it quietly; a record gone for o
 
 test('worker: bad arguments print the usage and make no file', async (t) => {
   const dir = makeRepo(t, { plan: SMALL });
-  for (const argv of [['ship', 'demo'], ['do', '../x'], ['do', 'demo', '--force']]) {
+  // compactmem: the stage name older am:auto bodies sent.
+  for (const argv of [['ship', 'demo'], ['compactmem', 'demo'], ['do', '../x'], ['do', 'demo', '--force']]) {
     const w = startWorker(dir, argv);
     assert.equal(await w.done, 1);
     assert.match(w.text, /^bad arguments[^]*usage: node stage\.mjs/);
