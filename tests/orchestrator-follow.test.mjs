@@ -539,11 +539,13 @@ test('잠금 임대: pid 가 살아 있어도 leaseMs 보다 오래 고쳐지지
   try {
     const w = lockWrapper({ lockConfirmMs: 300 });
     const doctor = () => spawnSync(process.execPath, [w, 'doctor', '--skip-probe', '--skip-gate', '--worker', '--repo', r.repo], { encoding: 'utf8', env: { ...r.env, AM_HANDOVER_OWNER: '' } });
-    writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'run', startedAt: 'x', leaseMs: 1000 }));
+    // 부하로 세 호출이 늦어도 임대 안에 있고, "오래된" 시각은 임대의 두 배 전이라 확실히 밖이다
+    const LEASE = 60000;
+    writeFileSync(lockPath(r), JSON.stringify({ pid: s.pid, command: 'run', startedAt: 'x', leaseMs: LEASE }));
     assert.equal(doctor().status, 2, '새 잠금은 막는다');
     assert.equal(statusJson(r).running?.pid, s.pid);
     assert.equal(statusJson(r).next, 'wait');
-    const old = new Date(Date.now() - 10000);
+    const old = new Date(Date.now() - 2 * LEASE);
     utimesSync(lockPath(r), old, old);
     const st = statusJson(r);
     assert.ok(!st.running && st.next !== 'wait', JSON.stringify(st));
