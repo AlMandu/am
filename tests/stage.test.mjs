@@ -218,6 +218,9 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.ok(instructions('plan', 'demo').system.includes(oneRun[0]), oneRun[0]);
   assert.match(instructions('do', 'demo').system, /do not use the am:check skill/);
   assert.match(instructions('do', 'demo', { fix: true }).system, /Read \.am\/demo\/check\.md first and fix only the causes it reports/);
+  // Only the do and check sessions are told to keep helper files inside the repository.
+  for (const [s, o] of [['do', {}], ['do', { fix: true }], ['check', {}]]) assert.match(instructions(s, 'demo', o).system, /under \.am\/demo\/scratch\/[^\n]*overrides any scratchpad or temporary folder[^\n]*refused/, s);
+  for (const s of ['plan', 'commit', 'compactmem', 'handover']) assert.doesNotMatch(instructions(s, 'demo').system, /scratch\//, s);
   assert.match(instructions('handover', 'demo', { push: true }).system, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`[\s\S]*push the start branch/);
   assert.match(instructions('handover', 'demo').system, /Do not push\./);
   // The same run fields as the hand-over items of am:auto's step 7.

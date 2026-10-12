@@ -903,6 +903,9 @@ const volatileNote = (ctx, text) => (ctx.cfg.volatilePaths?.length ? `\n- Build 
 // cmd.exe 를 거치는 claude 에는 따옴표 든 허용 규칙을 넘기지 못한다(cmdExeArgs). 그런 세션은 따옴표 없는 node 명령만 허용받는다. am 의 stage.mjs 와 같은 문장
 export const UNQUOTED_NOTE = '- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.';
 
+// 구현·점검 세션은 저장소 밖에 쓰지 못하므로 보조 파일을 작업 폴더 안에 두게 한다. am 의 stage.mjs 에 같은 뜻의 문장
+export const SCRATCH_NOTE = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under ${AM_DIR}/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; ${AM_DIR}/ is never committed.`;
+
 export const SYSTEM = {
   split: (ctx, design, out) => `You are the task splitter of am-orchestrator, an unattended batch run. No human is present in this session; never wait for input.
 
@@ -966,6 +969,7 @@ This is task ${t.id}, slug ${t.slug}. Implement ${AM_DIR}/${t.slug}/plan.md with
 - Do not commit, push, stash, reset or switch branches.
 - Stay inside this task. Do not start other parts of the design document.
 - Build side effects: when a build, a test run or an editor tool that you ran rewrites tracked files that are not part of this task (for example regenerated scenes or settings whose real content did not change), restore them before you finish with: git restore -- <paths>. git checkout and commands that stash changes are refused in this session; git restore is allowed.
+${SCRATCH_NOTE(t.slug)}
 - Where the skill would ask the user, do this instead:
   - A question about what the user sees or what is in scope, including an open decision left in the plan and a plan that turns out wrong in that way: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, with at most 1 more round after the reviewers' first answers in this session because the session has a time limit. A technical choice its two reviewers still split on is never auto-decided: stop as below.
   - Done marks that do not match the files: redo a done step whose change is missing; run the Check of an unmarked step that already looks done and mark it if it passes. Log either under Change log.
@@ -980,6 +984,7 @@ This is task ${t.id}, slug ${t.slug}. Check this task's uncommitted changes agai
 - Do not settle or reopen technical choices in this session. Report a choice that needs settling or proves unworkable as a BLOCK finding; the implementing session settles it.
 - Verify by running, not by reading. Run the gate and the project's runtime checks and tests yourself in this session. What the implementing session recorded (logs, the Change log, an earlier check.md) is not evidence that something passes. If a check cannot be run here, say so in check.md and put it on the human checklist.
 - Build side effects: tracked files that only a build or tool rewrote (for example regenerated scenes or settings whose real content did not change), whether your own runs caused it or the plan's Change log says the implementing session left them, must stay out of the commit. Restore them before you finish with: git restore -- <paths>. git checkout and commands that stash changes are refused in this session; git restore is allowed.
+${SCRATCH_NOTE(t.slug)}
 - Always write ${AM_DIR}/${t.slug}/check.md.
 - Whatever would make the repository's commit hooks reject the commit is a confirmed defect: BLOCK. That includes a contract document or changelog that the project's rules require to change together with this code and that was not changed. If the project documents a way to run its pre-commit check without committing, run it.${volatileNote(ctx, 'Changes in them that the plan does not call for are build output: do not report them as unexpected changes; restore them with git restore before you finish.')}
 - End your final reply with exactly one line: ORCH_VERDICT: BLOCK or ORCH_VERDICT: NOTE`,

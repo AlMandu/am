@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { applySplit, argsKey, claudeArgs, cmdExeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, pickInstalledAm, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, resolveCommand, SYSTEM, UNQUOTED_NOTE, validatePlan, verdictFromFile, viaCmdExe, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
+import { applySplit, argsKey, claudeArgs, cmdExeArgs, codexOpinionRules, DEFAULT_MAX_SESSIONS, defaults, globToRegExp, lastMarker, mayOverlap, merge, nextTask, parallelism, parseArgs, parseResult, pickInstalledAm, readUserModels, recordHeld, STAGE_DEFAULTS, stageOverridden, startable, userModelsFile, resolveCommand, SCRATCH_NOTE, SYSTEM, UNQUOTED_NOTE, validatePlan, verdictFromFile, viaCmdExe, winQuote } from '../orchestrator/scripts/orchestrator.mjs';
 import { task, planOf, CHAIN, own, DEF, M1, M2, E1, E2, E3, prepared, tmp } from './orchestrator-helpers.mjs';
 
 // ------------------------------------------------------------------ 순수 함수
@@ -252,6 +252,11 @@ test('cmd.exe 를 거치는 claude(Windows 의 npm .cmd): 따옴표 든 허용 �
   assert.ok(!SYSTEM.plan(ctx, t, false).includes(UNQUOTED_NOTE));
   assert.equal(SYSTEM.plan(ctx, t), SYSTEM.plan(ctx, t, process.platform === 'win32' && resolveCommand('claude').shell), '기본값은 이 PC 의 claude 명령으로 정한다');
   assert.match(UNQUOTED_NOTE, /node scripts with the path unquoted/);
+  // 구현·점검 세션만 보조 파일을 저장소 안 작업 폴더에 두라는 안내를 받는다
+  assert.ok(SCRATCH_NOTE(t.slug).includes('.am/t01-a/scratch/'));
+  assert.match(SCRATCH_NOTE(t.slug), /overrides any scratchpad or temporary folder[\s\S]*refused/);
+  for (const s of ['implement', 'check']) assert.ok(SYSTEM[s](ctx, t).includes(SCRATCH_NOTE(t.slug)), s);
+  for (const s of ['plan', 'commit']) assert.ok(!SYSTEM[s](ctx, t).includes('scratch/'), s);
 });
 
 test('argsKey: 명령 뒤의 인자와 옵션(--worker·--repo 제외, 옵션 순서 무시). 인자가 없으면 null', () => {

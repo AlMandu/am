@@ -302,6 +302,8 @@ const MARK = (stage) => `End your final reply with exactly one line: ${MARKS[sta
 // The permission rules of most stages match one plain command only, so a chained command is refused whole.
 // Kept outside unattended(): that text is a copy of am:auto's rules and changes only together with them.
 const ONE_COMMAND = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
+// The do and check sessions cannot write outside the repository; the orchestrator's SCRATCH_NOTE says the same.
+const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
 /** The unattended rules of am:auto's "Running without stops" section, written for one stage session. */
 const unattended = (slug, stage, push) => `You are one stage of the am:auto skill, started in a fresh session by the am stage runner. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
@@ -322,6 +324,7 @@ const STAGE_RULES = {
   do: (slug, { fix }) => `This is the implementation stage for .am/${slug}/plan.md, with the steps of the am:do skill.${fix ? `\n- The am:check skill blocked this task. Read .am/${slug}/check.md first and fix only the causes it reports that lie inside this task; log each fix under Change log in the plan.` : ''}
 - Another session runs the am:check skill after you finish. So run the agent runtime checks you can do here (the last step of the am:do skill), but do not use the am:check skill.
 - Do not commit, push, stash, reset or switch branches; those commands are refused.
+${scratch(slug)}
 - Done marks that do not match the files: redo a done step whose change is missing; run the Check of an unmarked step that already looks done and mark it if it passes. Log either under Change log.
 - If the plan turns out wrong in a way that changes what the user sees or the scope, decide it as above. Otherwise make the smallest fix and log it under Change log.
 - This stage cannot finish when a step's Check fails and you cannot fix it: leave the files as they are, record what failed in plan.md, and end with AM_STAGE: BLOCKED.
@@ -337,6 +340,7 @@ const STAGE_RULES = {
 - Do not ask anything. Whatever only a person can verify goes into the human checklist in check.md and in your reply.
 - Verify by running, not by reading: run the gate and the project's runtime checks yourself. What the implementing session recorded is not evidence that something passes.
 - Do not settle or reopen technical choices here; report one that needs it as a BLOCK finding. Do not commit, push, stash, reset or switch branches.
+${scratch(slug)}
 - Always write .am/${slug}/check.md.
 - ${MARK('check')}`,
   compactmem: (slug, { memDir }) => `This is the memory stage for .am/${slug}/, with the am:compactmem skill, between the check and the commit.${memDir ? `
