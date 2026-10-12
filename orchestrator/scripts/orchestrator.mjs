@@ -393,7 +393,7 @@ function ensureIgnored(repo, dir) {
 // ------------------------------------------------------------------ 설정과 실행 문맥
 
 // PC 단위 사용자 모델 설정 파일 읽기. am 의 plugin/scripts/user-models.mjs 와 경로·검사·오류 문구가 같은 사본이다(플러그인끼리 import 하지 않음).
-export const USER_MODEL_KEYS = ['default', 'plan', 'do', 'check', 'compactmem', 'commit', 'compact', 'run', 'split', 'second-opinion', 'codex-opinion'];
+export const USER_MODEL_KEYS = ['default', 'plan', 'do', 'check', 'commit', 'compact', 'run', 'split', 'second-opinion', 'codex-opinion'];
 export const USER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // 2차 의견 서브에이전트가 받는 별칭, 그리고 cmd /C 와 TOML -c 를 거치는 Codex 모델 이름·노력 수준.
 export const OPINION_MODELS = ['opus', 'sonnet', 'haiku', 'fable'];

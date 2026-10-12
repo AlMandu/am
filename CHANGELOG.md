@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.43 (2026-10-12)
+
+- 사용자 모델 파일(`<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json`)의 `compactmem` 키를 이제 받지 않는다. 적어 두었으면 "모르는 키" 오류로 am:auto 단계와 Codex 2차 의견 명령이 멈추므로 그 줄을 지운다. README 의 키 표에서도 뺐다.
+
+## am-orchestrator 0.9.5 (2026-10-12)
+
+- 사용자 파일의 `compactmem` 키를 모르는 키 오류로 보고 `status --json`·`doctor` 를 포함해 세션을 띄우기 전에 멈춘다. 그 줄을 지운다. am 과 함께 업데이트한다.
+
 ## 0.1.42 (2026-10-12)
 
 - am:compactmem 명령을 없앴다. am:auto 는 점검 다음 바로 커밋하고, 마지막 답에 메모리 정리 제안 항목이 나오지 않는다. am:check 의 다음 단계 안내는 언제나 am:commit 이다.
