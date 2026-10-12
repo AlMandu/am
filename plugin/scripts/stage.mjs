@@ -120,7 +120,7 @@ export const COMPACT_MARKS = ['COMPACTED', 'BLOCKED'];
 const TAIL_CHARS = 600;
 // The compaction session runs no skill, so it gets its model and effort as arguments (written by scripts/models.mjs);
 // the user models file's compact/default value replaces it.
-export const COMPACT_MODEL = { model: 'opus', effort: 'medium' };
+export const COMPACT_MODEL = { model: 'sonnet', effort: 'medium' };
 // Session kinds whose prompt cache is written for 5 minutes. Plan and check wait on reviewers and gates for longer, so they keep 1 hour.
 export const CACHE_5M_KINDS = ['do', 'compactmem', 'commit', 'compact'];
 // The variable a hand-over session gets with this process's pid; an orchestrator worker it starts writes it to worker.json as `owner`.

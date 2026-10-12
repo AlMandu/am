@@ -78,7 +78,7 @@ export const STAGE_DEFAULTS = {
   plan: { model: 'opus', effort: 'high' },
   implement: { model: 'opus', effort: 'medium' },
   check: { model: 'opus', effort: 'high' },
-  commit: { model: 'opus', effort: 'medium' },
+  commit: { model: 'sonnet', effort: 'medium' },
 };
 
 // ------------------------------------------------------------------ 작은 도구

@@ -514,7 +514,7 @@ test('task files above the limit are shortened in a session of their own before 
   // The compaction session: its own prompt, system file, model and permissions.
   assert.match(flag(calls[0], '-p'), /^Shorten the task files of \.am\/demo\//);
   assert.equal(flag(calls[0], '--append-system-prompt-file'), '.am/demo/stage-compact.system.md');
-  assert.equal(flag(calls[0], '--model'), 'opus');
+  assert.equal(flag(calls[0], '--model'), COMPACT_MODEL.model);
   assert.equal(flag(calls[0], '--allowedTools'), 'Read,Glob,Grep,Edit(/.am/**),Edit(.am/**)');
   assert.equal(flag(calls[1], '-p'), '/am:do demo');
   assert.ok(!calls[1].includes('--model'));
@@ -1813,17 +1813,18 @@ test('without a user models file the compaction session keeps COMPACT_MODEL and 
 });
 
 test("the compaction session runs on the user file's compact value, else its default, and notes it", async (t) => {
-  const file = userModels(t, '{"model":{"compact":"sonnet"}}');
+  const other = COMPACT_MODEL.model === 'sonnet' ? 'haiku' : 'sonnet';
+  const file = userModels(t, JSON.stringify({ model: { compact: other } }));
   const dir = makeRepo(t, { plan: BIG, fake: COMPACTING });
   const { result, calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(file) });
   assert.equal(result.status, 'DONE');
-  assert.equal(flag(calls[0], '--model'), 'sonnet');
+  assert.equal(flag(calls[0], '--model'), other);
   assert.equal(flag(calls[0], '--effort'), COMPACT_MODEL.effort);
   assert.ok(!calls[1].includes('--model') && !calls[1].includes('--effort'));
   const list = events(dir);
   assert.deepEqual(evs(list), ['start', 'note', 'note', 'note', 'end']);
   assert.equal(list[1].text, 'shortening .am/demo/plan.md before the stage');
-  assert.equal(list[2].text, `model sonnet, effort ${COMPACT_MODEL.effort} from the user's setting ${file}`);
+  assert.equal(list[2].text, `model ${other}, effort ${COMPACT_MODEL.effort} from the user's setting ${file}`);
   assert.match(list[3].text, /^shortened /);
 
   const def = userModels(t, '{"model":{"default":"haiku"},"effort":{"default":"low"}}');
@@ -1841,7 +1842,7 @@ test('a user value equal to COMPACT_MODEL leaves no note; without a compaction t
   assert.equal(flag(calls[0], '--model'), COMPACT_MODEL.model);
   assert.deepEqual(evs(events(dir)), ['start', 'note', 'note', 'end']);
 
-  const file = userModels(t, '{"model":{"compact":"sonnet"}}');
+  const file = userModels(t, '{"model":{"compact":"haiku"}}');
   const small = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
   const r = await run(small, ['do', 'demo'], { env: cfgEnv(file) });
   assert.equal(r.result.status, 'DONE');
@@ -1976,24 +1977,24 @@ test('the second ask of an inline stage carries the same flags', async (t) => {
 });
 
 test('the inline file is written after a compaction; --fix and commit run inline too; a hand-over without its run skill fails', async (t) => {
-  const file = userModels(t, '{"model":{"do":"sonnet","commit":"sonnet"}}');
+  const file = userModels(t, '{"model":{"do":"haiku","commit":"haiku"}}');
   const dir = makeRepo(t, { plan: BIG, fake: { ...COMPACTING, writes: [{ '.am/demo/plan.md': SHORT, '.am/demo/skill-do.md': 'stale' }] } });
   const { result, calls } = await run(dir, ['do', 'demo'], { env: cfgEnv(file) });
   assert.equal(result.status, 'DONE');
   assert.equal(flag(calls[0], '--model'), COMPACT_MODEL.model, 'the compaction keeps its own value');
-  assert.equal(flag(calls[1], '--model'), 'sonnet');
+  assert.equal(flag(calls[1], '--model'), 'haiku');
   assert.ok(readFileSync(skillFile(dir, 'do'), 'utf8').includes('Plan: demo'));
   const list = events(dir);
   assert.deepEqual(evs(list), ['start', 'note', 'note', 'note', 'end']);
   assert.match(list[1].text, /^shortening /);
   assert.match(list[2].text, /^shortened /);
-  assert.equal(list[3].text, `model sonnet, effort ${skillDefaults(AM, 'do').effort} from the user's setting ${file}`);
+  assert.equal(list[3].text, `model haiku, effort ${skillDefaults(AM, 'do').effort} from the user's setting ${file}`);
 
   const fixed = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
   writeFileSync(path.join(fixed, '.am', 'demo', 'check.md'), 'Verdict: BLOCK\n');
   const fx = await run(fixed, ['do', 'demo', '--fix'], { env: cfgEnv(file) });
   assert.equal(fx.calls[0][1], inlinePrompt('demo', 'do', 'am:do'));
-  assert.equal(flag(fx.calls[0], '--model'), 'sonnet');
+  assert.equal(flag(fx.calls[0], '--model'), 'haiku');
 
   for (const [flags, notes] of [[[], /^Notes: \r?$/m], [['--push'], /^Notes: push\r?$/m]]) {
     const c = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: COMMITTED'] } });

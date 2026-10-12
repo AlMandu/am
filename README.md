@@ -366,18 +366,19 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:plan` | `opus` | `high` |
 | `am:do` | `opus` | `medium` |
 | `am:check` | `opus` | `high` |
-| `am:compactmem` | `opus` | `medium` |
-| `am:commit` | `opus` | `medium` |
+| `am:compactmem` | `sonnet` | `medium` |
+| `am:commit` | `sonnet` | `medium` |
 | `am:auto` | `opus` | `medium` |
 | `am:merge` | `opus` | `high` |
-| 단계 사이 맥락 압축 세션(`am:auto`, Claude Code) | `opus` | `medium` |
+| 단계 사이 맥락 압축 세션(`am:auto`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
 | Codex 2차 의견 | `gpt-6.1-sol` | `high` |
 
 <!-- am:models:end -->
 
 - 스킬을 부른 그 차례에만 적용됩니다. 그 차례에는 세션에서 고른 모델보다 우선하고, 다음 입력부터는 세션의 모델과 effort 로 돌아갑니다. 그래서 `am:plan` 의 질문에 답한 뒤나 `am:auto` 가 멈췄다가 답을 받은 뒤의 차례는 세션 값으로 돕니다.
-- Sonnet 세션에서 쓰던 경우 스킬을 부른 차례는 Opus 로 돌아 비용이 오릅니다. Opus 를 쓸 수 없는 계정에서 스킬이 어떻게 되는지는 Claude Code 문서에 없고 확인하지 못했습니다.
+- Sonnet 세션에서 쓰던 경우 Sonnet 으로 정한 스킬(`am:commit`, `am:compactmem`) 밖의 스킬을 부른 차례는 Opus 로 돌아 비용이 오르고, Opus 세션에서도 그 두 스킬을 부른 차례는 Sonnet 으로 돕니다. Opus 를 쓸 수 없는 계정에서 스킬이 어떻게 되는지는 Claude Code 문서에 없고 확인하지 못했습니다.
+- 커밋, 메모리 정리 제안, 단계 사이 압축 세션은 정해진 규칙을 따르고 게이트나 기계 검사, 사용자 승인이 결과를 지키는 일이라 Sonnet 으로 둡니다. `am:auto` 와 오케스트레이터의 단계 세션은 아래 사용자 설정 파일의 `commit`·`compactmem`·`compact` 키로 다시 Opus 로 돌릴 수 있고, 손으로 부른 스킬의 차례는 그 파일로 바꿀 수 없습니다.
 - 세션마다 늘 드는 비용과 스킬 호출 한 번의 토큰은 `claude plugin details am` 으로 확인할 수 있습니다. Codex 의 `am:auto` 는 다른 다섯 스킬 파일을 함께 읽습니다. Claude Code 의 `am:auto` 는 스킬 파일을 읽지 않는 대신, 단계마다 새 세션이 프로젝트를 처음부터 다시 읽습니다.
 - Codex 에는 스킬별 모델 지정이 없어 이 값을 쓰지 않습니다. Codex 세션의 모델 그대로 돕니다.
 
@@ -386,7 +387,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 
 - 값은 각 `SKILL.md` 머리말(frontmatter)의 `model`, `effort` 에 있습니다.
 - Claude Code 의 `am:auto` 는 단계마다 그 스킬을 부르는 새 세션을 띄우므로 단계별 값이 적용되고, 원래 대화에는 `am:auto` 의 값만 적용됩니다. Codex 처럼 한 세션으로 진행하면 다른 스킬을 부르지 않고 파일을 읽어 따르므로 `am:auto` 의 값만 적용됩니다.
-- 모델은 별칭으로 적었습니다. 쓰는 Claude Code 버전과 공급자의 모델로 풀리고, 환경 변수 `ANTHROPIC_DEFAULT_OPUS_MODEL` 로 다른 모델에 연결할 수 있습니다. effort 는 환경 변수 `CLAUDE_CODE_EFFORT_LEVEL` 이 머리말보다 우선하고, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 은 2차 의견 서브에이전트의 model 을 무시합니다. 조직이 모델이나 effort 상한을 제한해 두었으면 그 제한을 따릅니다.
+- 모델은 별칭으로 적었습니다. 쓰는 Claude Code 버전과 공급자의 모델로 풀리고, 환경 변수 `ANTHROPIC_DEFAULT_OPUS_MODEL`·`ANTHROPIC_DEFAULT_SONNET_MODEL` 로 다른 모델에 연결할 수 있습니다. effort 는 환경 변수 `CLAUDE_CODE_EFFORT_LEVEL` 이 머리말보다 우선하고, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 은 2차 의견 서브에이전트의 model 을 무시합니다. 조직이 모델이나 effort 상한을 제한해 두었으면 그 제한을 따릅니다.
 
 </details>
 

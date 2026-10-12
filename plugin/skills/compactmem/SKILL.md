@@ -3,7 +3,7 @@ name: compactmem
 description: "구현·점검을 마친 작업에 관한 Claude Code 자동 메모리(MEMORY.md 와 항목 파일)를 정리합니다. 저장소에 이미 남은 항목은 지우고 앞으로도 쓸 사실은 짧게 줄이자고 제안하며, 사용자가 승인한 것만 적용합니다. am:check 와 am:commit 사이에 씁니다. Claude Code 전용입니다."
 argument-hint: "[slug]"
 disable-model-invocation: true
-model: opus
+model: sonnet
 effort: medium
 ---
 

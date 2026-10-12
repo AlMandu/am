@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.41 (2026-10-12)
+
+- am:commit·am:compactmem 을 부른 차례와 am:auto 의 커밋·메모리 정리 단계, 단계 사이에 계획 파일을 줄이는 세션이 Opus 대신 Sonnet(effort medium)으로 돈다. 계획·구현·점검·병합·2차 의견과 am:auto 를 부른 차례는 그대로 Opus 다.
+- 단계 세션을 다시 Opus 로 돌리려면 사용자 파일 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json` 에 `"model": { "commit": "opus", "compactmem": "opus", "compact": "opus" }` 를 적는다(손으로 부른 스킬의 차례에는 쓰이지 않는다). 이미 있는 사용자 파일의 `_commit` 같은 메모 값은 만들 때의 값이라 바뀌지 않는다.
+
+## am-orchestrator 0.9.4 (2026-10-12)
+
+- 커밋 단계 세션의 기본 모델이 Sonnet(effort medium)으로 바뀐다(am:commit 과 같은 값). 되돌리려면 `.orchestrator/config.json` 이나 사용자 파일에 `"model": { "commit": "opus" }` 를 적는다. am 과 함께 업데이트한다.
+
 ## 0.1.40 (2026-10-12)
 
 - Windows 에서 단계 결과 파일을 바꿔 넣다가 다른 쪽이 그 파일을 읽고 있어 잠깐 거부되면 잠시 기다렸다 다시 시도해, am:auto 가 끝난 단계의 결과를 잃고 `failed` 로 멈추던 일을 막는다.

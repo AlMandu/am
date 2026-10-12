@@ -200,7 +200,7 @@ node orchestrator.mjs sessions 2             # 이 PC 에서 모든 실행을 �
 | 계획(`plan`), 결정 답변(`answer`), `doctor` 의 시험 호출 | `opus` | `high` |
 | 구현(`implement`), 수정(`fix`) | `opus` | `medium` |
 | 점검(`check`) | `opus` | `high` |
-| 커밋(`commit`) | `opus` | `medium` |
+| 커밋(`commit`) | `sonnet` | `medium` |
 | 이 스킬을 실행한 세션(`am-orchestrator:run`, 그 차례에만) | `opus` | `medium` |
 
 <!-- am:models:end -->
@@ -214,7 +214,7 @@ node orchestrator.mjs sessions 2             # 이 PC 에서 모든 실행을 �
 - 그 단계의 `extraArgs` 에 `--model` 이나 `--effort` 가 있으면 그 값만 넘깁니다. effort 를 `extraArgs` 로 적어 둔 예전 설정은 그대로 동작합니다.
 - 설정이나 사용자 파일이 어떤 단계의 값을 위 표와 다르게 정하면 그 단계의 스킬만 inline 으로 부릅니다(SKILL.md 본문을 머리말 없이 넘김). 이유는 아래 "확인하지 못한 것"에 있습니다. 실행 첫 줄과 `run --dry-run` 의 "스킬 호출 방식"에 inline 으로 바뀐 단계가 나옵니다. `skillMode` 를 `slash` 로 고정했으면 바꾸지 않으므로, 그때는 설정한 값 대신 스킬 머리말의 값이 쓰일 수 있습니다.
 - 스킬을 실행한 세션(`am-orchestrator:run`, 표 마지막 줄)의 값은 스킬 머리말에 있고 이 설정 파일로는 바꾸지 못합니다. 사용자 파일도 이 차례에는 쓰이지 않고, 그 파일의 `run` 키는 `am:auto` 가 큰 작업을 넘길 때 띄우는 세션에만 쓰입니다.
-- 기본값처럼 모든 단계가 Opus 면 동시에 3개를 돌릴 때 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나, `sessions 2` 처럼 이 PC 의 동시 세션 제한을 낮추거나(모든 실행에 적용), 이 저장소만 `parallel` 을 낮춥니다. 분할의 effort 가 높으면 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
+- 기본값처럼 커밋 밖의 모든 단계가 Opus 면 동시에 3개를 돌릴 때 사용량 한도에 더 빨리 닿습니다. 줄이려면 `model.default` 를 `sonnet` 으로 두거나, `sessions 2` 처럼 이 PC 의 동시 세션 제한을 낮추거나(모든 실행에 적용), 이 저장소만 `parallel` 을 낮춥니다. 분할의 effort 가 높으면 긴 설계 문서에서 제한 시간(`timeoutMin.split`, 40분)에 가까워질 수 있습니다.
 - am 과 한쪽만 업데이트하면 위 표와 설치된 am 스킬의 값이 다를 수 있습니다. 함께 업데이트하세요. 스킬에 값이 없는 예전 am(0.1.9 이하)에서는 위 표대로 넘깁니다.
 
 ## 동시 세션 제한 (이 PC 전체)
