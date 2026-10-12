@@ -1,7 +1,8 @@
 // am user models: the per-PC file where a person picks the model and effort of each am stage.
 // File: <CLAUDE_CONFIG_DIR or ~/.claude>/am/models.json, JSON (a leading BOM is allowed):
 //   { "model": { "<key>": "<model>" }, "effort": { "<key>": "<effort>" } }
-// Keys: default, plan, do, check, compactmem, commit, compact, run, split, second-opinion, codex-opinion.
+// Keys: default, plan, do, check, commit, compact, run, split, second-opinion, codex-opinion; compactmem is an old key,
+// still accepted for files of older versions and read by nobody.
 // Keys starting with `_` are notes, allowed at the top and inside model/effort, and dropped from the result.
 // Order, model and effort apart: stage key, then default, then built-in; the two opinion keys skip default.
 // second-opinion takes OPINION_MODELS; codex-opinion takes CODEX_MODEL names and CODEX_EFFORTS.

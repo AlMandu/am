@@ -366,7 +366,6 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:plan` | `opus` | `high` |
 | `am:do` | `opus` | `medium` |
 | `am:check` | `opus` | `high` |
-| `am:compactmem` | `sonnet` | `medium` |
 | `am:commit` | `sonnet` | `medium` |
 | `am:auto` | `opus` | `medium` |
 | `am:merge` | `opus` | `high` |

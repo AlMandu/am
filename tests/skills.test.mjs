@@ -9,7 +9,7 @@ import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, compactmem: 80, merge: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, merge: 80 };
 // Model and effort a skill's turn runs with in Claude Code (Codex ignores both keys), from models.json at the repository root.
 const MODELS = load().am;
 const RUNS_WITH = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, [MODELS[name].model, MODELS[name].effort]]));
@@ -42,8 +42,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am:auto, am:compactmem and am:merge are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto', 'compactmem', 'merge']) {
+test('am:plan, am:do, am:auto and am:merge are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto', 'merge']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -54,22 +54,12 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const [name, [model, effort]] of Object.entries(RUNS_WITH)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto', 'compactmem', 'merge'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'auto', 'merge'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.equal(fm.model, model, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
     assert.equal(fm.effort, effort, name);
   }
-});
-
-test('am:compactmem never runs inside an am-orchestrator session (user decision)', () => {
-  const skill = read('compactmem');
-  assert.match(skill, /never inside an am-orchestrator run[^\n]*its instructions say you are running inside am-orchestrator[^\n]*say so in one line and stop without reading or writing anything/);
-  // The words the skill looks for are the ones every orchestrator session gets.
-  const orch = readFileSync(path.resolve(ROOT, '..', '..', 'orchestrator', 'scripts', 'orchestrator.mjs'), 'utf8');
-  assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
-  // Its copy of the user models key list may name the key; nothing else may.
-  assert.doesNotMatch(orch.replace(/^export const USER_MODEL_KEYS = \[.*\];$/m, ''), /compactmem/, 'the orchestrator never calls it');
 });
 
 test('am:merge moves the commits am:commit records and never pushes', () => {

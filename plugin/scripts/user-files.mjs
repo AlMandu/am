@@ -17,7 +17,6 @@ export const BUILTIN_MODELS = {
   plan: { model: 'opus', effort: 'high' },
   do: { model: 'opus', effort: 'medium' },
   check: { model: 'opus', effort: 'high' },
-  compactmem: { model: 'sonnet', effort: 'medium' },
   commit: { model: 'sonnet', effort: 'medium' },
   compact: { model: 'sonnet', effort: 'medium' },
   run: { model: 'opus', effort: 'medium' },

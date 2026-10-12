@@ -19,13 +19,13 @@ const MODEL = {
   codex: [/^([A-Za-z0-9._:-]+)?$/, '빈 문자열(사용자의 codex 설정) 또는 따옴표 없이 쓰는 모델 이름'],
 };
 const ENTRIES = {
-  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', compactmem: 'alias', auto: 'alias', merge: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
+  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', auto: 'alias', merge: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs uses the same map).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // BUILTIN_MODELS of plugin/scripts/user-files.mjs: the user models file's keys (without default) in its order, with their group.
-const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['compactmem', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
+const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (o) => Object.keys(o).filter((k) => !k.startsWith('_')); // `_` keys are notes
@@ -88,7 +88,7 @@ function generated(file, render) {
 export function targets() {
   const amSkill = (name) => frontmatter(`plugin/skills/${name}/SKILL.md`, (m) => m.am[name]);
   return [
-    ...['plan', 'do', 'check', 'compactmem', 'commit', 'auto', 'merge'].map(amSkill),
+    ...['plan', 'do', 'check', 'commit', 'auto', 'merge'].map(amSkill),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),
     ...['split', ...Object.keys(STAGE_SKILLS)].map((stage) => ({
@@ -123,7 +123,7 @@ export function targets() {
     },
     generated('README.md', (m) =>
       table('대상', [
-        ...['plan', 'do', 'check', 'compactmem', 'commit', 'auto', 'merge'].map((n) => [code(`am:${n}`), m.am[n]]),
+        ...['plan', 'do', 'check', 'commit', 'auto', 'merge'].map((n) => [code(`am:${n}`), m.am[n]]),
         ['단계 사이 맥락 압축 세션(`am:auto`, Claude Code)', m.am.compact],
         ['2차 의견 서브에이전트(`am:second-opinion`)', m.am['second-opinion']],
         ['Codex 2차 의견', m.am['codex-opinion'], m.am['codex-opinion'].model ? undefined : '사용자의 codex 설정'],

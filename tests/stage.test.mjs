@@ -1256,6 +1256,8 @@ test('user models: a missing file is empty; notes are dropped and a BOM is allow
   assert.deepEqual(readUserModels(userModels(t, JSON.stringify(opinion))), opinion);
   for (const m of OPINION_MODELS) assert.deepEqual(readUserModels(userModels(t, JSON.stringify({ model: { 'second-opinion': m } }))), { model: { 'second-opinion': m }, effort: {} });
   for (const e of CODEX_EFFORTS) assert.deepEqual(readUserModels(userModels(t, JSON.stringify({ effort: { 'codex-opinion': e } }))), { model: {}, effort: { 'codex-opinion': e } });
+  // a file written for 0.1.41 still reads
+  assert.deepEqual(readUserModels(userModels(t, '{"model":{"compactmem":"opus"}}')), { model: { compactmem: 'opus' }, effort: {} });
 });
 
 test('user models: every broken file is one error line naming the file and the problem', (t) => {
@@ -1414,7 +1416,8 @@ test('user files: the templates read as no setting, carry every built-in value a
     assert.equal(data.effort[`_${key}`], v.effort, key);
   }
   assert.ok(Object.hasOwn(JSON.parse(settings), 'minFreeMemoryMB'));
-  assert.deepEqual(Object.keys(BUILTIN_MODELS), USER_MODEL_KEYS.filter((k) => k !== 'default'));
+  // compactmem: an old key, accepted but not in the template
+  assert.deepEqual(Object.keys(BUILTIN_MODELS), USER_MODEL_KEYS.filter((k) => k !== 'default' && k !== 'compactmem'));
   assert.deepEqual(readUserModels(userModels(t, enableNotes(models))), {
     model: Object.fromEntries(Object.entries(BUILTIN_MODELS).map(([k, v]) => [k, v.model])),
     effort: Object.fromEntries(Object.entries(BUILTIN_MODELS).map(([k, v]) => [k, v.effort])),
