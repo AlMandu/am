@@ -5,6 +5,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -45,7 +46,9 @@ process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_err
 
 function makeRepo(t, { plan, request = 'Fix the typo', fake } = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'am-stage-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Retries: on Windows a worker that just wrote its result still holds the folder for a few ms while it exits.
+  // Async rm: rmSync does not retry EPERM there.
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   mkdirSync(path.join(dir, '.am', 'demo'), { recursive: true });
   if (request) writeFileSync(path.join(dir, '.am', 'demo', 'request.md'), request);
   if (plan) writeFileSync(path.join(dir, '.am', 'demo', 'plan.md'), plan);
@@ -2847,9 +2850,17 @@ test('follow: at its limit the call ends WAIT with the worker\'s start time whil
 test('follow: a limit before the worker\'s record names the call\'s start; while another stage runs it keeps that wait\'s reason', async (t) => {
   const dir = makeRepo(t, { plan: SMALL });
   const T = new Date(2026, 9, 11, 9, 30).getTime();
-  const f = startFollow(dir, ['plan', 'demo'], { workerCmd: [process.execPath, '-e', 'setTimeout(() => {}, 2000)'], now: () => T, limitMs: 300 });
+  const pidFile = path.join(dir, 'worker.pid');
+  const f = startFollow(dir, ['plan', 'demo'], { workerCmd: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 2000)`], now: () => T, limitMs: 300 });
   assert.equal(await f.done, 0);
   assert.deepEqual([JSON.parse(f.text).status, JSON.parse(f.text).reason], ['WAIT', stillRunning('plan', T)]);
+  // That stand-in worker outlives the call: end it, or Windows keeps its folder.
+  await until(() => Number(readOr(pidFile)) > 0);
+  const pid = Number(readOr(pidFile));
+  assert.ok(pid > 0, 'the stand-in worker wrote its pid');
+  if (pidAlive(pid)) process.kill(pid);
+  await until(() => !pidAlive(pid));
+  assert.ok(!pidAlive(pid), `worker ${pid} still runs`);
 
   const other = makeRepo(t, { plan: SMALL });
   writeFileSync(WF(other, 'record'), record({ stage: 'do', fix: true }));
@@ -2861,6 +2872,14 @@ test('follow: a limit before the worker\'s record names the call\'s start; while
   assert.deepEqual([line.status, line.reason], ['WAIT', `waiting for another stage of this task: the do --fix stage is still running (pid ${LIVE})`]);
   assert.ok(!spawned(other));
 });
+
+/** Ends a live worker and, on Windows, its children too (taskkill /T), then checks it is gone. */
+async function endWorkerTree(pid) {
+  if (process.platform === 'win32') assert.equal(spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }).status, 0);
+  else process.kill(pid, 'SIGTERM');
+  await until(() => !pidAlive(pid));
+  assert.ok(!pidAlive(pid), `worker ${pid} still runs`);
+}
 
 test('follow: after a stop signal the limit no longer counts: the call ends `failed` with exit 1, not WAIT', async (t) => {
   const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
@@ -2881,9 +2900,8 @@ test('follow: after a stop signal the limit no longer counts: the call ends `fai
   assert.ok(Date.now() - began >= 1500, 'the limit passed while it stopped');
   const line = JSON.parse(f.text);
   assert.deepEqual([line.status, line.reason], ['failed', 'stopped by SIGTERM']);
-  // The fake kill left the worker running: stop it here, before the folder goes.
-  process.kill(pid, 'SIGTERM');
-  await until(() => !pidAlive(pid));
+  // The fake kill left the worker and its fake claude running: stop both here, before the folder goes.
+  await endWorkerTree(pid);
 });
 
 test('follow: a task without its folder ends as main does, with no file', async (t) => {
@@ -2983,6 +3001,7 @@ test('follow: the result a follower printed is claimed, so the next call runs th
   const { result } = workerState(dir);
   assert.equal(f.text, `${result.line}\n`);
   assert.ok(markerOf(dir, result.pid));
+  await pause(20); // calls after the result, not in its millisecond
   const g = startFollow(dir, ['plan', 'demo']);
   assert.equal(await g.done, 0);
   assert.equal(JSON.parse(g.text).status, 'READY');
