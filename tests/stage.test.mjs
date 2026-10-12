@@ -4,7 +4,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -2552,6 +2552,58 @@ test('worker: a stop signal leaves a failed result, not delivered', async (t) =>
   assert.equal(state.result.delivered, false);
   assert.equal(ends(state.events)[0].text, 'stopped by SIGTERM');
   assert.equal(state.record, null);
+});
+
+/** A rename that refuses its first `times` calls with `code` (as Windows does while a follower reads the target), then renames. */
+const refusingRename = (times, code = 'EPERM') => {
+  const r = (from, to) => {
+    r.calls++;
+    if (r.calls <= times) throw Object.assign(new Error(`${code}: operation not permitted, rename '${from}' -> '${to}'`), { code });
+    renameSync(from, to);
+  };
+  r.calls = 0;
+  return r;
+};
+const WAITS = [0, 0, 0];
+
+test('worker: a result replace refused for a moment is tried again; a refusal that lasts, or another error, is logged', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const twice = refusingRename(2);
+  assert.equal(await startWorker(dir, ['plan', 'demo'], { rename: twice, renameWaits: WAITS }).done, 0);
+  const { result, log } = workerState(dir);
+  assert.equal(JSON.parse(result.line).status, 'READY');
+  assert.equal(twice.calls, 3);
+  assert.ok(!log.includes('could not be written'));
+  noTemp(dir);
+
+  const always = makeRepo(t, { plan: SMALL });
+  const never = refusingRename(Infinity);
+  assert.equal(await startWorker(always, ['plan', 'demo'], { rename: never, renameWaits: WAITS }).done, 0);
+  const lost = workerState(always);
+  assert.equal(lost.result, null);
+  assert.match(lost.log, /the stage result could not be written: EPERM/);
+  assert.equal(never.calls, WAITS.length + 1);
+  noTemp(always);
+
+  const other = makeRepo(t, { plan: SMALL });
+  const invalid = refusingRename(Infinity, 'EINVAL');
+  assert.equal(await startWorker(other, ['plan', 'demo'], { rename: invalid, renameWaits: WAITS }).done, 0);
+  assert.match(workerState(other).log, /the stage result could not be written: EINVAL/);
+  assert.equal(invalid.calls, 1);
+  noTemp(other);
+});
+
+test('worker: the stop path tries a refused result replace again before it exits', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  const once = refusingRename(1);
+  const w = startWorker(dir, ['check', 'demo'], { rename: once, renameWaits: WAITS });
+  await until(() => existsSync(path.join(dir, 'calls.jsonl')));
+  w.handlers.SIGTERM();
+  assert.equal(await w.done, 1);
+  const { state } = w.exits[0];
+  assert.equal(JSON.parse(state.result.line).reason, 'stopped by SIGTERM');
+  assert.equal(once.calls, 2);
+  noTemp(dir);
 });
 
 test('worker: a record another worker took stops it quietly; a record gone for one tick does not', async (t) => {

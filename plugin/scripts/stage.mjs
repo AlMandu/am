@@ -88,6 +88,9 @@ export const WORKER_IDLE_MS = 30 * 60000;
 export const FOLLOW_MS = 1000;
 // How long the follower keeps following after it passed a stop signal on to the worker.
 export const FOLLOW_STOP_MS = 10000;
+// The waits before each new try when Windows refuses to replace stage-result.json while a follower reads it (about 2
+// seconds in all, inside FOLLOW_STOP_MS).
+export const RESULT_RENAME_WAITS_MS = [10, 20, 40, 80, 150, 300, 600, 800];
 // How long one follow call lasts: then it ends WAIT and the worker keeps running. The same value as progress.mjs's
 // maxLifeMs, inside the 10-minute limit of a background command.
 export const FOLLOW_LIMIT_MS = 510000;
@@ -1323,13 +1326,14 @@ export function claimResult(dir, pid) {
 
 /**
  * Worker mode (`--worker`): runs main for one stage of one task while holding .am/<slug>/stage-worker.json, logs main's
- * output to stage-worker.log and leaves the result in stage-result.json (atomic, written once). It stops by the stop
+ * output to stage-worker.log and leaves the result in stage-result.json (atomic, written once; a replace refused while
+ * the file is read is tried again after each of renameWaits). It stops by the stop
  * path (`failed`) on a signal, when main throws, or when the follower's heartbeat file stays the same for idleMs; it
  * stops quietly (no result, no end event, record untouched) when its record is taken by another worker. Once it holds
  * the record it removes the delivered marks of older results (and a result left under its own, reused pid). Returns the
  * exit code; every wait is a parameter, the rest goes to main.
  */
-export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, busyMs = WORKER_BUSY_MS, busyPollMs = WORKER_BUSY_POLL_MS, idleMs = WORKER_IDLE_MS, exit = (c) => process.exit(c), on = (s, f) => process.on(s, f), out = process.stdout, ...rest } = {}) {
+export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_STALE_MS, confirmMs = WORKER_CONFIRM_MS, busyMs = WORKER_BUSY_MS, busyPollMs = WORKER_BUSY_POLL_MS, idleMs = WORKER_IDLE_MS, rename = renameSync, renameWaits = RESULT_RENAME_WAITS_MS, exit = (c) => process.exit(c), on = (s, f) => process.on(s, f), out = process.stdout, ...rest } = {}) {
   const args = stageArgs(argv);
   if (!args) {
     out.write(BAD_ARGS);
@@ -1409,7 +1413,16 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     const res = { pid: process.pid, stage, push, fix, line, t: new Date(now()).toISOString(), delivered, plan: fileState(dir, 'plan.md'), check: fileState(dir, 'check.md') };
     try {
       writeFileSync(tmp, `${JSON.stringify(res)}\n`);
-      renameSync(tmp, target);
+      // Synchronous waits: the stop path exits right after this.
+      for (let i = 0; ; i++) {
+        try {
+          rename(tmp, target);
+          break;
+        } catch (err) {
+          if (!['EPERM', 'EBUSY', 'EACCES'].includes(err?.code) || i >= renameWaits.length) throw err;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, renameWaits[i]);
+        }
+      }
     } catch (err) {
       log(`the stage result could not be written: ${err.message}\n`);
       try {
