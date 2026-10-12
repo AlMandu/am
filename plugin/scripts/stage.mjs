@@ -458,12 +458,11 @@ export const GRACE_MS = 10 * 60000;
 // How often a blocked stage looks again, and how long it waits before it ends with WAIT and am:auto starts it again.
 export const POLL_MS = 5000;
 export const WAIT_MS = 8 * 60000;
-// End statuses after which am:auto starts another stage of the same task (null: every end).
-// compactmem: end lines an older version wrote, still followed by its commit stage.
-const GOES_ON = { plan: ['READY'], do: ['DONE'], check: ['NOTE', 'BLOCK'], compactmem: null };
+// End statuses after which am:auto starts another stage of the same task.
+const GOES_ON = { plan: ['READY'], do: ['DONE'], check: ['NOTE', 'BLOCK'] };
 // Ends of an orchestrator command after which the run skill starts the next command.
 const ORCH_GOES_ON = { split: ['done'], answer: ['planned', 'split'] };
-const goesOn = (table, e) => Object.hasOwn(table, e.stage) && (table[e.stage] === null || table[e.stage].includes(e.status));
+const goesOn = (table, e) => Object.hasOwn(table, e.stage) && table[e.stage].includes(e.status);
 const isWait = (e) => e.ev === 'note' && e.stage === 'wait';
 const timeOf = (e) => (e ? Date.parse(e.t) : NaN);
 

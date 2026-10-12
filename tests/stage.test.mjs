@@ -1018,8 +1018,7 @@ test('otherRuns: a live stage of another task blocks; a dead one without an end 
 
 test('otherRuns: the gap after an end that leads on holds for the grace time; final ends hold nothing', (t) => {
   const dir = makeRepo(t);
-  // The compactmem lines are old-version end lines: an older runner still goes on to commit after them.
-  for (const [stage, status] of [['plan', 'READY'], ['do', 'DONE'], ['check', 'NOTE'], ['check', 'BLOCK'], ['compactmem', 'PROPOSED'], ['compactmem', 'NOTHING'], ['compactmem', 'BLOCKED'], ['compactmem', 'failed']]) {
+  for (const [stage, status] of [['plan', 'READY'], ['do', 'DONE'], ['check', 'NOTE'], ['check', 'BLOCK']]) {
     taskEvents(dir, 'a', stageLines(stage, status));
     assert.deepEqual(others(dir, 15), { runs: ['a'], text: 'a (between stages)' }, `${stage} ${status}`);
     assert.deepEqual(others(dir, 15.01).runs, [], `${stage} ${status} after the grace time`);
@@ -2510,8 +2509,7 @@ test('worker: a record another worker took stops it quietly; a record gone for o
 
 test('worker: bad arguments print the usage and make no file', async (t) => {
   const dir = makeRepo(t, { plan: SMALL });
-  // compactmem: the stage name older am:auto bodies sent.
-  for (const argv of [['ship', 'demo'], ['compactmem', 'demo'], ['do', '../x'], ['do', 'demo', '--force']]) {
+  for (const argv of [['ship', 'demo'], ['do', '../x'], ['do', 'demo', '--force']]) {
     const w = startWorker(dir, argv);
     assert.equal(await w.done, 1);
     assert.match(w.text, /^bad arguments[^]*usage: node stage\.mjs/);
