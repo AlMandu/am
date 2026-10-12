@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.42 (2026-10-12)
+
+- am:compactmem 명령을 없앴다. am:auto 는 점검 다음 바로 커밋하고, 마지막 답에 메모리 정리 제안 항목이 나오지 않는다. am:check 의 다음 단계 안내는 언제나 am:commit 이다.
+- 사용자 모델 파일에 적어 둔 `compactmem` 값은 오류 없이 무시된다(새로 만들어지는 파일에는 없다). 이미 생긴 `.am/<slug>/compactmem.md` 와 Claude Code 메모리는 건드리지 않는다.
+
 ## 0.1.41 (2026-10-12)
 
 - am:commit·am:compactmem 을 부른 차례와 am:auto 의 커밋·메모리 정리 단계, 단계 사이에 계획 파일을 줄이는 세션이 Opus 대신 Sonnet(effort medium)으로 돈다. 계획·구현·점검·병합·2차 의견과 am:auto 를 부른 차례는 그대로 Opus 다.
