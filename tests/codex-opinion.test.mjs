@@ -250,8 +250,24 @@ test('timeout: exit 1 and the whole codex process tree ends', async () => {
   assert.match(r.text, /no answer within 2 s/);
   const pid = Number(readFileSync(pidFile, 'utf8'));
   await new Promise((res) => setTimeout(res, 500));
-  assert.throws(() => process.kill(pid, 0), 'fake codex still running');
+  assert.ok(!running(pid), 'fake codex still running');
 });
+
+// A killed process whose parent is gone waits as a zombie until PID 1 reaps it, and some
+// containers reap late; kill(pid, 0) still finds a zombie, so it counts as ended here.
+function running(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  if (!existsSync('/proc/self/stat')) return true;
+  try {
+    return readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /s, '')[0] !== 'Z';
+  } catch {
+    return false;
+  }
+}
 
 test('CLI: usage error without a brief', () => {
   const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8' });
