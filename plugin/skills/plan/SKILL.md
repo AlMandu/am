@@ -37,13 +37,13 @@ Request: $ARGUMENTS
 <!-- am:common:end -->
 
 ## Existing plan
-If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from scratch. Ask its open decisions or apply the requested changes and record them in plan.md, then finish as in step 8: implement only if the user said go, otherwise point to the am:do skill.
+If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from scratch. Record it in `.am/.active` as in step 4, ask its open decisions or apply the requested changes and record them in plan.md, update handoff.md as in step 7, then finish as in step 8: implement only if the user said go, otherwise point to the am:do skill.
 
 ## Steps
 1. Restate the goal in 1-3 lines from the user's point of view. Ask first only if two reasonable readings lead to different results.
 2. Explore the code the change touches. For a wide search, use a read-only exploration subagent if one is available.
 3. Small change (3 files or fewer, obvious result): say so, offer to do it directly without a plan file, and stop.
-4. Folder: `.am/<slug>/` at the repository root. The slug is short kebab-case English; reuse a slug already used in this conversation and never guess from recent folders. If `.am/` does not exist yet and `git check-ignore -q .am` fails, create `.am/.gitignore` containing `*`.
+4. Folder: `.am/<slug>/` at the repository root. The slug is short kebab-case English; reuse a slug already used in this conversation and never guess from recent folders. If `.am/` does not exist yet and `git check-ignore -q .am` fails, create `.am/.gitignore` containing `*`. Unless your instructions say you are running inside am-orchestrator, write the slug as one line to `.am/.active` (overwrite it), which marks the current task.
 5. Technical choices: before drafting, list the ones this plan depends on. If there are any, settle them through the second opinion (rules above), all in one brief.
 6. Risk review, only when the change touches saved data or save formats, server or network contracts, concurrency or async ordering, data migration, security, or deletion of user data: have one independent reviewer (a subagent if available, otherwise a separate pass by you) attack the draft from at most 3 relevant angles. Keep only CRITICAL or HIGH issues that come with a concrete failure scenario and fix the plan for them; list the rest under Risks. Do not ask the user about review findings.
 7. Write `.am/<slug>/plan.md` in the user's language: at most 150 lines, no full code listings, this skeleton with translated headings, except `## Change log`, which stays in English (am:auto looks for its hand-over line there):
@@ -60,5 +60,7 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from
    ## Change log
    ## Next         one line
    ```
+
+   Then write the handoff document. Handoff: unless your instructions say you are running inside am-orchestrator, rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.
 
 8. In the reply, name in plain words any technical choice where the second opinion overruled your own pick, then ask the open decisions (rules above). End with one line saying you will record the answers and stop, and that adding "go" to the answer continues straight into implementation. Record the answers under Decisions and reopen any settled choice they conflict with (rules above). If the user said go, read the am:do skill file (`${CLAUDE_PLUGIN_ROOT}/skills/do/SKILL.md`; if the placeholder was not replaced, `skills/do/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its Steps for this slug; if you cannot read it, implement by the rules at the top of plan.md. Otherwise stop with the summary and the next step (the am:do skill).

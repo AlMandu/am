@@ -51,5 +51,5 @@ Target: $ARGUMENTS
    - BLOCK: gate `fail`, a confirmed defect, a planned step missing without a reason, or a technical choice that must be settled or proved unworkable.
    - NOTE: everything else, including steps dropped with a reason in the Change log or by the user. Notes never block a commit.
    Fix small, safe, local problems right away and run the gate once more. If a failure comes from files outside this task, do not fix it; report it.
-6. With a slug, write `.am/<slug>/check.md` (20 lines or fewer): verdict, gate result, what you checked at runtime, the human checklist, notes.
+6. With a slug, write `.am/<slug>/check.md` (20 lines or fewer): verdict, gate result, what you checked at runtime, the human checklist, notes. Then: Handoff: unless your instructions say you are running inside am-orchestrator, rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.
 7. Reply: the verdict in one line, then what was verified (gate, runtime, review), then the human checklist, then the next step (the am:commit skill, or what to fix).

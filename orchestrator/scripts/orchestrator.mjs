@@ -41,7 +41,7 @@ export function defaults() {
     skillMode: 'auto', // auto | slash(/am:plan 호출) | inline(SKILL.md 를 읽어 지시문으로 전달)
     branch: 'orch/{run}', // 실행용 브랜치. '' 이면 현재 브랜치에서 진행
     parallel: 3, // 동시에 진행할 작업 수. 함께 도는 작업은 저마다 별도 작업 공간(git worktree)에서 구현한다. 1 이면 하나씩
-    minFreeMemoryMB: null, // 다른 세션·게이트가 돌 때 남은 메모리(MB)가 이보다 적으면 새 세션을 미룬다. null 은 기본 기준(Windows 만), 0 은 끔
+    minFreeMemoryMB: null, // 다른 세션·게이트가 돌 때 남은 메모리(MB)가 이보다 적으면 새 세션을 미룬다. null 은 PC 전체 파일 값, 없으면 기본 기준(Windows 만), 0 은 끔
     worktreeSetup: [], // 새 작업 공간 안에서 먼저 돌릴 셸 명령(예: "npm ci"). 환경 변수 ORCH_MAIN_REPO 에 원래 저장소 경로가 있다
     requireGate: true, // am-gate.json 이 없으면 실행을 시작하지 않는다
     orchestratorGate: true, // check 뒤, commit 전에 오케스트레이터가 gate.mjs 를 직접 한 번 더 돌린다

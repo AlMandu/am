@@ -22,7 +22,7 @@ const ENTRIES = {
   am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', auto: 'alias', merge: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
-// Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs uses the same map).
+// Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs keeps a copy).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // BUILTIN_MODELS of plugin/scripts/user-files.mjs: the user models file's keys (without default) in its order, with their group.
 const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];

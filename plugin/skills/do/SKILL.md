@@ -37,15 +37,16 @@ Plan: $ARGUMENTS
 <!-- am:common:end -->
 
 ## Steps
-1. Plan: `.am/<slug>/plan.md` for the slug given, or the one used in this conversation. With neither, list the folders under `.am/` that hold a plan.md and ask which one; never guess. If the file does not exist, say so, suggest the am:plan skill, and stop without changing any file.
+1. Plan: `.am/<slug>/plan.md` for the slug given, or the one used in this conversation. With neither, list the folders under `.am/` that hold a plan.md, the one named on the first line of `.am/.active` first and marked as current (only when that folder exists), and ask which one; never guess. If the file does not exist, say so, suggest the am:plan skill, and stop without changing any file. Otherwise, unless your instructions say you are running inside am-orchestrator, write the slug as one line to `.am/.active` (overwrite it).
 2. Open decisions: if Decisions still has unanswered questions, ask them (rules above) and record the answers there before changing code, reopening any settled choice they conflict with (rules above).
-3. Starting point: read the done marks on the Steps, the Change log and `git status`. Files an earlier session changed for this plan, including a step it left unfinished, are this task's work, not another session's. Never redo or revert finished work. Start at the first step not marked done. If the files do not match the marks (a done step whose change is missing, or an unmarked step that already looks done), ask before continuing; a plan with no marks at all is new or predates am:do; judge it from the Change log and the files and ask only when unclear.
+3. Starting point: read the done marks on the Steps, the Change log, `git status` and the next action in `.am/<slug>/handoff.md` if it exists; where handoff.md differs from plan.md or the files, plan.md wins. Files an earlier session changed for this plan, including a step it left unfinished, are this task's work, not another session's. Never redo or revert finished work. Start at the first step not marked done. If the files do not match the marks (a done step whose change is missing, or an unmarked step that already looks done), ask before continuing; a plan with no marks at all is new or predates am:do; judge it from the Change log and the files and ask only when unclear.
 4. Each step, in order:
    - Implement only what the step says, in the style of the surrounding code.
    - For a bug, run the reproduction and record its result in plan.md before fixing it.
    - Run the step's Check. If it fails, fix it within the step and run it again; if you cannot, stop and report what failed.
    - When the Check passes, mark the step done: append `(done)`, written in the plan's language, to the step's first line.
    - Log anything done differently from the plan under Change log, one line each: what and why.
+   - After marking a step done, and whenever you stop before the end: Handoff: unless your instructions say you are running inside am-orchestrator, rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.
    - If the plan turns out wrong in a way that changes what the user sees or the scope, stop and ask. Otherwise make the smallest fix and log it.
    - Choices the plan settled stand unless the rules above reopen them. A new or reopened technical choice goes through the second opinion (rules above); record it under "Defaults applied" in plan.md.
 5. Do not commit or push; that is the am:commit skill's job.

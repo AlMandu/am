@@ -15,7 +15,7 @@ import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
 import { BUILTIN_MODELS, ensureUserFiles, modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
-import { RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../plugin/scripts/memory-guard.mjs';
+import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../plugin/scripts/memory-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
@@ -98,13 +98,15 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.ok(commit.allow.includes('Bash(git commit *)') && commit.deny.includes('Bash(git push *)') && !commit.allow.includes('Bash(git push *)'));
   const pushed = permissions('commit', { push: true });
   assert.ok(pushed.allow.includes('Bash(git push *)') && !pushed.deny.includes('Bash(git push *)'));
-  // With the slug, the commit stage may also write that task's commit record, and no other file.
+  // The commit stage may write only the task's commit record and handoff document, and only when it knows the slug.
   assert.ok(!commit.allow.some((r) => r.startsWith('Edit')));
   const recorded = permissions('commit', { slug: 'demo' });
-  assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)']);
+  assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)', 'Edit(/.am/demo/handoff.md)', 'Edit(.am/demo/handoff.md)']);
   assert.deepEqual(recorded.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
   assert.deepEqual(recorded.deny, commit.deny);
-  assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says; that is the only file this session can write/);
+  assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says, and after the last one update \.am\/demo\/handoff\.md as the skill says; those are the only files this session can write/);
+  // The plan stage may also write the current-task mark, which its .am/ allowance already covers.
+  assert.match(instructions('plan', 'demo').system, /only under \.am\/demo\/ and the current-task mark \.am\/\.active with the Write or Edit tool/);
   const hand = permissions('handover', { orchRoot: '/orch' });
   assert.ok(hand.allow.includes('Bash(node "/orch/scripts/orchestrator.mjs" *)') && hand.allow.includes('Bash(git merge --ff-only *)') && hand.allow.includes('Edit(/.orchestrator/**)'));
   assert.ok(!hand.allow.includes('Bash') && hand.deny.includes('Bash(git push *)'));
@@ -1518,11 +1520,12 @@ test('memory guard: the module reads no environment variable and imports only no
   for (const name of imports) assert.ok(name.startsWith('node:'), name);
 });
 
-test('memory guard: the built-in 2048 MB holds on win32 only, a set value on every OS, 0 is off and nothing waits alone', () => {
+test('memory guard: the built-in default holds on win32 only, a set value on every OS, 0 is off and nothing waits alone', () => {
   const short = (setting, platform, freeMB, busy = 1) => memoryShortMB({ busy, freeBytes: freeMB * MB, setting, platform });
-  assert.deepEqual(short(undefined, 'win32', 1000), { freeMB: 1000, needMB: 2048 });
-  assert.deepEqual(short(null, 'win32', 2047), { freeMB: 2047, needMB: 2048 });
-  assert.equal(short(null, 'win32', 2048), null);
+  assert.ok(NEED_MB > 1000);
+  assert.deepEqual(short(undefined, 'win32', 1000), { freeMB: 1000, needMB: NEED_MB });
+  assert.deepEqual(short(null, 'win32', NEED_MB - 1), { freeMB: NEED_MB - 1, needMB: NEED_MB });
+  assert.equal(short(null, 'win32', NEED_MB), null);
   for (const platform of ['darwin', 'linux']) assert.equal(short(undefined, platform, 1000), null, platform);
   for (const platform of ['win32', 'darwin', 'linux']) {
     assert.deepEqual(short(500, platform, 400), { freeMB: 400, needMB: 500 }, platform);
@@ -1532,7 +1535,7 @@ test('memory guard: the built-in 2048 MB holds on win32 only, a set value on eve
   }
   for (const busy of [0, -1]) assert.equal(short(500, 'darwin', 0, busy), null, String(busy));
   for (const bad of ['6GB', -1, '', ' ']) {
-    assert.deepEqual(short(bad, 'win32', 1000), { freeMB: 1000, needMB: 2048 }, String(bad));
+    assert.deepEqual(short(bad, 'win32', 1000), { freeMB: 1000, needMB: NEED_MB }, String(bad));
     assert.equal(short(bad, 'darwin', 1000), null, String(bad));
   }
 });
@@ -2123,7 +2126,7 @@ function memoryCfg(t, text = null, { other = true } = {}) {
   return { env, file, records };
 }
 const SHORT_MEM = { platform: 'win32', freeMem: () => 1024 * MB };
-const MEMORY_NOTE = 'waiting for free memory (1024 MB free, needs 2048 MB, 1 other sessions on this PC)';
+const MEMORY_NOTE = `waiting for free memory (1024 MB free, needs ${NEED_MB} MB, 1 other sessions on this PC)`;
 
 test('memory wait: a broken user settings file ends every stage before any session or start line; a missing one changes nothing', async (t) => {
   for (const text of ['{"minFreeMemoryMB":"6GB"}', '{"minFreeMemoryMB":']) {
@@ -2148,7 +2151,7 @@ test('memory wait: short of memory while another session of this PC runs, a stag
   const { result, calls } = await run(dir, ['plan', 'demo'], { env, ...SHORT_MEM, waitMs: 150, pollMs: 20 });
   assert.equal(result.status, 'WAIT');
   assert.equal(result.stage, 'plan');
-  assert.equal(result.reason, 'waiting for free memory on this PC: 1024 MB free, needs 2048 MB (built-in default), 1 other sessions on this PC');
+  assert.equal(result.reason, `waiting for free memory on this PC: 1024 MB free, needs ${NEED_MB} MB (built-in default), 1 other sessions on this PC`);
   assert.deepEqual(calls, []);
   const list = events(dir);
   assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['note', 'wait']]);
@@ -2712,6 +2715,8 @@ else {
   assert.equal(await g.done, 0);
   assert.equal(JSON.parse(g.text).status, 'NOTE');
   assert.equal(callsOf(late).trim().split('\n').length, 1);
+  // The result can arrive before the worker exits: wait for it, or Windows cannot remove the folder.
+  for (const e of events(late).filter((x) => x.ev === 'start')) await until(() => !pidAlive(e.pid));
 });
 
 test('follow: a stop signal goes to the worker and ends the call with exit 1; while waiting for another stage it ends at once', async (t) => {
@@ -3126,20 +3131,29 @@ test('second-opinion marks: the Korean form counts like the English one; neither
   assert.match(compactionProblem('plan.md', '# p\n- a (2차 의견)\n', '# p\n'), /second opinion marks 1 -> 0/);
 });
 
-test('permissions: the commit stage only unstages; a hand-over checks out only its start branch and may put a stash back', () => {
+test('permissions: the commit stage only unstages; a hand-over switches only to its start branch and may put a stash back', () => {
   const commit = permissions('commit');
-  assert.ok(commit.allow.includes('Bash(git restore --staged *)') && !commit.allow.includes('Bash(git restore *)'));
+  assert.ok(commit.allow.includes('Bash(git restore --staged -- *)'));
+  for (const r of ['Bash(git restore *)', 'Bash(git restore --staged *)']) assert.ok(!commit.allow.includes(r), r);
+  // Bash only: PowerShell might take `--` for itself and pass `-W <file>` on to git.
+  assert.ok(!commit.allow.includes('PowerShell(git restore --staged -- *)'));
+  if (process.platform === 'win32') assert.ok(commit.allow.includes('PowerShell(git add *)'), 'the other rules stay paired');
+  const commitText = instructions('commit', 'demo').system;
+  assert.ok(commitText.includes('`git restore --staged -- <paths>`') && commitText.includes('with the Bash tool'));
   const hand = permissions('handover', { orchRoot: '/orch', startBranch: 'feature/x-1' });
-  assert.ok(hand.allow.includes('Bash(git checkout feature/x-1)') && !hand.allow.includes('Bash(git checkout *)'));
+  assert.ok(hand.allow.includes('Bash(git switch feature/x-1)'));
+  assert.ok(!hand.allow.some((r) => r.includes('git checkout')), 'no checkout rule for any name');
   for (const r of ['Bash(git stash push *)', 'Bash(git stash show *)', 'Bash(git stash apply *)']) assert.ok(hand.allow.includes(r), r);
   assert.ok(!hand.allow.some((r) => /stash (pop|drop)/.test(r)), 'a stash is never dropped');
-  // A branch name a rule cannot carry gets no checkout rule at all.
-  for (const b of ['', 'a,b', 'a)b', '-x', 'a b']) assert.ok(!permissions('handover', { startBranch: b }).allow.some((r) => r.includes('checkout')), b);
+  // A branch name a rule cannot carry gets no switch rule at all.
+  for (const b of ['', 'a,b', 'a)b', '-x', 'a b']) assert.ok(!permissions('handover', { startBranch: b }).allow.some((r) => r.includes('switch') || r.includes('checkout')), b);
   const text = instructions('handover', 'demo', { orchRoot: '/orch' }).system;
   assert.match(text, /- Stash: <oid>, base <commit>/);
   assert.match(text, /share no file, run \`git stash apply <oid>\`/);
   assert.match(text, /Never drop a stash\./);
+  assert.ok(text.includes('switch to the start branch with `git switch <branch>`'));
   assert.match(AUTO, /- Stash: <oid>, base <commit>/, 'am:auto step 4 keeps the same rule');
+  assert.ok(AUTO.includes('switch to the start branch with `git switch <branch>`'));
 });
 
 test('handedStartBranch: the start branch of the last fixed hand-over line', () => {
@@ -3147,14 +3161,14 @@ test('handedStartBranch: the start branch of the last fixed hand-over line', () 
   assert.equal(handedStartBranch('# p\n## Change log\n- merged\n'), null);
 });
 
-test('the hand-over session may check out the start branch its Change log names', async (t) => {
+test('the hand-over session may switch to the start branch its Change log names', async (t) => {
   const handed = `${LARGE}## Change log\n- Hand-over: am-orchestrator run skill, run r1, start branch release-2\n`;
   const dir = makeRepo(t, { plan: handed, fake: { replies: ['Merged.\nAM_STAGE: HANDED'] } });
   const orchRoot = path.join(dir, 'orch');
   mkdirSync(path.join(orchRoot, 'skills', 'run'), { recursive: true });
   writeFileSync(path.join(orchRoot, 'skills', 'run', 'SKILL.md'), '---\nmodel: opus\neffort: high\n---\nRequest: $ARGUMENTS\n');
   const { calls } = await run(dir, ['do', 'demo'], { orchestrator: () => orchRoot });
-  assert.ok(flag(calls[0], '--allowedTools').split(',').includes('Bash(git checkout release-2)'));
+  assert.ok(flag(calls[0], '--allowedTools').split(',').includes('Bash(git switch release-2)'));
 });
 
 test('compaction: a record is written before the session and removed after; a leftover record puts the files back', async (t) => {

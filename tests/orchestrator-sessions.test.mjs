@@ -110,8 +110,9 @@ test('memoryShortMB: 다른 세션·게이트가 돌 때만, 남은 메모리가
   assert.equal(DEFAULT_MIN_FREE_MEMORY_MB, 2048);
   for (const setting of [null, undefined, '', 'abc', -5]) {
     assert.equal(short({ setting }), null, `기본 기준은 win32 에서만: ${setting}`);
-    assert.deepEqual(short({ setting, platform: 'win32', freeBytes: 2047 * MB }), { freeMB: 2047, needMB: 2048 }, String(setting));
-    assert.equal(short({ setting, platform: 'win32', freeBytes: 2048 * MB }), null, String(setting));
+    const need = DEFAULT_MIN_FREE_MEMORY_MB;
+    assert.deepEqual(short({ setting, platform: 'win32', freeBytes: (need - 1) * MB }), { freeMB: need - 1, needMB: need }, String(setting));
+    assert.equal(short({ setting, platform: 'win32', freeBytes: need * MB }), null, String(setting));
   }
 });
 

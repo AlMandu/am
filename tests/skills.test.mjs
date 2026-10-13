@@ -4,15 +4,14 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { load } from '../scripts/models.mjs';
+import { USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, merge: 80 };
-// Model and effort a skill's turn runs with in Claude Code (Codex ignores both keys), from models.json at the repository root.
-const MODELS = load().am;
-const RUNS_WITH = Object.fromEntries(Object.keys(LIMITS).map((name) => [name, [MODELS[name].model, MODELS[name].effort]]));
+// The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
+const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
 const frontmatter = (text) => {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
@@ -51,14 +50,14 @@ test('am:plan, am:do, am:auto and am:merge are user-invoked only in both tools',
 });
 
 test('every skill sets the model and effort its turn runs with', () => {
-  for (const [name, [model, effort]] of Object.entries(RUNS_WITH)) {
+  for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
     const userOnly = ['plan', 'do', 'auto', 'merge'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
-    assert.equal(fm.model, model, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
-    assert.equal(fm.effort, effort, name);
+    assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
+    assert.ok(USER_EFFORTS.includes(fm.effort), `${name}: ${fm.effort}`);
   }
 });
 
@@ -71,6 +70,19 @@ test('am:merge moves the commits am:commit records and never pushes', () => {
   assert.match(read('commit'), /your instructions do not say you are running inside am-orchestrator, append `<full hash> <subject>` as one line to `\.am\/<slug>\/commits\.md`/);
   const orch = readFileSync(path.resolve(ROOT, '..', '..', 'orchestrator', 'scripts', 'orchestrator.mjs'), 'utf8');
   assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
+});
+
+test('the workflow skills keep a handoff document and mark the current task, outside am-orchestrator', () => {
+  // One sentence, word for word in each skill that rewrites the whole document.
+  const handoff = 'Handoff: unless your instructions say you are running inside am-orchestrator, rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.';
+  for (const name of ['plan', 'do', 'check', 'commit']) assert.ok(read(name).includes(handoff), name);
+  // The merge skill only touches its status and next action, and only when it exists.
+  assert.match(read('merge'), /If `\.am\/<slug>\/handoff\.md` exists, change only its status and next action/i, 'merge');
+  // The mark is written by plan and do, and only listed first as current, never followed on its own.
+  for (const name of ['plan', 'do']) assert.match(read(name), /unless your instructions say you are running inside am-orchestrator, write the slug as one line to `\.am\/\.active`/i, name);
+  for (const name of ['do', 'commit', 'merge']) assert.ok(read(name).includes('the one named on the first line of `.am/.active` first and marked as current (only when that folder exists)'), name);
+  // am:do still ends by handing over to am:check (the orchestrator relies on it).
+  assert.match(read('do').trim().split('\n').at(-1), /use the am:check skill/);
 });
 
 test('am:auto declares the hand-over hook, and only am:auto', () => {
@@ -96,6 +108,10 @@ test('am:auto drives the stage runner and handles every status it prints', async
   for (const field of ['status', 'reason', 'reply', 'compacted']) assert.ok(auto.includes(`\`${field}\``), field);
   // A follow call that reached its limit ends WAIT while the stage still runs.
   assert.match(auto, /`WAIT` \(any stage\):[^\n]*, or the stage is still running;/);
+  // After the check comes the commit, with no memory stage between them.
+  assert.ok(auto.includes('`NOTE` (check): commit.'));
+  assert.ok(auto.includes('skip check and commit'));
+  assert.ok(read('check').includes('the next step (the am:commit skill, or what to fix)'));
 });
 
 test('am:auto starts the progress command next to every stage command', async () => {
@@ -128,9 +144,8 @@ test('the second-opinion agent stays pinned and read-only, and the common rules 
   // Claude Code ignores a misspelled key without an error, which would silently unpin the agent.
   assert.deepEqual(Object.keys(fm).sort(), ['description', 'effort', 'model', 'name', 'tools']);
   assert.equal(fm.name, 'second-opinion');
-  assert.equal(fm.model, MODELS['second-opinion'].model);
-  assert.match(fm.model, /^[a-z]+(\[1m\])?$/); // alias: follows the main session's Opus version, so a new Opus is picked up
-  assert.equal(fm.effort, MODELS['second-opinion'].effort);
+  assert.match(fm.model, ALIAS); // alias: follows the main session's Opus version, so a new Opus is picked up
+  assert.ok(USER_EFFORTS.includes(fm.effort), fm.effort);
   assert.equal(fm.tools, 'Read, Grep, Glob');
   assert.match(fm.description, /^"[^"]{40,}"$/);
   assert.match(common(read('plan')), /am:second-opinion subagent/);

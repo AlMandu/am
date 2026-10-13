@@ -196,7 +196,7 @@ export const CODEX_STAGES = ['plan'];
 /**
  * Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root.
  * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
- * `startBranch`: the branch a hand-over merges back into, the only one it may check out (none when it is not a plain name).
+ * `startBranch`: the branch a hand-over merges back into, the only one it may switch to (none when it is not a plain name).
  */
 export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', installedAm = [], startBranch = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
@@ -214,17 +214,17 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
     case 'commit':
-      // The only file it may write is the task's commit record, which the am:merge skill reads. Restore only unstages:
-      // this runs in the user's own working tree, where a plain restore would throw away changes of unknown origin.
-      return { mode: 'dontAsk', allow: sh([...read, ...gitRead, ...(slug ? [`Edit(/.am/${slug}/commits.md)`, `Edit(.am/${slug}/commits.md)`] : []), 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git restore --staged *)', ...(push ? pushRules : [])]), deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
+      // It may write only the task's commit record, which the am:merge skill reads, and its handoff document. Restore only unstages (a plain restore would throw away
+      // the user's changes in this tree); after `--` git reads only paths, so no `--worktree` slips in. Bash only: PowerShell might eat the `--`.
+      return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? ['commits.md', 'handoff.md'].flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'compact':
       // Shortens task files under .am/ before a stage; nothing else. The request is denied, which wins over the allowance.
       return { mode: 'dontAsk', allow: [...read, ...edit('.am')], deny: [...noHuman, ...(slug ? [`Edit(/.am/${slug}/request.md)`, `Edit(.am/${slug}/request.md)`] : [])] };
     case 'handover': {
       const orch = orchRoot ? nodeScript(path.join(orchRoot, 'scripts', 'orchestrator.mjs')) : [];
-      // Checking out only the start branch: `git checkout -- <path>` would throw away the user's changes in this tree.
-      const checkout = /^[\w./-]+$/.test(startBranch) && !startBranch.startsWith('-') ? [`Bash(git checkout ${startBranch})`] : [];
-      const merge = [...checkout, 'Bash(git merge --ff-only *)', 'Bash(git branch -d *)', 'Bash(git branch --show-current)'];
+      // Switching only to the start branch: switch never restores paths, while `git checkout <name>` does when the name is no branch.
+      const back = /^[\w./-]+$/.test(startBranch) && !startBranch.startsWith('-') ? [`Bash(git switch ${startBranch})`] : [];
+      const merge = [...back, 'Bash(git merge --ff-only *)', 'Bash(git branch -d *)', 'Bash(git branch --show-current)'];
       // What the run skill's Prepare questions may need once the user has answered: the gate file, committing or setting
       // changes aside, and putting changes set aside back after the merge when they touch no file the run changed.
       const prepare = ['Edit(/am-gate.json)', 'Edit(am-gate.json)', 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git stash push *)', 'Bash(git stash show *)', 'Bash(git stash apply *)'];
@@ -259,7 +259,7 @@ const STAGE_RULES = {
 - Always write .am/${slug}/plan.md, even when the change looks small: skip the step that offers to do a small change directly.
 - Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.
 - Do not implement, even where the skill would go on after the plan; the next stage does that.
-- What this session can do: read anything; create or change files only under .am/${slug}/ with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
+- What this session can do: read anything; create or change files only under .am/${slug}/ and the current-task mark .am/.active with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
 - ${MARK('plan')}`,
   do: (slug, { fix }) => `This is the implementation stage for .am/${slug}/plan.md, with the steps of the am:do skill.${fix ? `\n- The am:check skill blocked this task. Read .am/${slug}/check.md first and fix only the causes it reports that lie inside this task; log each fix under Change log in the plan.` : ''}
 - Another session runs the am:check skill after you finish. So run the agent runtime checks you can do here (the last step of the am:do skill), but do not use the am:check skill.
@@ -272,7 +272,7 @@ ${scratch(slug)}
   handover: (slug, { push, resume }) => `This is the implementation stage for .am/${slug}/plan.md, handed to the am-orchestrator run skill because the plan is larger than one implementation run or one commit. You were started with the run skill. Drive it to the end by its Steps, with these additions from am:auto:
 - ${resume ? 'The Change log of the plan already records the hand-over with a run ID. Check that `status --json` shows the same `run.id` (if not, end with AM_STAGE: BLOCKED and say why). If the log also records the merge, only the push below is left.' : 'Before `split`, note `run.id` from `status --json` (none if `run` is null). If `split` ends with exit code 4, it is still running: run `split` again with no argument until it ends with another code, before you read `run.id`. Once `split` has made the run (`run.id` present and not the noted one; otherwise end with AM_STAGE: BLOCKED and say why), log exactly this one line in the Change log of the plan, in English whatever the plan\'s language, with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run.id>, start branch <branch>`.'} No other line you log (a stop reason before AM_STAGE: BLOCKED, for example) starts with \`Hand-over:\`.
 - Its \`decide\` questions are scope or screen questions: decide them as above and pass each answer with \`decide\`. Its \`answer\` and \`blocked\` questions, and any question of its Prepare step, are stops: write the card into plan.md as above. When plan.md holds the user's answer to such a card, pass it to the run skill (\`answer\`, \`decide\`), or carry out exactly the action the answer names (for example write am-gate.json and commit it, or commit or stash the changes it names) and nothing more. To stash, use \`git stash push\` (with \`-u\` when the answer names untracked files), then log right after it this one line in the Change log: \`- Stash: <oid>, base <commit>\`, with \`git rev-parse stash@{0}\` and \`git rev-parse HEAD\`.
-- Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, check out the start branch and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits). Then, for each \`Stash:\` line in the Change log not yet logged as put back: when \`git stash show --include-untracked --name-only <oid>\` and \`git diff --name-only <base> HEAD\` share no file, run \`git stash apply <oid>\` and log it; otherwise leave it and name the oid and \`git stash apply <oid>\` in your final reply. Never drop a stash.
+- Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, switch to the start branch with \`git switch <branch>\` and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits). Then, for each \`Stash:\` line in the Change log not yet logged as put back: when \`git stash show --include-untracked --name-only <oid>\` and \`git diff --name-only <base> HEAD\` share no file, run \`git stash apply <oid>\` and log it; otherwise leave it and name the oid and \`git stash apply <oid>\` in your final reply. Never drop a stash.
 - Do not run the \`progress\` command of the run skill's script, even where the skill says to start it: nobody reads this session, and the am stage runner copies the run's news into this task's event file itself.
 - In your final reply give: tasks done of all and the branch, the human checklist of the report at \`run.report\` (shortened, with its path), and every line of \`autoDecided\` and \`secondOpinions\`.
 - ${MARK('handover')}  HANDED means the run is done and merged${push ? ' and pushed' : ''}.`,
@@ -285,7 +285,8 @@ ${scratch(slug)}
 - ${MARK('check')}`,
   commit: (slug, { push }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
-- After each commit, record it in .am/${slug}/commits.md as the skill says; that is the only file this session can write.
+- To leave a staged file out of the commit, unstage it with \`git restore --staged -- <paths>\` with the Bash tool; no other restore form is allowed.
+- After each commit, record it in .am/${slug}/commits.md as the skill says, and after the last one update .am/${slug}/handoff.md as the skill says; those are the only files this session can write.
 - If the gate could not run (status \`error\`, or \`node\` missing), commit but do not push, and say why.
 - If a hook rejects the commit, do not bypass it and do not retry another way; copy what it printed into your reply.
 - Run each git command on its own from the repository root: no cd, no pipes, no chains, no heredoc; use several -m flags for several paragraphs.
@@ -548,8 +549,14 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
   return { runs: found.map((f) => f.name), text: found.map((f) => f.text).join(', ') };
 }
 
-// Stops an orchestrator worker the way the orchestrator's `forward` does: a signal, or the whole tree on Windows.
-const signalRun = (pid, sig) => (WIN ? killTree({ pid }) : process.kill(pid, sig));
+// The longest wait for taskkill when a hand-over stops its orchestrator worker on Windows.
+export const STOP_RUN_MS = 10000;
+// Stops an orchestrator worker: a signal, or on Windows the whole tree, waiting for taskkill (up to timeoutMs), because
+// the process may exit right after.
+const signalRun = (pid, sig, timeoutMs = STOP_RUN_MS) => {
+  if (!WIN) return process.kill(pid, sig);
+  spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: timeoutMs });
+};
 
 /**
  * Sends SIGTERM to the orchestrator worker a hand-over of this process started, and returns its pid; null when there is

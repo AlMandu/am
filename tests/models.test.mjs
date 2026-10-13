@@ -33,7 +33,7 @@ test('every file carries the values of models.json', () => {
 });
 
 test('the orchestrator stage-to-skill mapping is complete', () => {
-  // The one literal of this map in the tests.
+  // tests/orchestrator-skill.test.mjs keeps a copy of this literal; change both together.
   assert.deepEqual(STAGE_SKILLS, { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' });
 });
 

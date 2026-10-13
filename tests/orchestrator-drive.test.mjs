@@ -1,5 +1,5 @@
 // Run: node --test tests/orchestrator-drive.test.mjs
-// 스킬이 모는 기능(status --json, 잠금)과 스킬을 부르는 방식(slash/inline) 테스트. 공통 도우미·전체 명령은 tests/orchestrator-helpers.mjs
+// 스킬이 모는 기능(status --json, 잠금, 상태 파일)과 스킬을 부르는 방식(slash/inline) 테스트. 공통 도우미·전체 명령은 tests/orchestrator-helpers.mjs
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -105,6 +105,25 @@ test('진행 소식: 세션이 2차 의견으로 정한 선택은 한 번만 알
   const report = readFileSync(path.join(r.repo, st.run.report), 'utf8');
   assert.match(report, /## 사용자 대신 정한 것 \(자동 결정\)\n\n없음\n\n## 2차 의견으로 정한 것\n\n- T01: C1 저장 방식: 파일 - 이유 \(second opinion, Codex agreed\)\n\n## 실행 확인/);
   assert.ok(!report.includes('no second opinion'));
+});
+
+test('상태 파일: 쓰이지 않던 필드는 더 쓰지 않고, 그 필드가 있는 옛 상태 파일로도 이어 간다', () => {
+  const envFile = (r) => path.join(r.repo, '.orchestrator', 'env.json');
+  const fresh = prepared({ plan: planOf([task('T01', 't01-a')]) });
+  assert.equal(fresh.orch('run').code, 0);
+  assert.ok(!('startBranch' in fresh.state()));
+  const env = JSON.parse(readFileSync(envFile(fresh), 'utf8'));
+  assert.ok(!('checkedAt' in env) && !('claudeVersion' in env), JSON.stringify(env));
+  assert.ok(!('amVersion' in statusJson(fresh)));
+  // 옛 버전이 남긴 필드가 있는 상태 파일과 env.json
+  const old = prepared({ plan: planOf([task('T01', 't01-a'), task('T02', 't02-b', ['T01'])]) });
+  const stateFile = path.join(old.runDir(), 'state.json');
+  writeFileSync(stateFile, JSON.stringify({ ...old.state(), startBranch: 'main' }));
+  writeFileSync(envFile(old), JSON.stringify({ ...JSON.parse(readFileSync(envFile(old), 'utf8')), checkedAt: '2026-01-01T00:00:00.000Z', claudeVersion: '2.1.0 (Claude Code)' }));
+  assert.equal(statusJson(old).next, 'run');
+  const run = old.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.deepEqual(old.statusOf(), { T01: 'done', T02: 'done' });
 });
 
 // Windows 에서는 끝에서 보내는 SIGINT 를 검사할 수 없다(위 Ctrl+C 테스트와 같은 이유).

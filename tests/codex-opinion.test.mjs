@@ -7,17 +7,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ANSWER_HEADER, CODEX_ARGS, MAX_BRIEF_BYTES, buildPrompt, checkBrief, codexArgs, main, reviewerLine } from '../plugin/scripts/codex-opinion.mjs';
-import { OPINION_MODELS, USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
-import { load } from '../scripts/models.mjs';
+import { OPINION_MODELS, USER_EFFORTS, frontmatterModels } from '../plugin/scripts/user-models.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(here, '..', 'plugin', 'scripts', 'codex-opinion.mjs');
 const AGENT = path.join(here, '..', 'plugin', 'agents', 'second-opinion.md');
 const FAKE = path.join(here, 'fake-codex.mjs');
 const WIN = process.platform === 'win32';
-// Codex model and effort come from models.json at the repository root (scripts/models.mjs writes them into CODEX_ARGS).
-const MODELS = load().am;
-const CODEX = MODELS['codex-opinion'];
+// Built-in values read from the shipped files (scripts/models.mjs writes them where models.json exists); an absent model is ''.
+const builtinArg = (prefix) => CODEX_ARGS.find((a) => a.startsWith(prefix))?.slice(prefix.length) ?? '';
+const CODEX = { model: builtinArg('model='), effort: builtinArg('model_reasoning_effort=') };
 
 const bases = [];
 after(() => {
@@ -61,7 +60,7 @@ function userFile(t, text) {
 }
 // Values picked to differ from the built-in ones, so the tests survive a change of defaults.
 const other = (now, pool) => pool.find((v) => v !== now);
-const REVIEWER = MODELS['second-opinion'];
+const REVIEWER = frontmatterModels(AGENT);
 
 test('only a regular .md file under .am/ is accepted as the brief', () => {
   const t = setup();
@@ -115,9 +114,11 @@ test('answer: fixed read-only flags, prompt on stdin, only the last message prin
   for (const flag of ['read-only', 'approval_policy=never', `model_reasoning_effort=${CODEX.effort}`, 'mcp_servers={}', '--ignore-rules', '--ephemeral']) assert.ok(CODEX_ARGS.includes(flag), flag);
   // An empty model leaves the user's codex config in charge.
   assert.deepEqual(CODEX_ARGS.filter((a) => a.startsWith('model=')), CODEX.model ? [`model=${CODEX.model}`] : []);
+  // Each config value is the argument of its own -c, or Codex takes it for a stray argument.
+  for (const v of CODEX_ARGS.filter((a) => /^(model|model_reasoning_effort|approval_policy|mcp_servers)=/.test(a))) assert.equal(CODEX_ARGS[CODEX_ARGS.indexOf(v) - 1], '-c', v);
   assert.match(c.stdin, /^You are the second opinion of the am workflow, run through Codex/);
   assert.match(c.stdin, /Another agent is planning or changing code/, 'second-opinion.md body');
-  assert.ok(!c.stdin.includes(`model: ${MODELS['second-opinion'].model}`), 'frontmatter left out');
+  assert.ok(!c.stdin.includes(`model: ${REVIEWER.model}`), 'frontmatter left out');
   assert.match(c.stdin, /# Brief\n\n## Choices\n1\. Cache: A or B\n$/);
   assert.ok(!existsSync(c.argv[out + 1]), 'temporary answer file removed');
 });

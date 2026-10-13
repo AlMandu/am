@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { load, STAGE_SKILLS } from '../scripts/models.mjs';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 import { makeRepo } from './orchestrator-helpers.mjs';
 
@@ -16,8 +15,10 @@ const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
 const SKILL = read('orchestrator', 'skills', 'run', 'SKILL.md');
 const SCRIPT = read('orchestrator', 'scripts', 'orchestrator.mjs');
 const amSkill = (name) => read('plugin', 'skills', name, 'SKILL.md');
-// Model and effort of the run skill and the split stage, from models.json at the repository root.
-const MODELS = load().orchestrator;
+// Orchestrator stages that run an am skill: a copy of STAGE_SKILLS of scripts/models.mjs, so this file needs no models.mjs.
+const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
+// A model alias and an effort, the form models.json's values take (tests/models.test.mjs checks the values where that file exists).
+const MODEL_EFFORT = "model: [a-z]+(?:\\[1m\\])?\\neffort: (?:low|medium|high|xhigh|max)";
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // The object status --json prints as run; am:auto and the stage runner read its fields.
 const RUN = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
@@ -58,7 +59,7 @@ test('the run skill follows the am skill rules: same common block, size limit, u
   assert.match(SKILL, /\ndescription: "[^"]{40,}"\n/);
   assert.match(SKILL, /\ndisable-model-invocation: true\n/);
   // The model and effort of the session that drives the run. A misspelled key is ignored without an error.
-  assert.match(SKILL, new RegExp(`\\nmodel: ${esc(MODELS.run.model)}\\neffort: ${esc(MODELS.run.effort)}\\n---\\n`));
+  assert.match(SKILL, new RegExp(`\\n${MODEL_EFFORT}\\n---\\n`));
   assert.match(read('orchestrator', 'skills', 'run', 'agents', 'openai.yaml'), /allow_implicit_invocation: false/);
   assert.ok(!SLASH_NAME.test(withoutCommon(SKILL)), 'refer to skills by name, not with a slash prefix');
 });
@@ -115,7 +116,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
     assert.ok(row, `STAGE_DEFAULTS.${stage}`);
     assert.match(amSkill(skill), new RegExp(`\\nmodel: ${esc(row[1])}\\neffort: ${esc(row[2])}\\n---\\n`), `${stage} and am:${skill}`);
   }
-  assert.ok(SCRIPT.includes(`\n  split: { model: '${MODELS.split.model}', effort: '${MODELS.split.effort}' },`), 'STAGE_DEFAULTS.split');
+  assert.match(SCRIPT, /\n  split: \{ model: '[a-z]+(?:\[1m\])?', effort: '(?:low|medium|high|xhigh|max)' \},/, 'STAGE_DEFAULTS.split');
   // The second opinion through Codex: plan sessions may run exactly this am script, which the common rules call by this path.
   assert.ok(existsSync(path.join(REPO, 'plugin', 'scripts', 'codex-opinion.mjs')));
   assert.ok(amSkill('plan').includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>`'));
@@ -614,7 +615,7 @@ test('am memory guard and the orchestrator: same free-memory rule, record rule, 
   assert.equal(am.RECORD_NAME.flags, '');
   const MB = 1048576;
   for (const busy of [-1, 0, 1, 3])
-    for (const freeBytes of [0, 500 * MB, 2047 * MB, 2048 * MB, 6143 * MB, 6144 * MB, 7000 * MB])
+    for (const freeBytes of [0, 500 * MB, (orch.DEFAULT_MIN_FREE_MEMORY_MB - 1) * MB, orch.DEFAULT_MIN_FREE_MEMORY_MB * MB, 6143 * MB, 6144 * MB, 7000 * MB])
       for (const setting of [undefined, null, '', ' ', '6GB', -1, 0, 500, '500', 6144])
         for (const platform of ['win32', 'darwin', 'linux']) {
           const input = { busy, freeBytes, setting, platform };
