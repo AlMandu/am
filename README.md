@@ -70,6 +70,24 @@ Codex 는 플러그인 훅을 사용자가 신뢰해야 실행합니다. 설치 
 
 옛 AlMandu 툴킷(`am@almandu`)과는 이름이 같아서 함께 설치할 수 없습니다. 먼저 제거하세요.
 
+**Claude Code 클라우드 세션(claude.ai/code)**
+
+클라우드 세션은 저장소 `.claude/settings.json` 의 `enabledPlugins`·`extraKnownMarketplaces` 를 설치하지 않고, 세션 안에서는 `/plugin` 도 쓸 수 없습니다. 대신 클라우드 환경의 설정 스크립트(Setup script)에서 설치하면 세션 시작부터 am 이 켜져 있습니다. claude.ai/code 메시지 입력란 위의 클라우드 아이콘 → **Cloud** → **Add cloud environment**(기존 환경은 톱니바퀴)를 열고, 네트워크는 **Trusted** 로 두고 아래 스크립트를 넣으세요.
+
+```bash
+#!/bin/bash
+# 설정 스크립트가 실패하면 세션이 시작되지 않으므로 모든 단계를 || true 로 둡니다.
+command -v claude >/dev/null || exit 0
+claude plugin marketplace add AlMandu/am || claude plugin marketplace update am-workflow || true
+claude plugin install am@am-workflow --scope user || true
+# 오케스트레이터가 필요 없으면 아래 줄을 지우세요.
+claude plugin install am-orchestrator@am-workflow --scope user || true
+```
+
+- 설정 스크립트는 Claude Code 가 뜨기 전에 root 로 돌고, 사용자 범위(`~/.claude/settings.json`)로 설치한 플러그인은 그 세션에서 바로 읽힙니다.
+- 환경은 첫 실행 뒤 파일 시스템 스냅샷으로 약 7일 동안 재사용되므로, 그 사이에 나온 새 버전은 들어오지 않습니다. 스냅샷이 만료되거나 설정 스크립트를 고치면 다시 설치합니다. 바로 올리려면 세션 안에서 `claude plugin marketplace update am-workflow` 뒤 `claude plugin update am@am-workflow` 를 실행하고 새 세션을 여세요.
+- claude.ai 에 am 을 직접 올려(조직·개인 플러그인) 클라우드 세션에 동기화되고 있다면 같은 이름의 am 이 두 벌 실립니다. 둘 중 하나만 켜 두세요. 이 경우 위 스크립트에서 am 줄을 빼고 오케스트레이터만 설치해도 됩니다.
+
 ## 처음 써 보기
 
 Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 만든다고 해 봅시다.
