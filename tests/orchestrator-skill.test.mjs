@@ -614,7 +614,7 @@ test('am memory guard and the orchestrator: same free-memory rule, record rule, 
   assert.equal(am.RECORD_NAME.flags, '');
   const MB = 1048576;
   for (const busy of [-1, 0, 1, 3])
-    for (const freeBytes of [0, 500 * MB, 6143 * MB, 6144 * MB, 7000 * MB])
+    for (const freeBytes of [0, 500 * MB, 2047 * MB, 2048 * MB, 6143 * MB, 6144 * MB, 7000 * MB])
       for (const setting of [undefined, null, '', ' ', '6GB', -1, 0, 500, '500', 6144])
         for (const platform of ['win32', 'darwin', 'linux']) {
           const input = { busy, freeBytes, setting, platform };

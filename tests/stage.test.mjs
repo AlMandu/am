@@ -1518,11 +1518,11 @@ test('memory guard: the module reads no environment variable and imports only no
   for (const name of imports) assert.ok(name.startsWith('node:'), name);
 });
 
-test('memory guard: the built-in 6144 MB holds on win32 only, a set value on every OS, 0 is off and nothing waits alone', () => {
+test('memory guard: the built-in 2048 MB holds on win32 only, a set value on every OS, 0 is off and nothing waits alone', () => {
   const short = (setting, platform, freeMB, busy = 1) => memoryShortMB({ busy, freeBytes: freeMB * MB, setting, platform });
-  assert.deepEqual(short(undefined, 'win32', 1000), { freeMB: 1000, needMB: 6144 });
-  assert.deepEqual(short(null, 'win32', 6143), { freeMB: 6143, needMB: 6144 });
-  assert.equal(short(null, 'win32', 6144), null);
+  assert.deepEqual(short(undefined, 'win32', 1000), { freeMB: 1000, needMB: 2048 });
+  assert.deepEqual(short(null, 'win32', 2047), { freeMB: 2047, needMB: 2048 });
+  assert.equal(short(null, 'win32', 2048), null);
   for (const platform of ['darwin', 'linux']) assert.equal(short(undefined, platform, 1000), null, platform);
   for (const platform of ['win32', 'darwin', 'linux']) {
     assert.deepEqual(short(500, platform, 400), { freeMB: 400, needMB: 500 }, platform);
@@ -1532,7 +1532,7 @@ test('memory guard: the built-in 6144 MB holds on win32 only, a set value on eve
   }
   for (const busy of [0, -1]) assert.equal(short(500, 'darwin', 0, busy), null, String(busy));
   for (const bad of ['6GB', -1, '', ' ']) {
-    assert.deepEqual(short(bad, 'win32', 1000), { freeMB: 1000, needMB: 6144 }, String(bad));
+    assert.deepEqual(short(bad, 'win32', 1000), { freeMB: 1000, needMB: 2048 }, String(bad));
     assert.equal(short(bad, 'darwin', 1000), null, String(bad));
   }
 });
@@ -2123,7 +2123,7 @@ function memoryCfg(t, text = null, { other = true } = {}) {
   return { env, file, records };
 }
 const SHORT_MEM = { platform: 'win32', freeMem: () => 1024 * MB };
-const MEMORY_NOTE = 'waiting for free memory (1024 MB free, needs 6144 MB, 1 other sessions on this PC)';
+const MEMORY_NOTE = 'waiting for free memory (1024 MB free, needs 2048 MB, 1 other sessions on this PC)';
 
 test('memory wait: a broken user settings file ends every stage before any session or start line; a missing one changes nothing', async (t) => {
   for (const text of ['{"minFreeMemoryMB":"6GB"}', '{"minFreeMemoryMB":']) {
@@ -2148,7 +2148,7 @@ test('memory wait: short of memory while another session of this PC runs, a stag
   const { result, calls } = await run(dir, ['plan', 'demo'], { env, ...SHORT_MEM, waitMs: 150, pollMs: 20 });
   assert.equal(result.status, 'WAIT');
   assert.equal(result.stage, 'plan');
-  assert.equal(result.reason, 'waiting for free memory on this PC: 1024 MB free, needs 6144 MB (built-in default), 1 other sessions on this PC');
+  assert.equal(result.reason, 'waiting for free memory on this PC: 1024 MB free, needs 2048 MB (built-in default), 1 other sessions on this PC');
   assert.deepEqual(calls, []);
   const list = events(dir);
   assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['note', 'wait']]);

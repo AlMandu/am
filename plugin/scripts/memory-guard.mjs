@@ -9,7 +9,7 @@ import { mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } f
 import os from 'node:os';
 import path from 'node:path';
 
-export const DEFAULT_MIN_FREE_MEMORY_MB = 6144;
+export const DEFAULT_MIN_FREE_MEMORY_MB = 2048;
 // The owner touches its record every 30 seconds; a record untouched for 5 minutes has lost its owner
 export const HEARTBEAT_MS = 30000;
 export const STALE_MS = 5 * 60000;

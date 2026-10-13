@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.44 (2026-10-13)
+
+- 남은 메모리 기본 기준을 6144MB 에서 2048MB 로 낮췄다. `am:auto` 의 단계 세션은 다른 세션이 도는 동안 PC 의 남은 메모리가 2048MB 보다 적을 때만 시작을 미룬다. 기본 기준은 여전히 Windows 에서만 쓰고, `~/.claude/am/settings.json` 의 `minFreeMemoryMB` 에 적은 값은 모든 OS 에서 쓰며, `0` 은 끈다.
+
+## am-orchestrator 0.9.6 (2026-10-13)
+
+- `minFreeMemoryMB` 를 어디에도 적지 않았을 때 쓰는 남은 메모리 기본 기준을 6144MB 에서 2048MB 로 낮췄다(Windows 만). am 과 함께 업데이트한다.
+
 ## 0.1.43 (2026-10-12)
 
 - 사용자 모델 파일(`<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/models.json`)의 `compactmem` 키를 이제 받지 않는다. 적어 두었으면 "모르는 키" 오류로 am:auto 단계와 Codex 2차 의견 명령이 멈추므로 그 줄을 지운다. README 의 키 표에서도 뺐다.
