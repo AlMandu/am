@@ -124,7 +124,7 @@ test('am:auto starts the progress command next to every stage command', async ()
   const { stateLine } = await import('../plugin/scripts/progress.mjs');
   assert.equal(stateLine([]), 'state: ended');
   assert.ok(section.includes(`\`${stateLine([])}\``), 'state: ended');
-  assert.ok(section.includes('each `second opinion:` line gets its own plain line: what had to be decided and which option was chosen, and whether Codex agreed'));
+  assert.ok(section.includes('each `second opinion:` line gets its own plain line: what had to be decided and which option was chosen, and which reviewers agreed, if both did'));
   assert.ok(section.includes('other than its `second opinion:` lines'));
   // After a WAIT at the follow limit the same stage runs on: one progress command, kept going while a stage command runs.
   assert.ok(section.includes('--consumer main` from the repository root in the background unless one is still running'));
@@ -167,6 +167,22 @@ test('with Codex installed, the common rules have Codex answer the same brief an
   const auto = read('auto');
   assert.match(auto, /\n- The two reviewers of a technical choice still split on it after their rounds \(rules above\)\.\n/);
   assert.match(auto, /In the first five cases, ask with a decision card/);
+});
+
+test('without Codex, the common rules have two Claude reviewers debate the same way', () => {
+  const block = common(read('plan'));
+  assert.match(block, /when Codex is not installed \(exit code 2\), send it at once to two of them, Claude 1 and Claude 2, each Agent call's prompt adding one line that names which of the two it is/);
+  assert.match(block, /labelled Claude and Codex \(Claude 1 and Claude 2 without Codex, each told again which one it is\)/);
+  assert.ok(block.includes('(second opinion, Claude reviewers agreed) when Claude 1 and Claude 2 agreed'));
+  // The second Claude is sent only once the script has said Codex is missing, and the reviewer line covers both calls.
+  const run = block.indexOf('codex-opinion.mjs" <brief file>`');
+  const send = block.indexOf('Then send the brief to the am:second-opinion subagent');
+  const two = block.indexOf('Claude 1 and Claude 2');
+  const pass = block.indexOf('Claude reviewer: model');
+  assert.ok(run !== -1 && run < send && send < two && two < pass, 'script, then subagent, then two without Codex, then the reviewer line');
+  assert.match(block, /otherwise do not override the ones pinned in its definition \(both calls when there are two\)/);
+  const agent = readFileSync(AGENT, 'utf8');
+  assert.ok(agent.includes('Claude 1') && agent.includes('Claude 2'));
 });
 
 test("the common rules pass the script's Claude reviewer line to the subagent, only from the first line", async () => {
