@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -304,6 +304,20 @@ test('reading the end: result object, marker line, claude arguments', () => {
   assert.equal(flag(again, '--plugin-dir'), '/dev/am');
   assert.ok(!again.includes('--append-system-prompt-file'));
   assert.ok(!args.includes('--plugin-dir'));
+  // No MCP config given: no MCP flag at all.
+  for (const a of [args, again]) assert.ok(!a.includes('--strict-mcp-config') && !a.includes('--mcp-config'));
+  // With one: both flags, and the variadic --mcp-config is followed by another option, also in the resume form.
+  const mcp = '.am/demo/stage-mcp.json';
+  const strict = claudeArgs(permissions('check'), { prompt: '/am:check demo', systemFile: '.am/demo/stage-check.system.md', pluginDir: '/dev/am', mcpConfig: mcp });
+  const resumed = claudeArgs(permissions('check'), { prompt: 'x', resume: 'sess-1', mcpConfig: mcp });
+  for (const a of [strict, resumed]) {
+    assert.ok(a.includes('--strict-mcp-config'));
+    assert.equal(flag(a, '--mcp-config'), mcp);
+    assert.match(a[a.indexOf('--mcp-config') + 2], /^--/);
+  }
+  assert.deepEqual(strict.slice(0, 6), args.slice(0, 6));
+  assert.equal(flag(strict, '--append-system-prompt-file'), '.am/demo/stage-check.system.md');
+  assert.equal(flag(resumed, '--resume'), 'sess-1');
   // An installed copy lives in the plugin cache; any other copy was loaded with --plugin-dir and is passed on.
   const env = { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), 'cfg') };
   assert.equal(pluginDirFor(path.join(env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'am-workflow', 'am', '0.1.14'), env), '');
@@ -1380,12 +1394,17 @@ test('user settings: the module reads no environment variable and imports only n
 });
 
 test('user settings: a missing file or key is null; a number of 0 or more is kept, notes are dropped and a BOM is allowed', (t) => {
-  assert.deepEqual(readUserSettings(userSettings(t, null)), { minFreeMemoryMB: null });
-  assert.deepEqual(readUserSettings(userSettings(t, '{}')), { minFreeMemoryMB: null });
-  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":null}')), { minFreeMemoryMB: null });
-  assert.deepEqual(readUserSettings(userSettings(t, '﻿' + JSON.stringify({ _note: 'mine', minFreeMemoryMB: 6144 }))), { minFreeMemoryMB: 6144 });
-  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":0}')), { minFreeMemoryMB: 0 });
-  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":6144.5}')), { minFreeMemoryMB: 6144.5 });
+  assert.deepEqual(readUserSettings(userSettings(t, null)), { minFreeMemoryMB: null, stageMcpServers: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{}')), { minFreeMemoryMB: null, stageMcpServers: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":null}')), { minFreeMemoryMB: null, stageMcpServers: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '﻿' + JSON.stringify({ _note: 'mine', minFreeMemoryMB: 6144 }))), { minFreeMemoryMB: 6144, stageMcpServers: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":0}')), { minFreeMemoryMB: 0, stageMcpServers: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":6144.5}')), { minFreeMemoryMB: 6144.5, stageMcpServers: null });
+  // stageMcpServers: true, false or null (null like missing).
+  assert.deepEqual(readUserSettings(userSettings(t, '{"stageMcpServers":true}')), { minFreeMemoryMB: null, stageMcpServers: true });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"stageMcpServers":false}')), { minFreeMemoryMB: null, stageMcpServers: false });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"stageMcpServers":null}')), { minFreeMemoryMB: null, stageMcpServers: null });
+  assert.deepEqual(readUserSettings(userSettings(t, '{"minFreeMemoryMB":0,"stageMcpServers":true}')), { minFreeMemoryMB: 0, stageMcpServers: true });
 });
 
 test('user settings: every broken file is one error line naming the file and the problem', (t) => {
@@ -1400,6 +1419,9 @@ test('user settings: every broken file is one error line naming the file and the
     ['{"minFreeMemoryMB":1e400}', 'finite'],
     ['{"minFreeMemoryMb":6144}', '"minFreeMemoryMb"'],
     ['{"model":{}}', '"model"'],
+    ['{"stageMcpServers":"yes"}', 'stageMcpServers'],
+    ['{"stageMcpServers":1}', 'stageMcpServers'],
+    ['{"stageMcpServers":"true"}', 'stageMcpServers'],
   ];
   for (const [text, word] of cases) {
     const file = userSettings(t, text);
@@ -1408,8 +1430,11 @@ test('user settings: every broken file is one error line naming the file and the
     assert.ok(!r.error.includes('\n'), text);
     assert.ok(r.error.startsWith(`${file}: `), text);
     assert.ok(r.error.includes(word), `${text}: ${r.error}`);
-    assert.ok(!('minFreeMemoryMB' in r), text);
+    assert.ok(!('minFreeMemoryMB' in r) && !('stageMcpServers' in r), text);
   }
+  // An unknown key names both keys.
+  const unknown = readUserSettings(userSettings(t, '{"stageMcp":true}')).error;
+  assert.ok(unknown.includes('"minFreeMemoryMB"') && unknown.includes('"stageMcpServers"'), unknown);
   const folder = userSettings(t, null);
   mkdirSync(folder);
   const r = readUserSettings(folder);
@@ -1444,7 +1469,7 @@ test('user files: the templates read as no setting, carry every built-in value a
   const settings = settingsTemplate();
   assert.ok(models.endsWith('}\n') && settings.endsWith('}\n'));
   assert.deepEqual(readUserModels(userModels(t, models)), { model: {}, effort: {} });
-  assert.deepEqual(readUserSettings(userSettings(t, settings)), { minFreeMemoryMB: null });
+  assert.deepEqual(readUserSettings(userSettings(t, settings)), { minFreeMemoryMB: null, stageMcpServers: null });
   const data = JSON.parse(models);
   assert.ok(Array.isArray(data._about) && data._about.length > 0);
   for (const [key, v] of Object.entries(BUILTIN_MODELS)) {
@@ -1452,6 +1477,10 @@ test('user files: the templates read as no setting, carry every built-in value a
     assert.equal(data.effort[`_${key}`], v.effort, key);
   }
   assert.ok(Object.hasOwn(JSON.parse(settings), 'minFreeMemoryMB'));
+  // Only a note for stageMcpServers: an orchestrator of 0.9.7 or older stops at the real key as unknown.
+  const notes = JSON.parse(settings)._stageMcpServers;
+  assert.ok(Array.isArray(notes) && notes.length > 0);
+  assert.ok(!Object.hasOwn(JSON.parse(settings), 'stageMcpServers'));
   assert.deepEqual(Object.keys(BUILTIN_MODELS), USER_MODEL_KEYS.filter((k) => k !== 'default'));
   assert.deepEqual(readUserModels(userModels(t, enableNotes(models))), {
     model: Object.fromEntries(Object.entries(BUILTIN_MODELS).map(([k, v]) => [k, v.model])),
@@ -2180,6 +2209,60 @@ test('memory wait: a broken user settings file ends every stage before any sessi
   }
   const dir = makeRepo(t, { fake: PLANNED });
   assert.equal((await run(dir, ['plan', 'demo'], { env: cfgEnv(userSettings(t, null)) })).result.status, 'READY');
+});
+
+const MCP_REL = `.am/demo/${STAGE_MCP_FILE}`;
+const EVIL_MCP = '{"mcpServers":{"x":{"command":"evil"}}}';
+const mcpFile = (dir) => path.join(dir, ...MCP_REL.split('/'));
+const noMcp = (args) => args.includes('--strict-mcp-config') && flag(args, '--mcp-config') === MCP_REL;
+
+test('stage MCP servers: off by default for every session, with the empty config rewritten right before each one', async (t) => {
+  assert.equal(EMPTY_MCP_CONFIG, '{"mcpServers":{}}\n');
+  // The first session and the ask-again; the first session wrote a server into the file, the second still gets none.
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Implemented.', 'AM_STAGE: DONE'], writes: [{ [MCP_REL]: EVIL_MCP }] } });
+  writeFileSync(mcpFile(dir), EVIL_MCP); // a stale file from before is rewritten as well
+  const { result, calls } = await run(dir, ['do', 'demo']);
+  assert.equal(result.status, 'DONE');
+  assert.equal(calls.length, 2);
+  for (const c of calls) assert.ok(noMcp(c), JSON.stringify(c));
+  assert.deepEqual(JSON.parse(readFileSync(mcpFile(dir), 'utf8')), { mcpServers: {} });
+  // The plan stage asked again to save its plan.
+  const saved = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY', 'Saved.\nAM_STAGE: READY'], writes: [{}, { '.am/demo/plan.md': 'x' }] } });
+  const r1 = await run(saved, ['plan', 'demo']);
+  assert.equal(r1.result.status, 'READY');
+  assert.equal(r1.calls.length, 2);
+  for (const c of r1.calls) assert.ok(noMcp(c), JSON.stringify(c));
+  // The compaction session, which wrote a server into the file before the stage session.
+  const big = makeRepo(t, { plan: BIG, fake: { replies: ['Shortened.\nAM_STAGE: COMPACTED', 'Implemented.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SHORT, [MCP_REL]: EVIL_MCP }] } });
+  const r2 = await run(big, ['do', 'demo']);
+  assert.equal(r2.result.status, 'DONE');
+  assert.match(flag(r2.calls[0], '-p'), /^Shorten the task files/);
+  for (const c of r2.calls) assert.ok(noMcp(c), JSON.stringify(c));
+  assert.deepEqual(JSON.parse(readFileSync(mcpFile(big), 'utf8')), { mcpServers: {} });
+  // The hand-over session.
+  const hand = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const r3 = await run(hand, ['do', 'demo'], { orchestrator: () => '/orch' });
+  assert.equal(r3.result.stage, 'handover');
+  assert.ok(noMcp(r3.calls[0]), JSON.stringify(r3.calls[0]));
+  assert.deepEqual(JSON.parse(readFileSync(mcpFile(hand), 'utf8')), { mcpServers: {} });
+});
+
+test('stage MCP servers: true in the user settings file keeps them, a wrong value starts no session', async (t) => {
+  const on = cfgEnv(userSettings(t, '{"stageMcpServers":true}'));
+  const dir = makeRepo(t, { plan: BIG, fake: COMPACTING });
+  const { result, calls } = await run(dir, ['do', 'demo'], { env: on });
+  assert.equal(result.status, 'DONE');
+  assert.equal(calls.length, 2);
+  for (const c of calls) assert.ok(!c.includes('--strict-mcp-config') && !c.includes('--mcp-config'), JSON.stringify(c));
+  assert.ok(!existsSync(mcpFile(dir)));
+  const off = makeRepo(t, { fake: PLANNED });
+  const r = await run(off, ['plan', 'demo'], { env: cfgEnv(userSettings(t, '{"stageMcpServers":false}')) });
+  assert.ok(noMcp(r.calls[0]));
+  const bad = makeRepo(t, { fake: PLANNED });
+  const r2 = await run(bad, ['plan', 'demo'], { env: cfgEnv(userSettings(t, '{"stageMcpServers":"yes"}')) });
+  assert.equal(r2.result.status, 'failed');
+  assert.match(r2.result.reason, /^the user settings cannot be used \(fix or remove the file\): .*stageMcpServers/);
+  assert.deepEqual(r2.calls, []);
 });
 
 test('memory wait: short of memory while another session of this PC runs, a stage waits, notes it once and ends WAIT', async (t) => {

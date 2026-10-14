@@ -55,6 +55,11 @@ export function settingsTemplate() {
       `null is the default: ${DEFAULT_MIN_FREE_MEMORY_MB} on Windows, off on macOS and Linux.`,
       '0 turns the wait off; a number applies on every OS, for example 6144.',
     ],
+    _stageMcpServers: [
+      'Not set (the default), null or false: am:auto stage sessions start no MCP server.',
+      'Add "stageMcpServers": true to give them the same MCP servers as your own sessions.',
+      "The orchestrator's own sessions are not affected.",
+    ],
   };
   return `${JSON.stringify(data, null, 2)}\n`;
 }

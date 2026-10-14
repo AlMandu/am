@@ -849,13 +849,13 @@ export function readUserModels(file) {
 // PC 단위 사용자 설정 파일 읽기. am 의 plugin/scripts/user-settings.mjs 와 경로·검사·오류 문구가 같은 사본이다(플러그인끼리 import 하지 않음).
 export const userSettingsFile = (env) => path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'am', 'settings.json');
 
-/** 메모(`_` 키)를 뺀 { minFreeMemoryMB }. 파일이나 키가 없으면 null, 첫 문제에서 { error } (없는 파일 말고는 읽기 오류도 문제). */
+/** 메모(`_` 키)를 뺀 { minFreeMemoryMB, stageMcpServers }. 파일이나 키가 없으면 null, 첫 문제에서 { error } (없는 파일 말고는 읽기 오류도 문제). */
 export function readUserSettings(file) {
   let text;
   try {
     text = readFileSync(file, 'utf8');
   } catch (err) {
-    if (err && err.code === 'ENOENT') return { minFreeMemoryMB: null };
+    if (err && err.code === 'ENOENT') return { minFreeMemoryMB: null, stageMcpServers: null };
     return { error: `${file}: cannot read the file (${oneLine(err && err.message)})` };
   }
   let data;
@@ -866,12 +866,16 @@ export function readUserSettings(file) {
   }
   const problem = (what) => ({ error: `${file}: ${what}` });
   const isNote = (k) => k.startsWith('_');
+  const KEYS = ['minFreeMemoryMB', 'stageMcpServers'];
   if (!isObj(data)) return problem('the top level must be a JSON object');
-  for (const k of Object.keys(data)) if (k !== 'minFreeMemoryMB' && !isNote(k)) return problem(`unknown key "${k}" (use "minFreeMemoryMB")`);
+  for (const k of Object.keys(data)) if (!KEYS.includes(k) && !isNote(k)) return problem(`unknown key "${k}" (use "minFreeMemoryMB" or "stageMcpServers")`);
   const v = data.minFreeMemoryMB;
-  if (v === undefined || v === null) return { minFreeMemoryMB: null };
-  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return { minFreeMemoryMB: v };
-  return problem(`minFreeMemoryMB must be null or a finite number of 0 or more (got ${JSON.stringify(v)})`);
+  if (v !== undefined && v !== null && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+    return problem(`minFreeMemoryMB must be null or a finite number of 0 or more (got ${JSON.stringify(v)})`);
+  }
+  const m = data.stageMcpServers;
+  if (m !== undefined && m !== null && typeof m !== 'boolean') return problem(`stageMcpServers must be null, true or false (got ${JSON.stringify(m)})`);
+  return { minFreeMemoryMB: v ?? null, stageMcpServers: m ?? null };
 }
 
 function loadConfig(repo) {

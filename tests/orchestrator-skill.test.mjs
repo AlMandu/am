@@ -575,6 +575,12 @@ test('the am user settings module and the orchestrator copy read the same files 
     ['infinite', '{"minFreeMemoryMB":1e400}', true],
     ['key case', '{"minFreeMemoryMb":6144}', true],
     ['models key', '{"model":{}}', true],
+    ['mcp on', '{"stageMcpServers":true}', false],
+    ['mcp off', '{"stageMcpServers":false}', false],
+    ['mcp null', '{"stageMcpServers":null}', false],
+    ['both keys', '{"_stageMcpServers":["x"],"minFreeMemoryMB":0,"stageMcpServers":true}', false],
+    ['mcp string', '{"stageMcpServers":"yes"}', true],
+    ['mcp number', '{"stageMcpServers":1}', true],
   ];
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-user-settings-'));
   try {

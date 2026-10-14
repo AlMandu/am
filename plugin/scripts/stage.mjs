@@ -32,7 +32,9 @@
 // When any session ends (close, also after its timeout), what it left behind is stopped with proc-tree.mjs within CLEANUP_MS
 // (a hand-over's orchestrator worker is stopped first and left out with its descendants); only when something was stopped,
 // a note and a line in the worker's log say so, and a failed cleanup never changes the result. Every session starts with
-// DISABLE_AUTOUPDATER=1.
+// DISABLE_AUTOUPDATER=1. Unless the user settings file's stageMcpServers is true, every session also starts with --strict-mcp-config
+// and an empty MCP config file, .am/<slug>/stage-mcp.json, rewritten right before each session (passed as a path: cmd.exe
+// cannot pass `"`), so it starts no MCP server.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
@@ -819,16 +821,27 @@ export const inlineSkill = (text, args, amRoot) => String(text).replace(FRONTMAT
 /** The prompt of an inline stage call, as the orchestrator words it. */
 export const inlinePrompt = (slug, kind, name) => `Follow the instructions in .am/${slug}/skill-${kind}.md exactly. They are the ${name} skill, invoked by the user with the arguments already filled in.`;
 
-/** The claude arguments of one session. No --model or --effort for a slash call: it carries the skill's own. `model` for the compaction session and an inline stage call. */
-export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null }) {
+/** The claude arguments of one session. No --model or --effort for a slash call: it carries the skill's own. `model` for the compaction session and an inline stage call.
+ * `mcpConfig`, a path, adds --strict-mcp-config --mcp-config <path>; --mcp-config is variadic: always followed by another option. */
+export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null, mcpConfig = '' }) {
   const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', perm.mode];
   if (model) args.push('--model', model.model, '--effort', model.effort);
   if (perm.allow.length) args.push('--allowedTools', perm.allow.join(','));
   if (perm.deny.length) args.push('--disallowedTools', perm.deny.join(','));
   if (pluginDir) args.push('--plugin-dir', pluginDir);
+  if (mcpConfig) args.push('--strict-mcp-config', '--mcp-config', mcpConfig);
   if (resume) args.push('--resume', resume);
   else args.push('--append-system-prompt-file', systemFile);
   return args;
+}
+
+/** The MCP config file of a task's sessions, under .am/<slug>/, and its text: no server. */
+export const STAGE_MCP_FILE = 'stage-mcp.json';
+export const EMPTY_MCP_CONFIG = '{"mcpServers":{}}\n';
+
+/** Writes the empty MCP config at `rel` (relative to cwd) right before a session; nothing when `rel` is empty. */
+function writeMcpConfig(cwd, rel) {
+  if (rel) writeFileSync(path.join(cwd, rel), EMPTY_MCP_CONFIG);
 }
 
 /**
@@ -940,7 +953,7 @@ function originalName(slug, name, taken) {
  * is put back as well. The session runs on `model` ({model, effort}); `modelNote`, when set, is noted as it starts. Returns {compacted, costUsd, cleaned}; `compacted` is
  * null (nothing to do), {files, before, after, originals}, or {files, failed}.
  */
-async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', note = () => {}, track = createTracker } = {}) {
+async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', mcpConfig = '', note = () => {}, track = createTracker } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
   // An earlier compaction of this task that never finished: its files go back before anything is measured.
@@ -981,7 +994,8 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   compacting.add(undo);
   let r;
   try {
-    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000, track });
+    writeMcpConfig(cwd, mcpConfig);
+    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000, track });
   } finally {
     compacting.delete(undo);
   }
@@ -1187,10 +1201,11 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     if (picked.model !== builtin.model || picked.effort !== builtin.effort) stageModel = picked;
   }
   const [bin, ...pre] = claude;
+  const mcpConfig = settings.stageMcpServers === true ? '' : `.am/${slug}/${STAGE_MCP_FILE}`;
   // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
   const compactModel = resolveUser(user, 'compact', COMPACT_MODEL);
   const modelNote = compactModel.model !== COMPACT_MODEL.model || compactModel.effort !== COMPACT_MODEL.effort ? `model ${compactModel.model}, effort ${compactModel.effort} from the user's setting ${userFile}` : '';
-  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, model: compactModel, modelNote, note: (text) => event({ ev: 'note', text }), track });
+  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, model: compactModel, modelNote, mcpConfig, note: (text) => event({ ev: 'note', text }), track });
   report('compact', compaction.cleaned);
   result.compacted = compaction.compacted;
   const c = compaction.compacted;
@@ -1227,6 +1242,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       const p = stopRun();
       return p ? [p] : [];
     } : null;
+    writeMcpConfig(cwd, mcpConfig);
     const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env, process.pid), timeoutMs, track, beforeCleanup });
     report(kind, r.cleaned);
     const parsed = parseResult(r.stdout);
@@ -1261,7 +1277,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     };
   }
   if (stageModel) event({ ev: 'note', text: `model ${stageModel.model}, effort ${stageModel.effort} from the user's setting ${userFile}` });
-  const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir, model: stageModel }));
+  const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir, model: stageModel, mcpConfig }));
   if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
   const problem = (x) => {
     if (x.r.timedOut) return `no end within ${limits[kind]} minutes; the session was stopped`;
@@ -1280,7 +1296,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     : !why && !mark ? `Reply with exactly one line and nothing else: ${marks}` : null;
   if (ask && result.sessionId) {
     event({ ev: 'note', text: unsaved ? 'asking the session again to save plan.md' : 'asking the session again for its end line' });
-    const again = await call(claudeArgs(perm, { prompt: ask, resume: result.sessionId, pluginDir, model: stageModel }));
+    const again = await call(claudeArgs(perm, { prompt: ask, resume: result.sessionId, pluginDir, model: stageModel, mcpConfig }));
     why = problem(again);
     mark = why ? null : lastMark(again.parsed.result, MARKS[kind]);
   }
