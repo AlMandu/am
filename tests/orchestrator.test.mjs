@@ -155,6 +155,15 @@ test('claudeArgs: 단계별 권한과 이어 가기', () => {
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git restore \*\)/, '커밋 세션은 빌드 산출물을 되돌릴 수 있다');
   assert.match(commit[commit.indexOf('--allowedTools') + 1], /Bash\(git commit \*\)/);
   assert.match(commit[commit.indexOf('--disallowedTools') + 1], /Bash\(git push \*\)/);
+  // 커밋 세션은 그 작업의 인계 문서 하나만 고칠 수 있다
+  const handoff = ['Edit(/.am/t01-a/handoff.md)', 'Edit(.am/t01-a/handoff.md)'];
+  const edits = (a) => (a.includes('--allowedTools') ? a[a.indexOf('--allowedTools') + 1].split(',').filter((r) => r.startsWith('Edit(')) : []);
+  assert.deepEqual(edits(claudeArgs(cfg, 'commit', { prompt: 'x', slug: 't01-a' })), handoff, '커밋 세션의 Edit 규칙은 그 작업의 handoff.md 둘뿐');
+  assert.deepEqual(edits(claudeArgs(cfg, 'commit', { prompt: 'x', resume: 'sid', slug: 't01-a' })), handoff, '이어 가는 커밋 세션에도 남는다');
+  assert.deepEqual(edits(commit), [], 'slug 가 없으면 더하지 않는다');
+  for (const stage of ['implement', 'plan']) assert.ok(!edits(claudeArgs(cfg, stage, { prompt: 'x', slug: 't01-a' })).some((r) => r.includes('handoff.md')), `${stage} 에는 handoff 규칙을 더하지 않는다`);
+  const own = merge(defaults(), { permissions: { commit: { allow: ['Bash(git commit *)'] } } });
+  assert.deepEqual(edits(claudeArgs(own, 'commit', { prompt: 'x', slug: 't01-a' })), handoff, '설정이 commit 권한을 바꿔도 남는다');
   for (const stage of ['implement', 'check', 'fix', 'commit']) {
     const a = claudeArgs(cfg, stage, { prompt: 'x' });
     const no = a[a.indexOf('--disallowedTools') + 1].split(',');

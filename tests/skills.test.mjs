@@ -72,10 +72,14 @@ test('am:merge moves the commits am:commit records and never pushes', () => {
   assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
 });
 
-test('the workflow skills keep a handoff document and mark the current task, outside am-orchestrator', () => {
+test('the workflow skills keep a handoff document, also in am-orchestrator, and mark the current task outside it', () => {
   // One sentence, word for word in each skill that rewrites the whole document.
-  const handoff = 'Handoff: unless your instructions say you are running inside am-orchestrator, rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.';
-  for (const name of ['plan', 'do', 'check', 'commit']) assert.ok(read(name).includes(handoff), name);
+  const handoff = 'Handoff: rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.';
+  for (const name of ['plan', 'do', 'check', 'commit']) {
+    assert.ok(read(name).includes(handoff), name);
+    // Sessions am-orchestrator started keep the document too.
+    assert.ok(!read(name).includes('Handoff: unless'), name);
+  }
   // The merge skill only touches its status and next action, and only when it exists.
   assert.match(read('merge'), /If `\.am\/<slug>\/handoff\.md` exists, change only its status and next action/i, 'merge');
   // The mark is written by plan and do, and only listed first as current, never followed on its own.

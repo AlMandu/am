@@ -46,7 +46,7 @@ Plan: $ARGUMENTS
    - Run the step's Check. If it fails, fix it within the step and run it again; if you cannot, stop and report what failed.
    - When the Check passes, mark the step done: append `(done)`, written in the plan's language, to the step's first line.
    - Log anything done differently from the plan under Change log, one line each: what and why.
-   - After marking a step done, and whenever you stop before the end: Handoff: unless your instructions say you are running inside am-orchestrator, rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.
+   - After marking a step done, and whenever you stop before the end: Handoff: rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.
    - If the plan turns out wrong in a way that changes what the user sees or the scope, stop and ask. Otherwise make the smallest fix and log it.
    - Choices the plan settled stand unless the rules above reopen them. A new or reopened technical choice goes through the second opinion (rules above); record it under "Defaults applied" in plan.md.
 5. Do not commit or push; that is the am:commit skill's job.

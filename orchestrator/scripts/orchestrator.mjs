@@ -1094,7 +1094,7 @@ export function codexOpinionRules(amRoot) {
   return WIN ? rules.flatMap((r) => [r, r.replace(/^Bash/, 'PowerShell')]) : rules;
 }
 
-export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json', amRoot = '' }) {
+export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json', amRoot = '', slug = '' }) {
   const profile = PROFILE[phase] || phase;
   const perm = cfg.permissions[profile];
   const args = ['-p', prompt, '--output-format', format];
@@ -1102,7 +1102,9 @@ export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'j
   args.push('--permission-mode', perm.mode);
   // amRoot 는 am 폴더 하나 또는 여러 개(am 이 여러 곳에 켜져 있을 때)
   const opinions = profile === 'plan' ? [...new Set([amRoot].flat().flatMap(codexOpinionRules))] : [];
-  const allow = [...(perm.allow || []), ...opinions];
+  // 커밋 세션은 그 작업의 인계 문서 하나만 고칠 수 있다(설정이 commit 권한을 바꿔도 남는다)
+  const handoff = profile === 'commit' && slug ? [`Edit(/${AM_DIR}/${slug}/handoff.md)`, `Edit(${AM_DIR}/${slug}/handoff.md)`] : [];
+  const allow = [...(perm.allow || []), ...opinions, ...handoff];
   if (allow.length) args.push('--allowedTools', allow.join(','));
   if (perm.deny?.length) args.push('--disallowedTools', perm.deny.join(','));
   // extraArgs 에 같은 플래그가 있으면 그쪽이 정한다(두 번 넘기지 않는다).
@@ -1117,7 +1119,7 @@ export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'j
 }
 
 /** claude 를 한 번 부른다. 프롬프트·시스템 지시·원본 출력을 dir 에 번호 붙여 남긴다. */
-async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
+async function runClaude(ctx, phase, { dir, prompt, system, resume, slug }) {
   mkdirSync(dir, { recursive: true });
   const seq = String(readdirSync(dir).filter((f) => /^\d\d-.*\.out\.json$/.test(f)).length + 1).padStart(2, '0');
   const base = path.join(dir, `${seq}-${phase}`);
@@ -1144,7 +1146,7 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   const started = Date.now();
   let r;
   try {
-    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, track: createTracker });
+    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot, slug })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, track: createTracker });
   } finally {
     release();
   }
@@ -1183,7 +1185,7 @@ async function step(ctx, name, opts, marker, values) {
   let mark = lastMarker(r.text, marker, values);
   if (!mark && r.sessionId) {
     const ask = `Reply with exactly one line and nothing else: ${values.map((v) => `${marker}: ${v}`).join(' or ')}`;
-    const again = await runClaude(ctx, name, { dir: opts.dir, prompt: ask, resume: r.sessionId });
+    const again = await runClaude(ctx, name, { dir: opts.dir, prompt: ask, resume: r.sessionId, slug: opts.slug });
     mark = lastMarker(again.text, marker, values);
   }
   return { ...r, mark };
@@ -1370,7 +1372,7 @@ This is task ${t.id} of a larger design. Its slug is ${t.slug}; use exactly this
 - Do not implement in this session. Do not create or change any file outside ${AM_DIR}/${t.slug}/.
 - What this session can do: read anything in the repository; create or change files only under ${AM_DIR}/${t.slug}/ and only with the Write or Edit tool (the folder already exists, do not create it); run only read-only git commands (status, diff, log, ls-files, check-ignore, rev-parse) and the Codex second-opinion command of the skill's rules, with its brief saved as ${AM_DIR}/${t.slug}/opinion-<round>.md (never over brief.md). The permission rules refuse everything else, including writing files through Bash. A refusal is never a reason to leave the plan unsaved: save it with the Write tool at ${AM_DIR}/${t.slug}/plan.md.
 - Work from the repository root and do not cd into subdirectories: a command that combines cd with git is refused. To look around, use the Read, Grep and Glob tools rather than shell pipelines: read hook scripts (for example .githooks/pre-commit) and tool sources with the Read tool. Running project tools (node, make and the like) is refused in this session; that Codex second-opinion command is the only exception.${unquoted ? `\n${UNQUOTED_NOTE}` : ''}
-- Commit rules: this task is committed on its own, the commit runs the repository's commit hooks, and the session that commits cannot edit files. Find out what the hooks and the project's rules (CLAUDE.md, AGENTS.md, contract documents such as a MODULE.md next to the code) require together with a code change, for example a contract or history line, a changelog entry, or line references that move, and make each of those a step of the plan with its own check, even when the brief's file list does not mention the file.
+- Commit rules: this task is committed on its own, the commit runs the repository's commit hooks, and the session that commits cannot edit the repository's files. Find out what the hooks and the project's rules (CLAUDE.md, AGENTS.md, contract documents such as a MODULE.md next to the code) require together with a code change, for example a contract or history line, a changelog entry, or line references that move, and make each of those a step of the plan with its own check, even when the brief's file list does not mention the file.
 - Decisions: the answers under "Decisions already made" in the brief are final. For any other question about what the user sees or what is in scope, take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says (through its second opinion where it has one), with at most 1 more round after the reviewers' first answers in this session because the session has a time limit; never wait for the user on them, except a choice its two reviewers still split on after that round. Leave a decision open only when the plan cannot avoid one of the following and neither the brief nor the design document settles it: deleting user data or files that existed before this run, changing a saved-data format or migrating data, changing anything outside this repository, an action that the user's or the project's instructions say needs confirmation, or a technical choice its two reviewers still split on. For an open decision write the decision card in plan.md under Decisions, marked OPEN, and repeat the card in your final reply.
 - Too big: if a faithful plan needs more than ${ctx.cfg.taskLimits.maxPlanLines} lines, or clearly more than ${ctx.cfg.taskLimits.maxFiles} files, do not write plan.md. Write ${AM_DIR}/${t.slug}/split.json instead, with 2-5 items that can each be verified on their own while the repository keeps building after each one, text in the language of the brief:
   { "reason": "", "tasks": [ { "key": "kebab-case", "title": "", "goal": "", "files": [""], "acceptance": [""], "dependsOn": ["key of an earlier item"], "size": "S | M", "risk": [] } ] }
@@ -1410,6 +1412,7 @@ This is task ${t.id}, slug ${t.slug}. The orchestrator asks for this commit on t
 - The commit gate runs the build while you commit, and the build may rewrite tracked files. A file that becomes modified only after your first git commit is the gate's doing: leave it alone, the orchestrator restores it.
 - Command shape: the permission rules of this session allow only plain "git add ...", "git commit ..." and "git restore -- ..." commands, plus read-only git commands (status, diff, log). Run each one as its own command from the repository root. No "git -C", no cd, no pipes, no "&&" or ";" chains, no output filters such as head or tail, no heredoc and no command substitution. For a message with several paragraphs use several -m flags.
 - A command refused by the permission rules is a problem with the shape of the command, not with the gate: run it again in the plain form above.
+- After the last commit, update ${AM_DIR}/${t.slug}/handoff.md as the skill says, with the Write or Edit tool; it is the only file this session can write.
 - Never push. If a hook rejects the commit (the am commit gate, or a pre-commit check of this repository), do not bypass it, do not use --no-verify and do not retry another way. Copy what the hook printed into your final reply, word for word: the orchestrator hands it to the implementing session to fix.
 - End your final reply with exactly one line: ORCH_STATUS: COMMITTED, ORCH_STATUS: BLOCKED or ORCH_STATUS: NOTHING`,
 };
@@ -2154,14 +2157,14 @@ async function runTask(ctx, t) {
       }
       const marks = ['COMMITTED', 'BLOCKED', 'NOTHING'];
       const snap = snapshot(repo); // 커밋 직전의 작업 트리
-      let r = noteDenied('commit', await step(ctx, 'commit', { dir, system: SYSTEM.commit(ctx, t), prompt: skillPrompt(ctx, 'commit', `task ${t.id} ${t.slug}`, dir) }, 'ORCH_STATUS', marks));
+      let r = noteDenied('commit', await step(ctx, 'commit', { dir, system: SYSTEM.commit(ctx, t), prompt: skillPrompt(ctx, 'commit', `task ${t.id} ${t.slug}`, dir), slug: t.slug }, 'ORCH_STATUS', marks));
       s.sessions.commit = r.sessionId;
       let made = commitsSince(repo, s.commitBase);
       let deniedLast = r.denials;
       if (!made.length && r.denials && r.sessionId) {
         // 게이트가 아니라 권한 규칙에 걸려 커밋을 못 한 경우: 명령 모양을 알려 주고 같은 세션에서 한 번만 다시 시킨다
         log(ctx, '    커밋 명령이 권한 규칙에 걸림: 단순한 명령으로 다시 요청');
-        r = noteDenied('commit(재시도)', await step(ctx, 'commit', { dir, prompt: COMMIT_RETRY, resume: r.sessionId }, 'ORCH_STATUS', marks));
+        r = noteDenied('commit(재시도)', await step(ctx, 'commit', { dir, prompt: COMMIT_RETRY, resume: r.sessionId, slug: t.slug }, 'ORCH_STATUS', marks));
         made = commitsSince(repo, s.commitBase);
         deniedLast = r.denials;
       }
@@ -3685,7 +3688,7 @@ function dryRun(ctx) {
   for (const t of rest) say(`  ${t.id}  ${t.title}  → 지금은 못 함: ${openDecisions(ctx.plan, t).map((d) => `결정 ${d.id}`).join(', ') || STATUS_KO[ctx.state.tasks[t.id].status] || '의존 작업 대기'}`);
   const t = order[0];
   if (!t) return;
-  const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>`, amRoot: ctx.pluginRoot })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
+  const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>`, amRoot: ctx.pluginRoot, slug: t.slug })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
   say(`\n첫 작업 ${t.id} 에서 실행할 명령 (inline 방식이면 프롬프트가 SKILL.md 를 채운 파일을 가리킵니다)`);
   show('plan', `/am:plan Plan task ${t.id} described in ${AM_DIR}/${t.slug}/brief.md (slug ${t.slug})`);
   show('implement', `/am:do ${t.slug}`);
