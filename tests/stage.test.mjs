@@ -209,6 +209,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
 test('doKind: hand over a large new plan only when the run skill is installed', () => {
   const orch = () => '/orch';
   assert.deepEqual(doKind(SMALL, { orchestrator: orch }), { kind: 'do' });
+  assert.deepEqual(doKind(SMALL.replace('1 commits', '3 commits'), { orchestrator: orch }), { kind: 'do' }); // the commit count plays no part
   assert.deepEqual(doKind(LARGE, { orchestrator: () => null }), { kind: 'do' });
   assert.deepEqual(doKind(LARGE, { orchestrator: orch }), { kind: 'handover', resume: false, orchRoot: '/orch' });
   assert.deepEqual(doKind(LARGE.replace('1. a.', '1. a. (완료)'), { orchestrator: orch }), { kind: 'do' });

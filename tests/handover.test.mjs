@@ -138,9 +138,9 @@ test('handedRun gives the run ID of the last fixed hand-over line in the Change 
   assert.equal(handedRun(`# t\n## Change log\n${STOP_LINE}`), null);
 });
 
-test('withinOneRun is true only for at most 1 implementation run and 1 commit', () => {
-  for (const scale of [[1, 1], [0, 1], [1, 0]]) assert.ok(withinOneRun(scale), String(scale));
-  for (const scale of [[2, 1], [1, 2], null]) assert.ok(!withinOneRun(scale), String(scale));
+test('withinOneRun is true only for at most 1 implementation run, whatever the commits', () => {
+  for (const scale of [[1, 1], [0, 1], [1, 0], [1, 2], [1, 5]]) assert.ok(withinOneRun(scale), String(scale));
+  for (const scale of [[2, 1], [2, 0], null]) assert.ok(!withinOneRun(scale), String(scale));
   assert.ok(withinOneRun(readPlan(SMALL).scale));
   assert.ok(!withinOneRun(readPlan(LARGE).scale));
 });
@@ -156,6 +156,14 @@ test('denies an edit while this session\'s large plan is neither handed over nor
   assert.ok(hook(env, 'Write', path.join(env.repo, 'b.txt')));
   assert.ok(hook(env, 'MultiEdit', path.join(env.repo, 'c.txt')));
   assert.ok(existsSync(path.join(env.stateDir, 's1.json')));
+});
+
+test('lets an edit through for a plan of 1 implementation run and several commits', () => {
+  const env = setup();
+  const p = path.join(env.repo, '.am', 'many', 'plan.md');
+  assert.equal(hook(env, 'Write', p), null); // creating the plan binds it
+  plan(env.repo, 'many', SMALL.replace('1 commit', '3 commits'));
+  assert.equal(hook(env, 'Edit', path.join(env.repo, 'src', 'a.js'), { installed: true }), null);
 });
 
 test('lets through what a hand-over writes, reads, other tools and files outside a repository', () => {
