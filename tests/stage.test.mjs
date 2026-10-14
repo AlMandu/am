@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -20,7 +20,7 @@ import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostNam
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
 
-// A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl) and answers as fake.json in the working folder says.
+// A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end),
 //   "delay": ms (every call answers after that long) }
@@ -30,6 +30,7 @@ const argv = process.argv.slice(2);
 appendFileSync('calls.jsonl', JSON.stringify(argv) + '\\n');
 appendFileSync('env.jsonl', JSON.stringify(process.env.FORCE_PROMPT_CACHING_5M ?? null) + '\\n');
 appendFileSync('owner.jsonl', JSON.stringify(process.env.AM_HANDOVER_OWNER ?? null) + '\\n');
+appendFileSync('autoupdate.jsonl', JSON.stringify(process.env.DISABLE_AUTOUPDATER ?? null) + '\\n');
 const s = existsSync('fake.json') ? JSON.parse(readFileSync('fake.json', 'utf8')) : {};
 const n = readFileSync('calls.jsonl', 'utf8').trim().split('\\n').length;
 if (s.delay) await new Promise((r) => setTimeout(r, s.delay));
@@ -62,10 +63,32 @@ const NO_USER_CFG = mkdtempSync(path.join(os.tmpdir(), 'am-stage-nocfg-'));
 after(() => rmSync(NO_USER_CFG, { recursive: true, force: true }));
 const isolatedEnv = { ...process.env, CLAUDE_CONFIG_DIR: NO_USER_CFG };
 
+// A process tracker that stops nothing, so no test session lists the processes of this PC (slow on Windows); the cleanup
+// tests pass their own.
+const NO_TRACK = () => ({ start() {}, finish: async () => ({ count: 0, workingSetMB: 0 }) });
+/** A fake tracker factory: each tracker made, start and finish (with its exclude) goes into `order`, shared with the caller. */
+function fakeTracker(cleaned = { count: 0, workingSetMB: 0 }, { order = [], finish = null } = {}) {
+  const made = [];
+  const track = (args) => {
+    made.push(args);
+    order.push(['track', args.pid]);
+    return {
+      start() {
+        order.push(['start', args.pid]);
+      },
+      finish(o) {
+        order.push(['finish', o.exclude]);
+        return finish ? finish(o) : Promise.resolve(cleaned);
+      },
+    };
+  };
+  return { track, made, order };
+}
+
 async function run(dir, argv, opts = {}) {
   let text = '';
   const out = { write: (s) => (text += s) };
-  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, am: () => [], out, freeMem: () => 2 ** 50, ...opts });
+  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, am: () => [], out, freeMem: () => 2 ** 50, track: NO_TRACK, ...opts });
   const calls = existsSync(path.join(dir, 'calls.jsonl')) ? readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
@@ -80,6 +103,7 @@ function cleanEnv(t) {
 }
 const cacheEnv = (dir) => readFileSync(path.join(dir, 'env.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const ownerEnv = (dir) => readFileSync(path.join(dir, 'owner.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const autoUpdateEnv = (dir) => readFileSync(path.join(dir, 'autoupdate.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const SMALL = '# p\n## Summary\n- Scale: 1 implementation runs, 1 commits\n## Steps\n1. a. Check: x\n';
 const LARGE = '# p\n## Summary\n- 규모: 구현 2회, 커밋 2개\n## Steps\n1. a. Check: x\n';
 
@@ -518,13 +542,15 @@ test('do, commit and the compaction session write the cache for 5 minutes; plan,
     const dir = makeRepo(t, { plan: planText, fake });
     await run(dir, argv, { env: cleanEnv(t), ...opts });
     assert.deepEqual(cacheEnv(dir), want, `${argv[0]} ${planText === LARGE ? 'hand-over' : ''}`);
+    // No session checks for a Claude Code update.
+    assert.deepEqual(autoUpdateEnv(dir), want.map(() => '1'), `${argv[0]}: DISABLE_AUTOUPDATER`);
   }
 });
 
 test('sessionEnv: a hand-over gets the owner pid; every other kind loses an inherited one and keeps its cache setting', () => {
   assert.equal(HANDOVER_OWNER, 'AM_HANDOVER_OWNER');
-  assert.deepEqual(sessionEnv('handover', { A: '1' }, 4321), { A: '1', AM_HANDOVER_OWNER: '4321' });
-  assert.deepEqual(sessionEnv('handover', { AM_HANDOVER_OWNER: '999' }, 7), { AM_HANDOVER_OWNER: '7' });
+  assert.deepEqual(sessionEnv('handover', { A: '1' }, 4321), { A: '1', DISABLE_AUTOUPDATER: '1', AM_HANDOVER_OWNER: '4321' });
+  assert.deepEqual(sessionEnv('handover', { AM_HANDOVER_OWNER: '999' }, 7), { DISABLE_AUTOUPDATER: '1', AM_HANDOVER_OWNER: '7' });
   // A small env of the test's own: inside a real hand-over isolatedEnv would carry the variable.
   for (const kind of ['plan', 'do', 'check', 'commit', 'compact']) {
     const env = { A: '1', AM_HANDOVER_OWNER: '999' };
@@ -532,10 +558,20 @@ test('sessionEnv: a hand-over gets the owner pid; every other kind loses an inhe
     assert.ok(!(HANDOVER_OWNER in got), kind);
     assert.equal(got.A, '1', kind);
     assert.equal(got.FORCE_PROMPT_CACHING_5M, CACHE_5M_KINDS.includes(kind) ? '1' : undefined, kind);
+    assert.equal(got.DISABLE_AUTOUPDATER, '1', kind);
     assert.equal(env.AM_HANDOVER_OWNER, '999', `${kind}: the given env is not changed`);
   }
+  // Every kind gets a new object with DISABLE_AUTOUPDATER; the given env stays as it was.
   const plain = { A: '1' };
-  for (const kind of ['plan', 'check']) assert.equal(sessionEnv(kind, plain, 7), plain, kind);
+  for (const kind of ['plan', 'check']) {
+    const got = sessionEnv(kind, plain, 7);
+    assert.notEqual(got, plain, kind);
+    assert.deepEqual(got, { A: '1', DISABLE_AUTOUPDATER: '1' }, kind);
+  }
+  assert.deepEqual(plain, { A: '1' });
+  const given = { A: '1' };
+  sessionEnv('handover', given, 7);
+  assert.deepEqual(given, { A: '1' });
 });
 
 test('only the hand-over session gets AM_HANDOVER_OWNER (this process), even when the caller had one', async (t) => {
@@ -2284,6 +2320,7 @@ function startWorker(dir, argv, opts = {}) {
     orchestrator: () => null,
     am: () => [],
     freeMem: () => 2 ** 50,
+    track: NO_TRACK,
     out: { write: (s) => (w.text += s) },
     on: (sig, f) => (w.handlers[sig] = f),
     exit: (code) => w.exits.push({ code, at: Date.now(), state: workerState(dir) }),
@@ -3063,7 +3100,8 @@ test('hand-over end: a session time-out stops the worker it started', async (t) 
 test('hand-over end: a stop signal stops the worker it started', async (t) => {
   const k = killer();
   const dir = makeRepo(t, { plan: LARGE, fake: { hang: [1] } });
-  const running = run(dir, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: k.kill });
+  const f = fakeTracker();
+  const running = run(dir, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: k.kill, track: f.track });
   let code = null;
   try {
     await until(() => existsSync(path.join(dir, 'calls.jsonl')));
@@ -3074,6 +3112,8 @@ test('hand-over end: a stop signal stops the worker it started', async (t) => {
   }
   assert.equal(code, 1);
   assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+  // The cleanup after the stopped session still leaves the worker out.
+  assert.deepEqual(f.order.filter(([what]) => what === 'finish'), [['finish', [P]]]);
   assert.equal(ends(events(dir)).length, 1);
 });
 
@@ -3115,6 +3155,160 @@ test('hand-over end: a pushed-out stage worker stops the orchestrator worker too
   assert.deepEqual(ends(state.events), []);
   // The fake exit does not stop the process, so main's later end runs finish once more; the real process.exit stops first,
   // so nothing after the exit is checked.
+});
+
+// ------------------------------------------------------------------ cleanup after a session ends
+
+const tmpDir = (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-stage-clean-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  return dir;
+};
+const NODE = (code, dir, opts = {}) => exec(process.execPath, ['-e', code], { cwd: dir, env: process.env, timeoutMs: 10000, ...opts });
+
+test('cleanedNote: a note only when something was stopped', () => {
+  assert.equal(CLEANUP_MS, 60000);
+  assert.equal(cleanedNote('do', { count: 2, workingSetMB: 37 }), 'cleaned up 2 processes left by the do session (working set about 37 MB)');
+  for (const c of [{ count: 0, workingSetMB: 0 }, { count: -1, workingSetMB: 3 }, { count: 1.5, workingSetMB: 3 }, { count: '2', workingSetMB: 3 }, {}, undefined]) assert.equal(cleanedNote('do', c), null, JSON.stringify(c));
+});
+
+test('exec: a tracker of the child, made before the output is read, stops what it left once it closed', async (t) => {
+  const dir = tmpDir(t);
+  const f = fakeTracker({ count: 2, workingSetMB: 37 });
+  const before = Date.now();
+  const r = await NODE('console.log(process.pid)', dir, { track: f.track });
+  assert.equal(r.code, 0);
+  const pid = Number(r.stdout.trim());
+  assert.equal(f.made.length, 1);
+  assert.equal(f.made[0].pid, pid);
+  assert.ok(f.made[0].startedAt >= before && f.made[0].startedAt <= Date.now());
+  assert.deepEqual(f.order, [['track', pid], ['start', pid], ['finish', []]]);
+  assert.deepEqual(r.cleaned, { count: 2, workingSetMB: 37 });
+});
+
+test('exec: beforeCleanup runs before the cleanup and its integer pids are left out; a throwing one leaves nothing out', async (t) => {
+  const dir = tmpDir(t);
+  const f = fakeTracker();
+  const r = await NODE('', dir, { track: f.track, beforeCleanup: () => {
+    f.order.push(['before']);
+    return [P, 'x', 1.5, null];
+  } });
+  assert.deepEqual(f.order.slice(2), [['before'], ['finish', [P]]]);
+  assert.deepEqual(r.cleaned, { count: 0, workingSetMB: 0 });
+  const g = fakeTracker();
+  await NODE('', dir, { track: g.track, beforeCleanup: () => { throw new Error('boom'); } });
+  assert.deepEqual(g.order.at(-1), ['finish', []]);
+  const h = fakeTracker();
+  await NODE('', dir, { track: h.track, beforeCleanup: () => P });
+  assert.deepEqual(h.order.at(-1), ['finish', []]);
+});
+
+test('exec: a cleanup past cleanupMs, a failing tracker or a failed start give zero and leave the rest of the result', async (t) => {
+  const dir = tmpDir(t);
+  const never = fakeTracker({ count: 5, workingSetMB: 9 }, { finish: () => new Promise(() => {}) });
+  const began = Date.now();
+  const late = await NODE('process.stdout.write("out")', dir, { track: never.track, cleanupMs: 50 });
+  assert.ok(Date.now() - began < 5000);
+  assert.deepEqual({ ...late, stderr: '' }, { stdout: 'out', stderr: '', timedOut: false, spawnError: null, code: 0, cleaned: { count: 0, workingSetMB: 0 } });
+  const rejects = fakeTracker({}, { finish: () => Promise.reject(new Error('boom')) });
+  assert.deepEqual((await NODE('', dir, { track: rejects.track })).cleaned, { count: 0, workingSetMB: 0 });
+  const odd = fakeTracker({ count: 'many' });
+  assert.deepEqual((await NODE('', dir, { track: odd.track })).cleaned, { count: 0, workingSetMB: 0 });
+  const thrown = await NODE('process.stdout.write("out")', dir, { track: () => { throw new Error('boom'); } });
+  assert.equal(thrown.stdout, 'out');
+  assert.equal(thrown.code, 0);
+  assert.deepEqual(thrown.cleaned, { count: 0, workingSetMB: 0 });
+  const startThrows = await NODE('', dir, { track: () => ({ start() { throw new Error('boom'); }, finish: () => { throw new Error('not called'); } }) });
+  assert.deepEqual(startThrows.cleaned, { count: 0, workingSetMB: 0 });
+  const missing = fakeTracker({ count: 1, workingSetMB: 1 });
+  const none = await exec(path.join(dir, 'no-such-command-am'), [], { cwd: dir, env: process.env, timeoutMs: 10000, track: missing.track });
+  assert.ok(none.spawnError);
+  assert.equal(none.code, null);
+  assert.deepEqual(none.cleaned, { count: 0, workingSetMB: 0 });
+  assert.deepEqual(missing.order.filter(([what]) => what === 'finish'), []);
+});
+
+test('exec: a session over its time is stopped and then cleaned up', async (t) => {
+  const dir = tmpDir(t);
+  const f = fakeTracker({ count: 1, workingSetMB: 4 });
+  const r = await NODE('setTimeout(() => {}, 60000)', dir, { track: f.track, timeoutMs: 100 });
+  assert.equal(r.timedOut, true);
+  assert.deepEqual(f.order.at(-1), ['finish', []]);
+  assert.deepEqual(r.cleaned, { count: 1, workingSetMB: 4 });
+});
+
+test('exec: the cleanup limit never keeps the process alive', (t) => {
+  const dir = tmpDir(t);
+  const stage = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
+  // A quick cleanup under a long limit: the limit's timer is cleared, so the script ends at once.
+  const script = `import { exec } from ${JSON.stringify(stage)};
+const r = await exec(process.execPath, ['-e', ''], { cwd: process.cwd(), env: process.env, timeoutMs: 10000, cleanupMs: 600000,
+  track: () => ({ start() {}, finish: async () => ({ count: 1, workingSetMB: 2 }) }) });
+process.stdout.write(JSON.stringify(r.cleaned));
+`;
+  writeFileSync(path.join(dir, 'limit.mjs'), script);
+  const began = Date.now();
+  const res = spawnSync(process.execPath, ['limit.mjs'], { cwd: dir, encoding: 'utf8', timeout: 30000 });
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout, '{"count":1,"workingSetMB":2}');
+  assert.ok(Date.now() - began < 30000);
+});
+
+test('cleanup news: a note and a worker log line only when something was stopped; the result line keeps its keys', async (t) => {
+  const keys = ['stage', 'slug', 'status', 'reason', 'costUsd', 'sessionId', 'reply', 'denied', 'compacted'];
+  const notes = (dir) => events(dir).filter((e) => e.ev === 'note' && e.text.startsWith('cleaned up')).map((e) => e.text);
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  let logged = '';
+  const f = fakeTracker({ count: 2, workingSetMB: 37 });
+  const { result } = await run(dir, ['do', 'demo'], { track: f.track, log: (s) => (logged += s) });
+  const line = 'cleaned up 2 processes left by the do session (working set about 37 MB)';
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual(Object.keys(result), keys);
+  assert.deepEqual(notes(dir), [line]);
+  assert.ok(!('stage' in events(dir).find((e) => e.text === line)));
+  assert.equal(logged, `${line}\n`);
+
+  const quiet = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  let silent = '';
+  await run(quiet, ['do', 'demo'], { track: fakeTracker().track, log: (s) => (silent += s) });
+  assert.deepEqual(notes(quiet), []);
+  assert.equal(silent, '');
+
+  // The second ask is a session of its own: cleaned up as well.
+  const again = makeRepo(t, { plan: SMALL, fake: { replies: ['Implemented.', 'AM_STAGE: DONE'] } });
+  const g = fakeTracker({ count: 1, workingSetMB: 3 });
+  await run(again, ['do', 'demo'], { track: g.track });
+  assert.equal(g.order.filter(([what]) => what === 'finish').length, 2);
+  assert.equal(notes(again).length, 2);
+
+  // The compaction session is named as such.
+  const compact = makeRepo(t, { plan: BIG, fake: { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] } });
+  await run(compact, ['check', 'demo'], { track: fakeTracker({ count: 1, workingSetMB: 3 }).track });
+  assert.deepEqual(notes(compact), ['cleaned up 1 processes left by the compact session (working set about 3 MB)', 'cleaned up 1 processes left by the check session (working set about 3 MB)']);
+});
+
+test('cleanup news: a stage worker writes the cleanup line to its log', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
+  const w = startWorker(dir, ['do', 'demo'], { track: fakeTracker({ count: 3, workingSetMB: 12 }).track });
+  assert.equal(await w.done, 0);
+  assert.match(readFileSync(WF(dir, 'log'), 'utf8'), /^cleaned up 3 processes left by the do session \(working set about 12 MB\)$/m);
+});
+
+test('hand-over cleanup: the orchestrator worker is stopped first and left out; a worker of another owner is not', async (t) => {
+  const order = [];
+  const k = { sent: [], kill: (pid, sig) => { k.sent.push([pid, sig]); order.push(['kill', pid, sig]); } };
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['AM_STAGE: HANDED'], write: ORCH_FILES() } });
+  const { result } = await run(dir, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: k.kill, track: fakeTracker({}, { order }).track });
+  assert.equal(result.status, 'HANDED');
+  assert.deepEqual(order.filter(([what]) => what !== 'track' && what !== 'start'), [['kill', P, 'SIGTERM'], ['finish', [P]]]);
+  assert.deepEqual(k.sent, [[P, 'SIGTERM']]);
+
+  const other = killer();
+  const foreign = makeRepo(t, { plan: LARGE, fake: { replies: ['AM_STAGE: HANDED'], write: ORCH_FILES(process.pid + 1) } });
+  const f = fakeTracker();
+  await run(foreign, ['do', 'demo'], { ...ORCH, alive: aliveP, kill: other.kill, track: f.track });
+  assert.deepEqual(f.order.filter(([what]) => what === 'finish'), [['finish', []]]);
+  assert.deepEqual(other.sent, []);
 });
 
 // Last: by liveRecords, not the folder's file list (a record Windows could not remove at once is left out there, and the folder stays).

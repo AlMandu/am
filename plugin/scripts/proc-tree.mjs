@@ -1,5 +1,5 @@
 // am process tree: finds the processes a `claude -p` session left behind and stops them, never an unrelated one.
-// To be called around a session's child process by exec() of stage.mjs (not wired yet).
+// Called around every session's child process by exec() of stage.mjs.
 // Windows: a tracker lists every process (PowerShell, Win32_Process) once after FIRST_LIST_MS, then every LIST_EVERY_MS,
 // and keeps the session's descendants as (pid, creation time) records, so an orphan whose parent (cmd.exe and the like)
 // already ended is still known. finish() lists once more and stops the recorded descendants still alive with taskkill

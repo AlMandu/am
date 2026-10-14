@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.48 (2026-10-14)
+
+- am:auto 의 단계 세션(압축·다시 묻기·오케스트레이터 이어받기 포함)이 끝나면 그 세션이 남긴 MCP 서버·백그라운드 명령 같은 프로세스를 끈다. 끈 것이 있으면 진행 소식에 `cleaned up N processes left by the <단계> session (working set about X MB)` 한 줄이 나온다. 단계 결과·커밋·파일은 그대로다.
+- 단계 세션은 Claude Code 자동 업데이트 확인을 하지 않는다(`DISABLE_AUTOUPDATER`).
+
 ## 0.1.47 (2026-10-14)
 
 - am:auto 는 계획 규모가 구현 1회를 넘을 때만 구현을 am-orchestrator 에 넘긴다. 커밋 개수는 더 이상 따지지 않아, 구현 1회·커밋 여러 개 작업은 am:do 로 구현하고 점검·커밋 단계를 거쳐 커밋을 여러 개 남긴다. 구현 2회 이상은 지금처럼 넘긴다.

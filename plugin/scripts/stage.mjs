@@ -29,6 +29,10 @@
 // Then the per-PC user settings file (user-settings.mjs) is read: broken, the stage ends `failed` the same way.
 // A stage that starts a session of its own (not a hand-over) first writes a `.gate` record in the orchestrator's record folder
 // (memory-guard.mjs) and checks the free memory while other sessions of this PC run; short, it waits. The record is held to the end.
+// When any session ends (close, also after its timeout), what it left behind is stopped with proc-tree.mjs within CLEANUP_MS
+// (a hand-over's orchestrator worker is stopped first and left out with its descendants); only when something was stopped,
+// a note and a line in the worker's log say so, and a failed cleanup never changes the result. Every session starts with
+// DISABLE_AUTOUPDATER=1.
 // Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
@@ -55,6 +59,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
 import { findAm, findOrchestrator, handedRun, handedStartBranch, readPlan, withinOneRun } from '../hooks/handover.mjs';
 import { HEARTBEAT_MS, holdRecord, liveRecords, memoryShortMB, sessionsDirOf } from './memory-guard.mjs';
+import { createTracker } from './proc-tree.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
 import { FRONTMATTER, frontmatterModels, readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
 import { readUserSettings, userSettingsFile } from './user-settings.mjs';
@@ -123,17 +128,14 @@ export const CACHE_5M_KINDS = ['do', 'commit', 'compact'];
 // The variable a hand-over session gets with this process's pid; an orchestrator worker it starts writes it to worker.json as `owner`.
 export const HANDOVER_OWNER = 'AM_HANDOVER_OWNER';
 /**
- * The environment of a session of this kind. A hand-over gets env plus HANDOVER_OWNER (owner, this process's pid); any
- * other kind gets env without an inherited HANDOVER_OWNER, plus the 5-minute cache setting where it applies; with
- * neither change, env as given.
+ * The environment of a session of this kind, always a new object (env is never changed), with DISABLE_AUTOUPDATER=1 (no
+ * update check in a stage session). A hand-over also gets HANDOVER_OWNER (owner, this process's pid); any other kind loses
+ * an inherited HANDOVER_OWNER and gets the 5-minute cache setting where it applies.
  */
 export function sessionEnv(kind, env, owner = process.pid) {
-  if (kind === 'handover') return { ...env, [HANDOVER_OWNER]: String(owner) };
-  let out = env;
-  if (Object.hasOwn(env, HANDOVER_OWNER)) {
-    out = { ...env };
-    delete out[HANDOVER_OWNER];
-  }
+  if (kind === 'handover') return { ...env, DISABLE_AUTOUPDATER: '1', [HANDOVER_OWNER]: String(owner) };
+  const out = { ...env, DISABLE_AUTOUPDATER: '1' };
+  delete out[HANDOVER_OWNER];
   return CACHE_5M_KINDS.includes(kind) ? { ...out, FORCE_PROMPT_CACHING_5M: '1' } : out;
 }
 
@@ -688,19 +690,68 @@ const active = new Set(); // running sessions, ended when this script is stopped
 // The end-event writers of running stages, called when this script is stopped. Each writes once and leaves the set.
 const finishers = new Set();
 
-/** Runs one command and collects its output. Never rejects. */
-function exec(cmd, args, { cwd, env, timeoutMs }) {
+// The longest wait for the cleanup of what a session left behind; past it `cleaned` is zero.
+export const CLEANUP_MS = 60000;
+const NOTHING_CLEANED = Object.freeze({ count: 0, workingSetMB: 0 });
+
+/** The progress note of a cleanup that stopped something, or null when nothing was stopped. */
+export function cleanedNote(kind, { count, workingSetMB } = {}) {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  return `cleaned up ${count} processes left by the ${kind} session (working set about ${workingSetMB} MB)`;
+}
+
+/**
+ * Runs one command and collects its output. Never rejects. When the command ends (close, also after a timeout), what it
+ * left behind is stopped with a tracker of proc-tree.mjs (track), except the pids beforeCleanup() returns and their
+ * descendants, waiting up to cleanupMs; the result's `cleaned` is { count, workingSetMB } (zero on any failure).
+ */
+export function exec(cmd, args, { cwd, env, timeoutMs, track = createTracker, beforeCleanup = null, cleanupMs = CLEANUP_MS }) {
   return new Promise((resolve) => {
     let child;
+    let startedAt;
     try {
       const target = resolveCommand(cmd, env);
       const opts = { cwd, env, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
       const safe = target.shell ? cmdExeArgs(args) : args;
+      startedAt = Date.now();
       child = target.shell ? spawn([target.file, ...safe].map(quote).join(' '), { ...opts, shell: true }) : spawn(target.file, safe, opts);
     } catch (err) {
-      resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message });
+      resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message, cleaned: NOTHING_CLEANED });
       return;
     }
+    let tracker = null;
+    if (Number.isInteger(child.pid)) {
+      try {
+        tracker = track({ pid: child.pid, startedAt });
+        tracker.start();
+      } catch {
+        tracker = null;
+      }
+    }
+    const cleanup = async () => {
+      let exclude = [];
+      try {
+        const got = beforeCleanup ? beforeCleanup() : [];
+        if (Array.isArray(got)) exclude = got.filter(Number.isInteger);
+      } catch {
+        // No exclusion.
+      }
+      let limit = null;
+      try {
+        const done = Promise.resolve()
+          .then(() => tracker.finish({ exclude }))
+          .then((c) => (c && Number.isInteger(c.count) ? { count: c.count, workingSetMB: Number(c.workingSetMB) || 0 } : NOTHING_CLEANED), () => NOTHING_CLEANED);
+        const late = new Promise((r) => {
+          limit = setTimeout(() => r(NOTHING_CLEANED), Math.max(1, cleanupMs));
+          limit.unref?.();
+        });
+        return await Promise.race([done, late]);
+      } catch {
+        return NOTHING_CLEANED;
+      } finally {
+        clearTimeout(limit);
+      }
+    };
     active.add(child);
     let stdout = '';
     let stderr = '';
@@ -712,14 +763,20 @@ function exec(cmd, args, { cwd, env, timeoutMs }) {
       timedOut = true;
       killTree(child);
     }, Math.max(1, timeoutMs));
-    const finish = (r) => {
+    // ended: the child is gone, so its leftovers may be stopped (an error of a running child, a failed kill, stops nothing)
+    const finish = (r, ended = true) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       active.delete(child);
-      resolve({ stdout, stderr, timedOut, spawnError: null, ...r });
+      const result = { stdout, stderr, timedOut, spawnError: null, ...r };
+      if (!tracker || !ended) {
+        resolve({ ...result, cleaned: NOTHING_CLEANED });
+        return;
+      }
+      cleanup().then((cleaned) => resolve({ ...result, cleaned }));
     };
-    child.on('error', (err) => finish({ code: null, spawnError: err.message }));
+    child.on('error', (err) => finish({ code: null, spawnError: err.message }, child.exitCode !== null || child.signalCode !== null));
     child.on('close', (code) => finish({ code }));
   });
 }
@@ -880,10 +937,10 @@ function originalName(slug, name, taken) {
  * Shortens the task files a stage of this kind reads when they hold more than the limit, in a short claude session of
  * their own. Each shortened file keeps its original as `<name>.orig-<n>.md`. A failed check, a session without its marker
  * or over its time puts every original back and removes the new copies; so does a session that touched request.md, which
- * is put back as well. The session runs on `model` ({model, effort}); `modelNote`, when set, is noted as it starts. Returns {compacted, costUsd}; `compacted` is
+ * is put back as well. The session runs on `model` ({model, effort}); `modelNote`, when set, is noted as it starts. Returns {compacted, costUsd, cleaned}; `compacted` is
  * null (nothing to do), {files, before, after, originals}, or {files, failed}.
  */
-async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', note = () => {} } = {}) {
+async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', note = () => {}, track = createTracker } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
   // An earlier compaction of this task that never finished: its files go back before anything is measured.
@@ -924,7 +981,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   compacting.add(undo);
   let r;
   try {
-    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000 });
+    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000, track });
   } finally {
     compacting.delete(undo);
   }
@@ -956,10 +1013,10 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
     }
     for (const rel of originals) rmSync(abs(rel), { force: true });
     rmSync(abs(pendingRel), { force: true });
-    return { compacted: { files, failed }, costUsd };
+    return { compacted: { files, failed }, costUsd, cleaned: r.cleaned };
   }
   rmSync(abs(pendingRel), { force: true });
-  return { compacted: { files, before: Object.values(sizes).reduce((a, b) => a + b, 0), after, originals }, costUsd };
+  return { compacted: { files, before: Object.values(sizes).reduce((a, b) => a + b, 0), after, originals }, costUsd, cleaned: r.cleaned };
 }
 
 // ------------------------------------------------------------------ main
@@ -979,7 +1036,7 @@ export function stageLine(stage, slug, status, reason) {
 }
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS, track = createTracker, log = () => {} } = {}) {
   const args = stageArgs(argv);
   if (!args) {
     out.write(BAD_ARGS);
@@ -1008,6 +1065,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (stage !== 'plan' && !existsSync(planFile)) return done({ reason: `no .am/${slug}/plan.md: run the plan stage first` });
   ensureIgnored(cwd);
   const event = (fields) => appendEvent(cwd, slug, fields, { now });
+  // A cleanup that stopped something: one note and one line in the worker's log.
+  const report = (who, cleaned) => {
+    const text = cleanedNote(who, cleaned);
+    if (!text) return;
+    event({ ev: 'note', text });
+    log(`${text}\n`);
+  };
   // Admission: under the start lock, look for other runs and write the start line when there are none.
   const lockFile = path.join(cwd, '.am', '.admission.lock');
   const waitBegan = Date.now(); // the wait is timed by the clock that setTimeout uses
@@ -1075,6 +1139,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const startedAt = now();
   let stopRelay = null; // set while a hand-over copies the run's events
   let stopOpinions = null; // set while a plan or do session's plan.md is watched
+  // Stops the orchestrator worker a hand-over started, once: a pid it stopped is returned again by every later call; while
+  // there was none, a later call looks again.
+  let stoppedRun = null;
+  const stopRun = () => {
+    if (stoppedRun === null) stoppedRun = stopHandedRun(cwd, process.pid, { alive, kill });
+    return stoppedRun;
+  };
   finish = ({ status, reason, stopped = false }) => {
     if (!finishers.has(finish)) return;
     finishers.delete(finish);
@@ -1082,7 +1153,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     record?.release();
     stopRelay?.();
     // The orchestrator worker this hand-over started stops with it, before the end line frees the task.
-    if (result.stage === 'handover') stopHandedRun(cwd, process.pid, { alive, kill });
+    if (result.stage === 'handover') stopRun();
     // A stop signal comes while the session may still be writing a line.
     stopOpinions?.(!stopped);
     const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
@@ -1119,7 +1190,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   // Shorten the task files first when they are too large; a failure leaves them as they were and the stage goes on.
   const compactModel = resolveUser(user, 'compact', COMPACT_MODEL);
   const modelNote = compactModel.model !== COMPACT_MODEL.model || compactModel.effort !== COMPACT_MODEL.effort ? `model ${compactModel.model}, effort ${compactModel.effort} from the user's setting ${userFile}` : '';
-  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, model: compactModel, modelNote, note: (text) => event({ ev: 'note', text }) });
+  const compaction = await compactContext(cwd, slug, kind, { fix, env, claude, timeoutMin: limits, model: compactModel, modelNote, note: (text) => event({ ev: 'note', text }), track });
+  report('compact', compaction.cleaned);
   result.compacted = compaction.compacted;
   const c = compaction.compacted;
   if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });
@@ -1150,7 +1222,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const timeoutMs = limits[kind] * 60000;
 
   const call = async (args) => {
-    const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env, process.pid), timeoutMs });
+    // A hand-over's orchestrator worker is stopped before the cleanup, which leaves it and its descendants alone.
+    const beforeCleanup = kind === 'handover' ? () => {
+      const p = stopRun();
+      return p ? [p] : [];
+    } : null;
+    const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env, process.pid), timeoutMs, track, beforeCleanup });
+    report(kind, r.cleaned);
     const parsed = parseResult(r.stdout);
     if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + parsed.total_cost_usd; // a resumed session reports the whole conversation
     if (parsed?.session_id) result.sessionId = parsed.session_id;
@@ -1429,7 +1507,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) on(sig, () => interrupt(sig, { exit: stopExit(`stopped by ${sig}`, false) }));
   let code;
   try {
-    code = await main(argv, { ...rest, out: sink });
+    code = await main(argv, { ...rest, out: sink, log });
   } catch (err) {
     const reason = `the stage runner failed: ${err?.message ?? err}`;
     interrupt('error', { exit: stopExit(reason, false), reason });
