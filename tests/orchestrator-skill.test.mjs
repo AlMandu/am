@@ -4,11 +4,12 @@
 // And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows, the user models file reader.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
-import { makeRepo } from './orchestrator-helpers.mjs';
+import { makeRepo, planOf, prepared, task } from './orchestrator-helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
@@ -651,4 +652,177 @@ test('am memory guard and the orchestrator: same free-memory rule, record rule, 
   } finally {
     fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
   }
+});
+
+// The same scenes for am's proc-tree.mjs and its copy in orchestrator.mjs (see tests/proc-tree.test.mjs for what each means).
+const PT_MB = 1048576;
+const PT_ROOT = 100;
+const PW = (pid, ppid, created, mb = 1) => ({ pid, ppid, created, ws: mb * PT_MB });
+const PP = (pid, ppid, pgid, mb = 1) => ({ pid, ppid, pgid, ws: mb * PT_MB });
+const WIN_SCENES = [
+  { name: 'orphan beyond an ended middle parent', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1002), PW(300, 200, 1003, 50), PW(50, 1, 10)], [PW(300, 200, 1003, 50), PW(50, 1, 10)]], steps: [2000], at: 5000 },
+  { name: 'reused pid', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1002), PW(300, 200, 1003)], [PW(300, 1, 4000)]], steps: [2000], at: 5000 },
+  { name: 'reused parent pid', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1002)], [PW(200, 1, 3000), PW(400, 200, 3500)]], steps: [2000], at: 5000 },
+  { name: 'child older than its parent', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1500), PW(500, 200, 1200)], [PW(500, 200, 1200)]], steps: [2000], at: 5000 },
+  { name: 'reused root pid', lists: [[PW(PT_ROOT, 1, 4000), PW(400, PT_ROOT, 4500)]], at: 5000 },
+  { name: 'orphan of the ended root', lists: [[PW(600, PT_ROOT, 2000, 3)]], at: 5000 },
+  { name: 'created after finish', lists: [[PW(600, PT_ROOT, 6000)]], at: 5000 },
+  { name: 'gone record links later child', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1500)], [PW(PT_ROOT, 1, 1001)], [PW(400, 200, 3500)]], steps: [2000, 3000], at: 5000 },
+  { name: 'gone record links earlier child', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1500)], [PW(PT_ROOT, 1, 1001), PW(400, 200, 2500)], [PW(400, 200, 2500)]], steps: [2000, 3000], at: 5000 },
+  { name: 'process older than the session', lists: [[PW(PT_ROOT, 1, 1001), PW(600, PT_ROOT, 900)], [PW(600, PT_ROOT, 900)]], steps: [2000], at: 5000 },
+  { name: 'throwing kill', lists: [[PW(600, PT_ROOT, 2000)]], kill: () => { throw new Error('boom'); }, at: 5000 },
+  { name: 'throwing list', lists: ['throw'], at: 5000 },
+  { name: 'kill false', lists: [[PW(600, PT_ROOT, 2000), PW(700, PT_ROOT, 2000)]], kill: (pid) => pid === 700, at: 5000 },
+  { name: 'excluded pid and descendants', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1100), PW(300, 200, 1200), PW(400, 300, 1300), PW(500, 400, 1400), PW(50, 1, 10)], [PW(200, PT_ROOT, 1100), PW(300, 200, 1200), PW(400, 300, 1300), PW(500, 400, 1400), PW(50, 1, 10)]], steps: [2000], at: 5000, exclude: [400] },
+  { name: 'excluded orphan beyond ended parent', lists: [[PW(PT_ROOT, 1, 1001), PW(400, PT_ROOT, 1100), PW(500, 400, 1200), PW(600, 500, 1300), PW(700, PT_ROOT, 1400)], [PW(400, 1, 1100), PW(600, 500, 1300), PW(700, 1, 1400)]], steps: [31000], at: 90000, exclude: [400] },
+  { name: 'excluded orphan, parent pid reused', lists: [[PW(PT_ROOT, 1, 1001), PW(400, PT_ROOT, 1100), PW(500, 400, 1200), PW(600, 500, 1300)], [PW(PT_ROOT, 1, 1001), PW(400, PT_ROOT, 1100), PW(500, PT_ROOT, 50000), PW(600, 500, 1300)], [PW(400, 1, 1100), PW(500, 1, 50000), PW(600, 500, 1300)]], steps: [31000, 91000], at: 120000, exclude: [400] },
+  { name: 'excluded pid never listed', lists: [[PW(600, 400, 1300), PW(700, PT_ROOT, 1400)]], at: 5000, exclude: [400] },
+  { name: 'root never seen', lists: [[PW(50, 1, 10)], [PW(700, PT_ROOT, 60000)]], steps: [31000], at: 100000 },
+  { name: 'root never seen, earlier orphan', lists: [[PW(50, 1, 10), PW(700, PT_ROOT, 20000)], [PW(700, PT_ROOT, 20000)]], steps: [31000], at: 100000 },
+  { name: '/T unsafe', lists: [[PW(200, PT_ROOT, 1100), PW(300, 200, 1200), PW(700, 200, 900)]], at: 5000 },
+  { name: '/T safe', lists: [[PW(200, PT_ROOT, 1100, 2), PW(300, 200, 1200, 3)]], at: 5000 },
+  { name: 'last list failed', lists: [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1100)], null], steps: [2000], at: 5000 },
+  { name: 'middle list failed', lists: [null, [PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1002), PW(300, 200, 1003)], [PW(300, 200, 1003)]], steps: [2000, 3000], at: 5000 },
+];
+const POSIX_GROUP = () => [PP(200, PT_ROOT, PT_ROOT, 10), PP(300, 200, PT_ROOT, 20), PP(50, 1, 50)];
+const EX_GROUP = () => [PP(200, 1, PT_ROOT), PP(301, 1, PT_ROOT), PP(302, 1, PT_ROOT), PP(400, 200, PT_ROOT)];
+const POSIX_SCENES = [
+  { name: 'something left after TERM', lists: [POSIX_GROUP(), [PP(300, 1, PT_ROOT, 20), PP(50, 1, 50)]] },
+  { name: 'nothing left after TERM', lists: [POSIX_GROUP(), [PP(50, 1, 50)]] },
+  { name: 'excluded descendant in the group', lists: [[...EX_GROUP(), PP(999, 1, 999)].map((p) => (p.pid === 301 ? { ...p, ppid: 999 } : p)), EX_GROUP()], exclude: [301] },
+  { name: 'excluded pid in the group lineage', lists: [[...EX_GROUP(), PP(999, 1, 999)].map((p) => (p.pid === 301 ? { ...p, ppid: 999 } : p)), EX_GROUP()], exclude: [999] },
+  { name: 'excluded pid outside the group', lists: [[PP(200, 1, PT_ROOT), PP(999, 1, 999)], []], exclude: [999] },
+  { name: 'failed list', lists: [null, []] },
+  { name: 'empty group', lists: [[PP(50, 1, 50)], []] },
+  { name: 'live session pid', lists: [[PP(PT_ROOT, 1, PT_ROOT), PP(200, PT_ROOT, PT_ROOT)], []] },
+  { name: 'signals fail', lists: [[PP(200, PT_ROOT, PT_ROOT, 10), PP(300, 200, PT_ROOT, 20)], [PP(300, 200, PT_ROOT, 20)]], signal: () => false },
+  { name: 'second list failed', lists: [[PP(200, PT_ROOT, PT_ROOT, 10), PP(300, 200, PT_ROOT, 20)], null] },
+  { name: 'throwing signal', lists: [[PP(200, PT_ROOT, PT_ROOT, 10)], [PP(200, PT_ROOT, PT_ROOT, 10)]], signal: () => { throw new Error('boom'); } },
+];
+
+/** Plays one scene on one module's createTracker with fresh fakes; returns every call it made and finish's result. */
+async function playScene(mod, platform, scene) {
+  const clock = { t: 1000 };
+  const calls = [];
+  const queue = structuredClone(scene.lists);
+  const timers = { timeouts: [], intervals: [] };
+  const tracker = mod.createTracker({
+    pid: PT_ROOT, startedAt: 1000, platform, now: () => clock.t,
+    timers: {
+      setTimeout: (fn) => { timers.timeouts.push(fn); return { unref() {} }; },
+      setInterval: (fn) => { timers.intervals.push(fn); return { unref() {} }; },
+      clearTimeout: () => {}, clearInterval: () => {},
+    },
+    sleep: async (ms) => { calls.push(['sleep', ms]); },
+    list: async () => {
+      const next = queue.shift();
+      if (next === 'throw') throw new Error('boom');
+      return next;
+    },
+    kill: async (pid, opts) => {
+      calls.push(['kill', pid, opts.tree]);
+      return scene.kill ? scene.kill(pid) : true;
+    },
+    signal: (pid, sig) => {
+      calls.push(['signal', pid, sig]);
+      return scene.signal ? scene.signal(pid, sig) : true;
+    },
+  });
+  tracker.start();
+  for (const [i, at] of (scene.steps || []).entries()) {
+    clock.t = at;
+    (i === 0 ? timers.timeouts[0] : timers.intervals[0])();
+    await new Promise((r) => setImmediate(r));
+  }
+  clock.t = scene.at ?? 5000;
+  const result = await tracker.finish({ exclude: scene.exclude || [] });
+  return { calls, result };
+}
+
+test('am proc-tree and the orchestrator: same targets, counts and working-set sums on the same fake lists', async () => {
+  const am = await import('../plugin/scripts/proc-tree.mjs');
+  const orch = await import('../orchestrator/scripts/orchestrator.mjs');
+  const stage = await import('../plugin/scripts/stage.mjs');
+  for (const k of ['LIST_TIMEOUT_MS', 'KILL_TIMEOUT_MS', 'FIRST_LIST_MS', 'LIST_EVERY_MS', 'TERM_WAIT_MS']) assert.equal(orch[k], am[k], k);
+  assert.deepEqual(orch.WIN_LIST_ARGS, am.WIN_LIST_ARGS);
+  assert.equal(orch.CLEANUP_MS, stage.CLEANUP_MS);
+  const ft = 116444736000000000 + 1234 * 10000;
+  for (const text of [JSON.stringify([{ pid: 1, ppid: 0, created: ft, ws: 4096 }, { pid: 'x', ppid: 0, created: ft, ws: 1 }]), JSON.stringify({ pid: 2, ppid: 1, created: ft, ws: 8 }), '[]', '{broken', '', '42', ' [ ] ']) {
+    assert.deepEqual(orch.parseWinList(text), am.parseWinList(text), text);
+  }
+  for (const text of ['  12   1  12  100\n\n 345 12 12 4\n', '', null, 'a b c d\n1 2 3', '\n\n']) assert.deepEqual(orch.parsePsList(text), am.parsePsList(text), String(text));
+  const snaps = [[PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1100), PW(300, 200, 1200)], [PW(PT_ROOT, 1, 1001), PW(200, PT_ROOT, 1100), PW(300, 200, 2500), PW(700, 200, 900)]];
+  const run = (mod) => {
+    const records = new Map();
+    mod.collect(records, structuredClone(snaps[0]), { rootPid: PT_ROOT, startedAt: 1000, at: 2000 });
+    mod.collect(records, structuredClone(snaps[1]), { rootPid: PT_ROOT, startedAt: 1000, at: 3000, rootGone: 3000 });
+    return { records: [...records], picks: mod.pickTargets(records, structuredClone(snaps[1]), { rootPid: PT_ROOT, startedAt: 1000, exclude: [300] }) };
+  };
+  assert.deepEqual(run(orch), run(am));
+  let stopped = 0;
+  for (const [platform, scenes] of [['win32', WIN_SCENES], ['linux', POSIX_SCENES]]) {
+    for (const scene of scenes) {
+      const a = await playScene(am, platform, scene);
+      const o = await playScene(orch, platform, scene);
+      assert.deepEqual(o, a, `${platform}: ${scene.name}`);
+      stopped += a.result.count;
+    }
+  }
+  assert.ok(stopped > 0, 'some scenes stop something');
+});
+
+test('orchestrator exec: cleans up after close and after a timeout, never on a spawn error', async () => {
+  const { exec, cleanedText } = await import('../orchestrator/scripts/orchestrator.mjs');
+  const fakeTrack = (finish) => {
+    const log = [];
+    const track = ({ pid, startedAt }) => {
+      log.push(['track', Number.isInteger(pid), Number.isFinite(startedAt)]);
+      return { start: () => log.push(['start']), finish: (opts) => { log.push(['finish', opts]); return finish(); } };
+    };
+    return { track, log };
+  };
+  const node = (code, opts) => exec(process.execPath, ['-e', code], { cwd: REPO, timeoutMs: 20000, ...opts });
+  let f = fakeTrack(async () => ({ count: 2, workingSetMB: 37 }));
+  let r = await node('process.stdout.write("hi")', { track: f.track });
+  assert.equal(r.stdout, 'hi');
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.cleaned, { count: 2, workingSetMB: 37 });
+  assert.deepEqual(f.log, [['track', true, true], ['start'], ['finish', {}]]);
+  f = fakeTrack(async () => ({ count: 2, workingSetMB: 37 }));
+  r = await node('setTimeout(() => {}, 20000)', { track: f.track, timeoutMs: 100 });
+  assert.equal(r.timedOut, true);
+  assert.deepEqual(r.cleaned, { count: 2, workingSetMB: 37 });
+  assert.equal(f.log.filter((e) => e[0] === 'finish').length, 1);
+  f = fakeTrack(async () => ({ count: 2, workingSetMB: 37 }));
+  r = await exec('am-no-such-command-x', [], { cwd: REPO, timeoutMs: 20000, track: f.track });
+  assert.ok(r.spawnError);
+  assert.deepEqual(r.cleaned, { count: 0, workingSetMB: 0 });
+  assert.ok(!f.log.some((e) => e[0] === 'finish'));
+  for (const finish of [async () => { throw new Error('boom'); }, () => { throw new Error('sync'); }, async () => ({ count: 'x' }), async () => null, () => new Promise(() => {})]) {
+    f = fakeTrack(finish);
+    r = await node('', { track: f.track, cleanupMs: 50 });
+    assert.deepEqual(r.cleaned, { count: 0, workingSetMB: 0 });
+  }
+  r = await exec(process.execPath, ['-e', ''], { cwd: REPO, timeoutMs: 20000, track: () => { throw new Error('no tracker'); } });
+  assert.deepEqual(r.cleaned, { count: 0, workingSetMB: 0 });
+  r = await node('');
+  assert.deepEqual(r.cleaned, { count: 0, workingSetMB: 0 });
+  for (const c of [{ count: 0 }, { count: -1 }, { count: 1.5 }, { count: '2' }, undefined, {}]) assert.equal(cleanedText(c), null, JSON.stringify(c));
+  assert.equal(cleanedText({ count: 2, workingSetMB: 37 }), '남은 프로세스 2개 정리 (작업 집합 합계 약 37 MB)');
+});
+
+test('run: a session\'s leftover child is stopped and reported', { skip: process.platform === 'win32' }, () => {
+  const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { leaveChild: ['implement'] } });
+  const run = r.orch('run');
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /implement: 세션이 남긴 프로세스 1개 정리/);
+  assert.equal((run.out.match(/세션이 남긴 프로세스/g) || []).length, 1, run.out);
+  const notes = readFileSync(path.join(r.runDir(), 'progress.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    .filter((e) => e.ev === 'note' && String(e.text).startsWith('남은 프로세스'));
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].stage, 'implement');
+  assert.match(notes[0].text, /^남은 프로세스 1개 정리/);
+  const pid = Number(readFileSync(path.join(r.repo, '.orchestrator', 'fake-left-implement.pid'), 'utf8'));
+  assert.ok(Number.isInteger(pid) && pid > 0);
+  assert.equal(spawnSync('ps', ['-p', String(pid)]).status, 1, 'the leftover child is gone');
 });

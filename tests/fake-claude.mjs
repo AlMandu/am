@@ -5,13 +5,15 @@
 //     "implement": { "<slug>": ["CRASH", "DONE"] }, "breakGate": ["<slug>"], "split": ["<fixture>", ...],
 //     "answer": { "<slug>": ["TOO_BIG"] }, "opinions": ["<slug>"] }
 // "snapshotLock": true 면 split 세션이 그 순간의 lock.json 과 current 를 fake-split-lock.json·fake-split-current.txt 로 복사해 둔다.
+// "leaveChild": ["implement"] 처럼 단계 이름을 적으면 그 단계 세션이 표준 입출력을 잇지 않은 자식을 남기고 끝난다
+// (같은 프로세스 그룹, pid 는 fake-left-<단계>.pid). 오케스트레이터가 세션이 남긴 프로세스를 끄는지 보는 테스트용.
 // "slowSplit": <ms> 면 split 세션이 fake-slow-split.pid 에 자기 pid 를 쓰고 그만큼 기다린 뒤 보통처럼 끝난다(따라가기 테스트).
 // 동시 진행: 단계가 끝날 때마다 "<단계>:<slug>" 표시를 남기고, "waitFor": { "implement:t01-a": "plan:t03-c" } 처럼
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
 // 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
 // 원래 저장소 경로는 FAKE_MAIN_REPO(테스트의 makeRepo 가 넣는다)로 받고, 없을 때만 git rev-parse --git-common-dir 로 찾는다.
 // `plugin list --json` 은 FAKE_PLUGIN_LIST 를 그대로 출력하고(없으면 모르는 명령으로 실패), 호출 기록에 남기지 않는다.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -241,4 +243,10 @@ if ((m = /^Split the design document (\S+) into tasks and write (\S+)\.$/.exec(p
 } else throw new Error(`fake claude: unknown prompt: ${prompt}`);
 
 if (marked) writeFileSync(markFile(marked), '1');
+const phase = marked?.split(':')[0];
+if (phase && (scenario.leaveChild || []).includes(phase)) {
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  child.unref();
+  writeFileSync(path.join(stateDir, `fake-left-${phase}.pid`), String(child.pid));
+}
 process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: session, total_cost_usd: 0.01, num_turns: 3, permission_denials: denials })}\n`);

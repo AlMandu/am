@@ -7,7 +7,7 @@
 // - am 의 스킬 본문과 게이트(gate.mjs)는 복사하지 않고, 설치된 플러그인의 것을 그대로 쓴다.
 // - 모델에게 보내는 글은 영어(am 스킬 본문과 같은 규칙), 사람이 보는 출력은 한국어다.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, copyFileSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -171,6 +171,363 @@ export function parseResult(stdout) {
   }
 }
 
+// ------------------------------------------------------------------ 남은 프로세스 정리 (am proc-tree.mjs 사본)
+// am 의 `plugin/scripts/proc-tree.mjs` 사본(내보내는 이름과 함수 본문은 같고 주석만 한국어). 바꾸면 그쪽과
+// `tests/orchestrator-skill.test.mjs` 의 비교 시험을 같은 커밋에서 바꾼다.
+// `claude -p` 세션이 남긴 프로세스를 찾아 끝내고, 관계없는 프로세스는 건드리지 않는다. exec() 가 세션마다 쓴다.
+// Windows: 추적기가 FIRST_LIST_MS 뒤 한 번, 그 뒤 LIST_EVERY_MS 마다 모든 프로세스를 나열하고(PowerShell, Win32_Process)
+// 세션의 자손을 (pid, 생성 시각) 으로 기록하므로, 부모(cmd.exe 등)가 이미 끝난 고아도 안다. finish() 는 한 번 더 나열하고
+// 아직 살아 있는 기록된 자손을 taskkill 로 끝낸다(/T 는 부모 pid 로 이어진 하위 전체가 대상일 때만: /T 는 생성 시각을 보지 않는다).
+// macOS·Linux: finish() 는 세션의 프로세스 그룹에 SIGTERM, TERM_WAIT_MS 뒤 남은 것에 SIGKILL 을 보내고, 그 그룹에
+// 제외할 프로세스나 그 자손이 있으면 아무것도 보내지 않는다. 부르는 쪽은 spawn 바로 전에 `startedAt` 을 잰다.
+
+export const LIST_TIMEOUT_MS = 20000;
+// am stage.mjs 의 STOP_RUN_MS 와 같은 값
+export const KILL_TIMEOUT_MS = 10000;
+export const FIRST_LIST_MS = 30000;
+export const LIST_EVERY_MS = 60000;
+export const TERM_WAIT_MS = 2000;
+const MAX_BUFFER = 64 * 1024 * 1024;
+// Unix 기준 시각의 Windows 파일 시각(1601 년부터 100 ns 단위)
+const FILETIME_EPOCH = 116444736000000000;
+
+// JSON 배열 하나(프로세스가 하나여도). 큰따옴표와 % 는 넣지 않는다: 둘 다 명령줄에 닿으면 안 된다.
+const WIN_SCRIPT = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | '
+  + 'ForEach-Object { [pscustomobject]@{ pid = [int64]$_.ProcessId; ppid = [int64]$_.ParentProcessId; '
+  + 'created = $_.CreationDate.ToFileTimeUtc(); ws = [int64]$_.WorkingSetSize } })';
+export const WIN_LIST_ARGS = ['-NoProfile', '-NonInteractive', '-Command', WIN_SCRIPT];
+
+/** PowerShell 목록을 [{ pid, ppid, created (ms), ws (바이트) }] 로. 정수가 아닌 칸이 있는 항목은 버린다. 읽지 못하면 null. */
+export function parseWinList(text) {
+  let data;
+  try {
+    data = JSON.parse(String(text));
+  } catch {
+    return null;
+  }
+  if (data && typeof data === 'object' && !Array.isArray(data)) data = [data];
+  if (!Array.isArray(data)) return null;
+  const out = [];
+  for (const p of data) {
+    if (!p || typeof p !== 'object') continue;
+    const { pid, ppid, created, ws } = p;
+    if (![pid, ppid, created, ws].every(Number.isInteger)) continue;
+    out.push({ pid, ppid, created: (created - FILETIME_EPOCH) / 10000, ws });
+  }
+  return out;
+}
+
+/** `ps -o pid=,ppid=,pgid=,rss=` 줄들을 [{ pid, ppid, pgid, ws (바이트) }] 로. 읽을 줄이 하나도 없으면 null. */
+export function parsePsList(text) {
+  if (typeof text !== 'string') return null;
+  const out = [];
+  for (const line of text.split('\n')) {
+    const f = line.trim().split(/\s+/);
+    if (f.length !== 4 || !f.every((v) => /^\d+$/.test(v))) continue;
+    const [pid, ppid, pgid, rss] = f.map(Number);
+    out.push({ pid, ppid, pgid, ws: rss * 1024 });
+  }
+  return out.length ? out : null;
+}
+
+const run = (file, args, timeout) => new Promise((resolve) => {
+  try {
+    execFile(file, args, { timeout, windowsHide: true, maxBuffer: MAX_BUFFER }, (err, stdout) => resolve(err ? null : stdout));
+  } catch {
+    resolve(null);
+  }
+});
+
+/** Windows 의 모든 프로세스. 실패하거나 시간이 넘으면 null. */
+export const listWindows = async () => parseWinList(await run('powershell.exe', WIN_LIST_ARGS, LIST_TIMEOUT_MS));
+/** macOS·Linux 의 모든 프로세스. 실패하거나 시간이 넘으면 null. */
+export const listPosix = async () => parsePsList(await run('ps', ['-A', '-o', 'pid=,ppid=,pgid=,rss='], LIST_TIMEOUT_MS));
+/** 프로세스 하나를 taskkill 로 끝낸다(tree 면 부모 pid 로 이어진 하위 전체). 성공하면 true. */
+export const killWindows = async (pid, { tree = false } = {}) =>
+  (await run('taskkill', ['/pid', String(pid), ...(tree ? ['/T'] : []), '/F'], KILL_TIMEOUT_MS)) !== null;
+/** pid 에 신호를 보낸다(음수 pid 는 프로세스 그룹). 보냈으면 true. */
+export const signalPosix = (pid, sig) => {
+  try {
+    return process.kill(pid, sig);
+  } catch {
+    return false;
+  }
+};
+
+const byPid = (snapshot) => new Map(snapshot.map((p) => [p.pid, p]));
+
+/**
+ * snapshot(`at` 에 뜬 목록)에 있는 세션의 자손을 records(pid -> { created, ppid, ws, goneAt }; 뿌리의 기록은 `root: true`)에
+ * 더하고 records 를 돌려준다. 프로세스는 startedAt 이후에 만들어졌고, 부모 pid 가 뿌리이거나 기록에 있고, 그 부모 이후에
+ * 만들어졌으며(한 번도 못 본 뿌리는 startedAt), 그 부모 pid 가 지금 다른 생성 시각으로 살아 있지 않고, 이미 끝난 부모라면
+ * goneAt 전에 만들어졌을 때 이어진다. rootGone 은 finish() 를 부른 시각: 그때부터 뿌리는 끝났고(늦어도 그때) 그 pid 로 살아
+ * 있는 프로세스는 남이다.
+ */
+export function collect(records, snapshot, { rootPid, startedAt, at, rootGone = null }) {
+  const live = byPid(snapshot);
+  for (const [pid, r] of records) {
+    const p = live.get(pid);
+    if (p && p.created === r.created && !(r.root && rootGone != null)) {
+      r.ppid = p.ppid;
+      r.ws = p.ws;
+    } else if (r.goneAt == null) r.goneAt = at;
+    if (r.root && rootGone != null) r.goneAt = Math.min(r.goneAt, rootGone);
+  }
+  const rootLive = live.get(rootPid);
+  if (rootGone == null && !records.has(rootPid)) {
+    if (rootLive && rootLive.created >= startedAt) {
+      records.set(rootPid, { created: rootLive.created, ppid: rootLive.ppid, ws: rootLive.ws, goneAt: null, root: true });
+    } else {
+      // 한 번도 못 봤고 이 목록에도 없는(또는 그 pid 를 더 오래된 프로세스가 쥔) 뿌리는 `at` 전에 끝났다
+      records.set(rootPid, { created: null, ppid: null, ws: 0, goneAt: at, root: true });
+    }
+  }
+  // 자식이 이어질 수 있는 부모: { created, goneAt }, 또는 null
+  const parentOf = (ppid) => {
+    const r = records.get(ppid);
+    const p = live.get(ppid);
+    if (ppid === rootPid) {
+      if (p && (rootGone != null || !r || p.created !== r.created)) return null;
+      const goneAt = Math.min(r?.goneAt ?? Infinity, rootGone ?? Infinity);
+      return { created: r?.created ?? startedAt, goneAt: goneAt === Infinity ? null : goneAt };
+    }
+    if (!r || r.root || (p && p.created !== r.created)) return null;
+    return r;
+  };
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const p of snapshot) {
+      if (p.pid === rootPid || p.created < startedAt) continue;
+      const known = records.get(p.pid);
+      if (known && (known.created === p.created || known.goneAt == null || known.root)) continue;
+      const parent = parentOf(p.ppid);
+      if (!parent || p.created < parent.created || (parent.goneAt != null && p.created >= parent.goneAt)) continue;
+      // 바뀐 기록은 제외 계보를 위해 `prev` 에 남긴다
+      const prev = known ? [...(known.prev || []), { created: known.created, ppid: known.ppid }] : undefined;
+      records.set(p.pid, { created: p.created, ppid: p.ppid, ws: p.ws, goneAt: null, ...(prev && { prev }) });
+      grown = true;
+    }
+  }
+  return records;
+}
+
+/**
+ * exclude 의 pid 와 그 살아 있는 자손. (pid, 생성 시각) 으로 살아 있는 목록, 기록, 기록이 바꾼 이전 기록을 따라가므로 중간
+ * 부모가 이미 끝난(그 pid 가 다시 쓰였어도) 자손도 들어간다. 프로세스의 부모는 그보다 늦지 않게 만들어진, 부모 pid 를 가진
+ * 가장 늦은 프로세스다. 그 pid 의 어느 프로세스보다 먼저 만들어진 자식은 누구의 자식도 아니다. 생성 시각이 없으면(POSIX)
+ * pid 하나가 프로세스 하나다.
+ */
+function excludedSet(live, exclude, records = new Map()) {
+  const nodes = new Map(); // `${pid}:${created}` -> { pid, ppid, created }
+  const add = (pid, ppid, created) => {
+    const key = `${pid}:${created}`;
+    if (!nodes.has(key)) nodes.set(key, { key, pid, ppid, created });
+  };
+  for (const p of live.values()) add(p.pid, p.ppid, p.created);
+  for (const [pid, r] of records) {
+    if (r.root) continue;
+    for (const x of [r, ...(r.prev || [])]) add(pid, x.ppid, x.created);
+  }
+  const withPid = new Map();
+  for (const n of nodes.values()) withPid.set(n.pid, [...(withPid.get(n.pid) || []), n]);
+  const parentOf = (n) => {
+    let best = null;
+    for (const c of withPid.get(n.ppid) || []) {
+      if (c.created != null && n.created != null && c.created > n.created) continue;
+      if (!best || (c.created ?? -Infinity) > (best.created ?? -Infinity)) best = c;
+    }
+    return best;
+  };
+  const ex = new Set([...nodes.values()].filter((n) => exclude.includes(n.pid)).map((n) => n.key));
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const n of nodes.values()) {
+      if (ex.has(n.key)) continue;
+      const parent = parentOf(n);
+      // 목록에 한 번도 없던 제외 pid 도 자기 고아를 가진다
+      if (parent ? !ex.has(parent.key) : !(exclude.includes(n.ppid) && !withPid.has(n.ppid))) continue;
+      ex.add(n.key);
+      grown = true;
+    }
+  }
+  const out = new Set(exclude);
+  for (const p of live.values()) if (ex.has(`${p.pid}:${p.created}`)) out.add(p.pid);
+  return out;
+}
+
+/**
+ * 마지막 목록에서 끝낼 것: 기록된 생성 시각 그대로 살아 있는 기록된 자손에서 exclude 와 그 자손을 뺀 것. 부모 pid 로 이어진
+ * 하위 전체가 대상인 맨 위 대상은 { pid, tree: true, covers } 하나, 아니면 그 안의 대상마다 { pid, tree: false }.
+ */
+export function pickTargets(records, snapshot, { rootPid, startedAt, exclude = [] }) {
+  const live = byPid(snapshot);
+  const skip = excludedSet(live, exclude, records);
+  const targets = new Set();
+  for (const p of snapshot) {
+    const r = records.get(p.pid);
+    if (p.pid !== rootPid && r && !r.root && r.created === p.created && p.created >= startedAt && !skip.has(p.pid)) targets.add(p.pid);
+  }
+  const children = new Map();
+  for (const p of snapshot) children.set(p.ppid, [...(children.get(p.ppid) || []), p.pid]);
+  const subtree = (pid) => {
+    const seen = new Set([pid]);
+    for (const q of seen) for (const c of children.get(q) || []) seen.add(c);
+    return [...seen];
+  };
+  const out = [];
+  const done = new Set();
+  const handle = (pid) => {
+    const all = subtree(pid);
+    if (all.every((q) => targets.has(q) && !done.has(q))) {
+      all.forEach((q) => done.add(q));
+      out.push({ pid, tree: true, covers: all });
+      return;
+    }
+    done.add(pid);
+    out.push({ pid, tree: false });
+    // 대상이 아닌 것을 거쳐 아래로 가장 가까운 대상들
+    const queue = [...(children.get(pid) || [])];
+    const seen = new Set([pid]);
+    while (queue.length) {
+      const q = queue.shift();
+      if (seen.has(q)) continue;
+      seen.add(q);
+      if (targets.has(q)) {
+        if (!done.has(q)) handle(q);
+      } else queue.push(...(children.get(q) || []));
+    }
+  };
+  for (const pid of targets) if (!done.has(pid) && !targets.has(live.get(pid).ppid)) handle(pid);
+  for (const pid of targets) if (!done.has(pid)) handle(pid);
+  return out;
+}
+
+const settle = async (fn, ...args) => {
+  try {
+    return await fn(...args);
+  } catch {
+    return null;
+  }
+};
+const toMB = (bytes) => Math.round(bytes / 1048576);
+const EMPTY = Object.freeze({ count: 0, workingSetMB: 0 });
+
+/**
+ * 세션 프로세스 `pid` 의 추적기. start() 는 Windows 목록을 시작하고(다른 곳에서는 아무것도 안 함), finish({ exclude }) 는
+ * exclude 의 pid 와 그 자손을 빼고 세션이 남긴 것을 끝낸 뒤 끝낸 것의 { count, workingSetMB } 로 끝난다. reject 하지 않고,
+ * finish() 를 다시 부르면 같은 promise 를 돌려준다. `startedAt` 은 spawn 바로 전에 잰다.
+ */
+export function createTracker({
+  pid, startedAt, platform = process.platform, list, kill, signal, now = Date.now,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  timers = { setTimeout, setInterval, clearTimeout, clearInterval },
+  firstMs = FIRST_LIST_MS, everyMs = LIST_EVERY_MS, termWaitMs = TERM_WAIT_MS,
+}) {
+  const win = platform === 'win32';
+  const since = startedAt ?? now();
+  const listFn = list || (win ? listWindows : listPosix);
+  const killFn = kill || killWindows;
+  const signalFn = signal || signalPosix;
+  const records = new Map();
+  let started = false;
+  let finishing = null;
+  let first = null;
+  let every = null;
+  let inFlight = null;
+
+  const take = async () => {
+    const snap = await settle(listFn);
+    return Array.isArray(snap) ? snap : null;
+  };
+  const tick = () => {
+    if (inFlight || finishing) return;
+    const at = now();
+    inFlight = take()
+      .then((snap) => {
+        if (snap) collect(records, snap, { rootPid: pid, startedAt: since, at });
+      })
+      .catch(() => {})
+      .finally(() => { inFlight = null; });
+  };
+
+  // gone: finish() 를 부른 시각. 돌고 있는 목록을 기다리기 전에 잰다
+  const finishWindows = async (exclude, gone) => {
+    const snap = await take();
+    if (!snap) return EMPTY;
+    collect(records, snap, { rootPid: pid, startedAt: since, at: gone, rootGone: gone });
+    const picks = pickTargets(records, snap, { rootPid: pid, startedAt: since, exclude });
+    const live = byPid(snap);
+    const results = await Promise.allSettled(picks.map((t) => settle(killFn, t.pid, { tree: t.tree })));
+    let count = 0;
+    let bytes = 0;
+    picks.forEach((t, i) => {
+      if (results[i].status !== 'fulfilled' || results[i].value !== true) return;
+      for (const q of t.tree ? t.covers : [t.pid]) {
+        count += 1;
+        bytes += live.get(q)?.ws || 0;
+      }
+    });
+    return { count, workingSetMB: toMB(bytes) };
+  };
+
+  const finishPosix = async (exclude) => {
+    const snap = await take();
+    if (!snap) return EMPTY;
+    // 세션의 pid 로 살아 있는 프로세스는 이제 다른 그룹의 우두머리다: 신호를 보내지 않는다
+    if (snap.some((p) => p.pid === pid)) return EMPTY;
+    const members = snap.filter((p) => p.pgid === pid);
+    if (!members.length) return EMPTY;
+    // 그룹에 제외할 프로세스가 있으면 아무 신호도 보내지 않는다: 이제 맨 위 구성원은 모두 pid 1 의 고아라 세션이 남긴 것과
+    // 제외할 프로세스의 자손을 가를 수 없다
+    const skip = excludedSet(byPid(snap), exclude);
+    if (members.some((p) => skip.has(p.pid))) return EMPTY;
+    const send = async (sig) => (await settle(signalFn, -pid, sig)) === true;
+    const termed = await send('SIGTERM');
+    await settle(sleep, termWaitMs);
+    const after = await take();
+    let stopped;
+    if (!after) stopped = termed ? members : [];
+    else {
+      const still = new Set(after.filter((p) => p.pgid === pid).map((p) => p.pid));
+      const left = members.filter((p) => still.has(p.pid));
+      stopped = termed ? members.filter((p) => !still.has(p.pid)) : [];
+      if (left.length && await send('SIGKILL')) stopped.push(...left);
+    }
+    return { count: stopped.length, workingSetMB: toMB(stopped.reduce((s, p) => s + p.ws, 0)) };
+  };
+
+  return {
+    start() {
+      if (!win || started || finishing) return;
+      started = true;
+      first = timers.setTimeout(() => {
+        first = null;
+        if (finishing) return;
+        every = timers.setInterval(tick, everyMs);
+        every?.unref?.();
+        tick();
+      }, firstMs);
+      first?.unref?.();
+    },
+    finish({ exclude = [] } = {}) {
+      if (finishing) return finishing;
+      if (first) timers.clearTimeout(first);
+      if (every) timers.clearInterval(every);
+      first = every = null;
+      const gone = now();
+      finishing = (async () => {
+        try {
+          if (inFlight) await inFlight;
+          return await (win ? finishWindows(exclude, gone) : finishPosix(exclude));
+        } catch {
+          return EMPTY;
+        }
+      })();
+      return finishing;
+    },
+  };
+}
+
 // ------------------------------------------------------------------ 프로세스 실행
 
 /** Windows 에서 PATH 의 실제 파일을 찾는다. .cmd/.bat 은 셸을 거쳐야 실행된다. win·env 는 테스트가 바꿔 넘길 수 있다. */
@@ -249,19 +606,61 @@ function startEvents(runDir, fields) {
 }
 const minsSince = () => Math.max(0, Math.floor((Date.now() - progress.started) / 60000));
 
-/** 명령 하나를 실행하고 출력을 모은다. args 가 null 이면 cmd 를 셸 명령으로 돌린다. 절대 reject 하지 않는다. */
-function exec(cmd, args, { cwd, timeoutMs, env }) {
+// 세션이 남긴 것을 정리할 때 가장 오래 기다리는 시간(am stage.mjs 와 같은 값). 넘으면 `cleaned` 는 0
+export const CLEANUP_MS = 60000;
+const NOTHING_CLEANED = Object.freeze({ count: 0, workingSetMB: 0 });
+
+/** 정리가 무언가를 끝냈을 때의 알림 글. 끝낸 것이 없으면 null. */
+export function cleanedText({ count, workingSetMB } = {}) {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  return `남은 프로세스 ${count}개 정리 (작업 집합 합계 약 ${workingSetMB} MB)`;
+}
+
+/**
+ * 명령 하나를 실행하고 출력을 모은다. args 가 null 이면 cmd 를 셸 명령으로 돌린다. 절대 reject 하지 않는다.
+ * track(proc-tree 사본의 createTracker 꼴)을 넘기면 명령이 끝났을 때(close, 시간 초과 뒤 포함) 그것이 남긴 것을 cleanupMs
+ * 까지 기다려 끝내고, 결과의 `cleaned` 는 { count, workingSetMB }(실패하면 0)이다.
+ */
+export function exec(cmd, args, { cwd, timeoutMs, env, track = null, cleanupMs = CLEANUP_MS }) {
   return new Promise((resolve) => {
     let child;
+    let startedAt;
     try {
       const opts = { cwd, env, windowsHide: true, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] };
       const target = args === null ? null : resolveCommand(cmd);
+      startedAt = Date.now();
       if (!target) child = spawn(cmd, { ...opts, shell: true });
       else child = target.shell ? spawn([target.file, ...cmdExeArgs(args)].map(winQuote).join(' '), { ...opts, shell: true }) : spawn(target.file, args, opts);
     } catch (err) {
-      resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message });
+      resolve({ code: null, stdout: '', stderr: '', timedOut: false, spawnError: err.message, cleaned: NOTHING_CLEANED });
       return;
     }
+    let tracker = null;
+    if (track && Number.isInteger(child.pid)) {
+      try {
+        tracker = track({ pid: child.pid, startedAt });
+        tracker.start();
+      } catch {
+        tracker = null;
+      }
+    }
+    const cleanup = async () => {
+      let limit = null;
+      try {
+        const done = Promise.resolve()
+          .then(() => tracker.finish({}))
+          .then((c) => (c && Number.isInteger(c.count) ? { count: c.count, workingSetMB: Number(c.workingSetMB) || 0 } : NOTHING_CLEANED), () => NOTHING_CLEANED);
+        const late = new Promise((r) => {
+          limit = setTimeout(() => r(NOTHING_CLEANED), Math.max(1, cleanupMs));
+          limit.unref?.();
+        });
+        return await Promise.race([done, late]);
+      } catch {
+        return NOTHING_CLEANED;
+      } finally {
+        clearTimeout(limit);
+      }
+    };
     activeChildren.add(child);
     let stdout = '';
     let stderr = '';
@@ -273,14 +672,20 @@ function exec(cmd, args, { cwd, timeoutMs, env }) {
       timedOut = true;
       killTree(child);
     }, timeoutMs);
-    const finish = (r) => {
+    // ended: 자식이 끝났으니 남긴 것을 끝내도 된다(돌고 있는 자식의 오류, 끝내기 실패에서는 아무것도 끝내지 않는다)
+    const finish = (r, ended = true) => {
       if (settled) return;
       settled = true;
       activeChildren.delete(child);
       clearTimeout(timer);
-      resolve({ stdout, stderr, timedOut, spawnError: null, ...r });
+      const result = { stdout, stderr, timedOut, spawnError: null, ...r };
+      if (!tracker || !ended) {
+        resolve({ ...result, cleaned: NOTHING_CLEANED });
+        return;
+      }
+      cleanup().then((cleaned) => resolve({ ...result, cleaned }));
     };
-    child.on('error', (err) => finish({ code: null, spawnError: err.message }));
+    child.on('error', (err) => finish({ code: null, spawnError: err.message }, child.exitCode !== null || child.signalCode !== null));
     child.on('close', (code) => finish({ code }));
   });
 }
@@ -735,9 +1140,14 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   const started = Date.now();
   let r;
   try {
-    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000 });
+    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, track: createTracker });
   } finally {
     release();
+  }
+  const cleaned = cleanedText(r.cleaned); // 실패한 세션에서도 남긴다
+  if (cleaned) {
+    log(ctx, `    ${who}${phase}: 세션이 남긴 프로세스 ${cleaned.replace(/^남은 프로세스 /, '')}`);
+    event({ ev: 'note', stage: phase, task, text: cleaned });
   }
   writeFileSync(`${base}.out.json`, r.stdout);
   if (r.stderr) writeFileSync(`${base}.err.log`, r.stderr);
