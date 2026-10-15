@@ -50,7 +50,7 @@ A plan of 2 or more implementation runs is never implemented whole; each part ru
 - From the first Part line with no `- Part <k> done:` line in the parent's Change log, in order:
   1. Tell the user in one plain line `Part <k>/<N>: <slug>-p<k>` and the part's scope.
   2. If `.am/<slug>-p<k>/request.md` is missing, write exactly `Part <k> of <N> of .am/<slug>/plan.md: <that Part line>. Plan only this part; the parent plan holds the whole design and its decisions.`; if the folder's request.md does not start with `Part <k> of <N> of .am/<slug>/plan.md:`, stop.
-  3. Run that file's stage flow with exactly `<slug>-p<k>` as the slug and `--solo=<slug>` (its resume rules and progress command included).
+  3. Run that file's stage flow with exactly `<slug>-p<k>` as the slug and `--solo=<slug>` (its resume rules and progress command included). In push mode each part's commit stage pushes.
   4. When its commit stage ends `COMMITTED` or `NOTHING` (without stage sessions: when the am:commit skill commits or finds nothing to commit), log `- Part <k> done: <slug>-p<k>` in the parent's Change log and go to the next part. A part that stops stops this skill with its reason.
-- In Codex, or after `unavailable`, run the same loop in this session with the am:plan, am:do, am:check and am:commit skills (no compaction). In push mode each part's commit stage pushes.
+- In Codex, or after `unavailable`, run the same loop in this session with the am:plan, am:do, am:check and am:commit skills (no compaction).
 - When every part is done, reply by step 7 with each part's check verdict and commits, and, for each stage result whose `solo` is not null and whose `fresh` is not null, why a new session was started and whether it was given the saved context (`context`). If you stopped, the way to continue is this skill with the parent slug (`push <slug>` in push mode).

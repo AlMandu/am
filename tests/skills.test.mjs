@@ -127,6 +127,11 @@ test('am:solo follows am:auto\'s file with its own differences', async () => {
   // The plan stage writes the Parts lines in this form; in a session with no stage sessions am:solo writes them itself.
   assert.ok(solo.includes(PART_LINE), 'PART_LINE');
   assert.ok(!solo.includes('skills/run/SKILL.md'));
+  // Push mode belongs to the stage flow of each part, not only to the Codex loop.
+  const parts = solo.split('\n## Parts\n')[1].split('\n## ')[0].split('\n');
+  const push = "In push mode each part's commit stage pushes.";
+  assert.ok(parts.find((l) => l.startsWith('  3. ')).includes(push), 'push on part step 3');
+  assert.ok(!parts.find((l) => l.includes('In Codex, or after')).includes(push), 'push not on the Codex line');
 });
 
 test('am:auto keeps the anchors am:solo refers to', () => {
@@ -148,6 +153,8 @@ test('am:sessions runs the read-only report script once and the model may invoke
   // No Codex manifest: the model may pick this skill on its own in both tools.
   assert.ok(!existsSync(path.join(ROOT, 'sessions', 'agents', 'openai.yaml')));
   assert.match(skill, /Change, remove or stop nothing/);
+  // The report shows solo tasks as am:auto tasks, so both ways to resume are named.
+  assert.ok(skill.includes('`am:solo <slug>`'));
 });
 
 test('am:auto starts the progress command next to every stage command', async () => {
