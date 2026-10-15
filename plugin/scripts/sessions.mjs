@@ -32,12 +32,11 @@ import { pathToFileURL } from 'node:url';
 import { countDone } from '../hooks/handover.mjs';
 import { hostName, liveRecords, sessionsDirOf } from './memory-guard.mjs';
 import { pidAlive, readFrom } from './progress.mjs';
-import { COMPACT_PENDING, WORKER_FILES, WORKER_STALE_MS, hhmm } from './stage.mjs';
+import { COMPACT_PENDING, STAGES, WORKER_FILES, WORKER_STALE_MS, hhmm } from './stage.mjs';
 
 const USAGE = 'usage: node sessions.mjs';
 export const GIT_TIMEOUT_MS = 5000;
 export const NEWS_MAX = 120;
-const STAGES = ['plan', 'do', 'check', 'commit'];
 const ROLE_NAMES = { plan: '계획', do: '구현', check: '점검', commit: '커밋', fix: '수정', compact: '압축', handover: '인계', implement: '구현', split: '작업 나누기', answer: '답 반영' };
 const WIN = process.platform === 'win32';
 

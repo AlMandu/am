@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
-import { CODEX_EFFORTS, CODEX_MODEL, frontmatterModels, readUserModels, resolveOwn, userModelsFile } from './user-models.mjs';
+import { CODEX_EFFORTS, CODEX_MODEL, FRONTMATTER, frontmatterModels, readUserModels, resolveOwn, userModelsFile } from './user-models.mjs';
 
 const WIN = process.platform === 'win32';
 // Must stay below the 10-minute limit of the Bash tool that runs this script.
@@ -91,7 +91,7 @@ export function checkBrief(file, cwd) {
 
 /** The prompt Codex gets: a short note, the second-opinion instructions without frontmatter, the brief. */
 export function buildPrompt(agentText, brief) {
-  const body = agentText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim();
+  const body = agentText.replace(FRONTMATTER, '').trim();
   return `${PREAMBLE}\n\n${body}\n\n# Brief\n\n${brief.trim()}\n`;
 }
 
