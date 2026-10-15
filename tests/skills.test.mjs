@@ -121,7 +121,7 @@ test('am:auto drives the stage runner and handles every status it prints', async
 test('am:solo follows am:auto\'s file with its own differences', async () => {
   const solo = withoutCommon(read('solo'));
   const { PART_LINE } = await import('../plugin/scripts/stage.mjs');
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
   // The plan stage writes the Parts lines in this form; in a session with no stage sessions am:solo writes them itself.
   assert.ok(solo.includes(PART_LINE), 'PART_LINE');
   assert.ok(!solo.includes('skills/run/SKILL.md'));

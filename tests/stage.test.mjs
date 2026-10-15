@@ -133,6 +133,11 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)', 'Edit(/.am/demo/handoff.md)', 'Edit(.am/demo/handoff.md)']);
   assert.deepEqual(recorded.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
   assert.deepEqual(recorded.deny, commit.deny);
+  // A solo commit stage may also write its owner's memory file; the rest stays as it is.
+  const solo = permissions('commit', { slug: 'demo-p1', soloOwner: 'demo' });
+  assert.deepEqual(solo.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo-p1/commits.md)', 'Edit(.am/demo-p1/commits.md)', 'Edit(/.am/demo-p1/handoff.md)', 'Edit(.am/demo-p1/handoff.md)', 'Edit(/.am/demo/solo-context.md)', 'Edit(.am/demo/solo-context.md)']);
+  assert.deepEqual(solo.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
+  assert.deepEqual(solo.deny, commit.deny);
   assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says, and after the last one update \.am\/demo\/handoff\.md as the skill says; those are the only files this session can write/);
   // The plan stage may also write the current-task mark, which its .am/ allowance already covers.
   assert.match(instructions('plan', 'demo').system, /only under \.am\/demo\/ and the current-task mark \.am\/\.active with the Write or Edit tool/);
@@ -252,9 +257,14 @@ test('instructions: solo changes three sentences of the unattended rules and add
       assert.ok(!system.includes(from), `${s}: ${from} gone`);
       back = back.replace(to, from);
     }
-    // Only these sentences and the plan's Parts line differ from the rules without solo.
+    // Only these sentences, the plan's Parts line, the commit stage's writable files and the memory save rule differ from the rules without solo.
     if (s === 'plan') back = back.replace(/\n- If the Scale line says 2 or more implementation runs, add a section headed exactly `## Parts`[^\n]*/, '');
+    if (s === 'commit') back = back.replace('those two and .am/demo/solo-context.md (below) are the only files', 'those are the only files');
+    const save = back.match(/\n- Before your final reply, also when you stop, rewrite \.am\/demo\/solo-context\.md whole with the Write tool[^\n]*/);
+    assert.ok(save && back.endsWith(`${save[0]}\n`), `${s}: the save rule ends the rules`);
+    back = back.replace(save[0], '');
     assert.equal(back, plain, `${s} push ${push}`);
+    assert.ok(!system.includes('This stage starts in a new session'), `${s}: no read rule without soloRead`);
     // The fixed wording of the stage rules holds in the solo form too.
     assert.match(system, /the mark \(auto-decided\), translated into the plan's language \(\(자동 결정\) in a Korean plan\)/, s);
     for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds']) assert.ok(system.includes(stop), `${s}: ${stop}`);
@@ -272,6 +282,16 @@ test('instructions: solo changes three sentences of the unattended rules and add
     const { system } = instructions(s, 'demo', { solo: { owner: 'demo' } });
     assert.ok(!system.includes('## Parts') && !system.includes('This is a part plan'), s);
   }
+  // A part saves and reads its owner's memory file; the read rule comes only with soloRead, after the save rule.
+  const read = instructions('do', 'demo-p1', { solo: { owner: 'demo' }, soloRead: true }).system;
+  assert.ok(read.includes('rewrite .am/demo/solo-context.md whole with the Write tool, in the plan\'s language and in about 60 lines or fewer'));
+  assert.ok(read.endsWith('- This stage starts in a new session: the shared session of this am:solo task could not be continued. Before anything else, read .am/demo/solo-context.md, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.\n'));
+  assert.ok(!read.includes('.am/demo-p1/solo-context.md'));
+  assert.ok(instructions('commit', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('those two and .am/demo/solo-context.md (below) are the only files this session can write'));
+  assert.ok(instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('only under .am/demo-p1/, .am/demo/solo-context.md (below) and the current-task mark'));
+  assert.ok(!instructions('plan', 'demo', { solo: { owner: 'demo' } }).system.includes('(below) and the current-task mark'));
+  // soloRead without solo changes nothing.
+  assert.equal(instructions('do', 'demo', { soloRead: true }).system, instructions('do', 'demo').system);
 });
 
 test('doKind: hand over a large new plan only when the run skill is installed', () => {
@@ -328,7 +348,7 @@ test('solo: do --solo of a large plan ends `failed` with no session and no hand-
   assert.deepEqual(evs(events(dir)), ['start', 'end']);
   const planned = makeRepo(t, { fake: PLANNED });
   const p = await run(planned, ['plan', 'demo', '--solo']);
-  assert.deepEqual({ ...p.result, reply: !!p.result.reply }, { ...PLAN_RESULT, solo: { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session' } });
+  assert.deepEqual({ ...p.result, reply: !!p.result.reply }, { ...PLAN_RESULT, solo: { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session', context: false } });
   assert.deepEqual(Object.keys(p.result), Object.keys(PLAN_RESULT));
   assert.deepEqual(Object.keys(JSON.parse(stageLine('plan', 'demo', 'WAIT', ''))), Object.keys(PLAN_RESULT));
   // The session gets the solo rules: the owner's plan stage the Parts rule.
@@ -361,7 +381,7 @@ test('solo session: without a record the stage starts a new session and records 
   assert.deepEqual(rec, { sessionId: 'sess-1', slug: 'demo', stage: 'plan', status: 'READY' });
   assert.equal(new Date(at).toISOString(), at);
   assert.ok(notes(dir).includes('solo: no recorded session; started a new one'));
-  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session' });
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session', context: false });
 });
 
 // The same stage after a question goes straight on, with no compaction.
@@ -2109,7 +2129,7 @@ test('solo compaction: another stage compacts the recorded session first, with n
   assert.ok(notes(dir).includes('conversation compacted before the do stage of demo'));
   assert.deepEqual([soloRecord(dir).stage, soloRecord(dir).status], ['do', 'DONE']);
   assert.equal(result.status, 'DONE');
-  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: true, fresh: null });
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: true, fresh: null, context: false });
   // Only the stage call's cost: it reports the whole conversation.
   assert.equal(result.costUsd, 0.5);
   assert.deepEqual(result.denied, []);
@@ -2201,7 +2221,7 @@ test('solo compaction: a claude that cannot start is `unavailable` and keeps the
   assert.match(result.reason, /could not start/);
   assert.ok(!notes(dir).some((n) => n.startsWith('solo: could not continue')));
   assert.deepEqual(soloRecord(dir), RECORDED);
-  assert.deepEqual(result.solo, { owner: 'demo', sessionId: null, compacted: false, fresh: null });
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: null, compacted: false, fresh: null, context: false });
 });
 
 test('solo compaction: the prompt passes through cmd.exe', () => {
@@ -2233,6 +2253,92 @@ test('solo compaction: a whole solo run continues one session, compacted before 
   assert.ok(!existsSync(SOLO_FILE(dir, 'demo-p1')));
   const said = notes(dir, 'demo-p1');
   for (const stage of ['plan', 'do', 'check', 'commit']) assert.ok(said.includes(`conversation compacted before the ${stage} stage of demo-p1`), stage);
+});
+
+// ------------------------------------------------------------------ solo memory file for a new session
+
+const CONTEXT_FILE = (dir, owner = 'demo') => path.join(dir, '.am', owner, 'solo-context.md');
+const READ_LINE = 'This stage starts in a new session';
+const SAVE_LINE = 'rewrite .am/demo/solo-context.md whole with the Write tool';
+const CONTEXT_NOTE = 'solo: the new session reads .am/demo/solo-context.md';
+const systemOf = (dir, kind, slug = 'demo') => readFileSync(path.join(dir, '.am', slug, `stage-${kind}.system.md`), 'utf8');
+
+test('solo memory: a stage with no recorded session is told to read the saved memory, only when there is one', async (t) => {
+  for (const saved of [true, false]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'] } });
+    if (saved) writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+    assert.equal(calls.length, 1);
+    const system = systemOf(dir, 'do');
+    assert.equal(system.includes(READ_LINE), saved, `saved ${saved}`);
+    assert.ok(system.includes(SAVE_LINE));
+    assert.equal(notes(dir).includes(CONTEXT_NOTE), saved, `saved ${saved}`);
+    assert.equal(result.solo.context, saved);
+  }
+});
+
+test('solo memory: a failed compaction or a continued stage that ends with an error gives the new session the memory', async (t) => {
+  // A failed compaction: the stage starts in a new session at once.
+  const failed = makeRepo(t, { plan: SMALL, fake: { replies: ['Compacted.', 'Done.\nAM_STAGE: DONE'], errors: [1], sessions: [null, 'sess-2'] } });
+  writeFileSync(SOLO_FILE(failed), JSON.stringify(RECORDED));
+  writeFileSync(CONTEXT_FILE(failed), '# memory\n');
+  const a = await run(failed, ['do', 'demo', '--solo']);
+  assert.equal(a.calls.length, 2);
+  assert.ok(!a.calls[1].includes('--resume'));
+  assert.ok(systemOf(failed, 'do').includes(READ_LINE));
+  assert.ok(notes(failed).includes(CONTEXT_NOTE));
+  assert.equal(a.result.solo.context, true);
+  // A continued stage that ends with an error: the rules file is rewritten before the new session.
+  const errored = makeRepo(t, { plan: SMALL, fake: { replies: ['x', 'Done.\nAM_STAGE: DONE'], errors: [1], sessions: ['sess-0', 'sess-2'] } });
+  writeFileSync(SOLO_FILE(errored), JSON.stringify(ASKED('do')));
+  writeFileSync(CONTEXT_FILE(errored), '# memory\n');
+  const b = await run(errored, ['do', 'demo', '--solo']);
+  assert.equal(b.calls.length, 2);
+  assert.equal(flag(b.calls[0], '--resume'), 'sess-0');
+  assert.ok(!b.calls[1].includes('--resume'));
+  assert.ok(systemOf(errored, 'do').includes(READ_LINE));
+  assert.equal(notes(errored).filter((n) => n === CONTEXT_NOTE).length, 1);
+  assert.equal(b.result.solo.context, true);
+});
+
+test('solo memory: a continued session is not told to read it, but every stage is told to save it', async (t) => {
+  for (const rec of [RECORDED, ASKED('do')]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: rec === RECORDED ? ['Compacted.', 'Done.\nAM_STAGE: DONE'] : ['Done.\nAM_STAGE: DONE'] } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(rec));
+    writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+    const { result } = await run(dir, ['do', 'demo', '--solo']);
+    assert.equal(result.status, 'DONE');
+    const system = systemOf(dir, 'do');
+    assert.ok(!system.includes(READ_LINE) && system.includes(SAVE_LINE), rec.status);
+    assert.ok(!notes(dir).includes(CONTEXT_NOTE), rec.status);
+    assert.equal(result.solo.context, false, rec.status);
+  }
+});
+
+test('solo memory: a part reads its owner\'s file; a plan stage that saved it hands it to a later new session', async (t) => {
+  const part = makeRepo(t, { plan: SMALL, fake: { replies: ['Checked.\nAM_STAGE: NOTE'] } });
+  const partDir = path.join(part, '.am', 'demo-p1');
+  mkdirSync(partDir, { recursive: true });
+  writeFileSync(path.join(partDir, 'plan.md'), SMALL);
+  writeFileSync(CONTEXT_FILE(part), '# memory\n');
+  const p = await run(part, ['check', 'demo-p1', '--solo=demo']);
+  const system = systemOf(part, 'check', 'demo-p1');
+  assert.ok(system.includes(`${READ_LINE}: the shared session of this am:solo task could not be continued. Before anything else, read .am/demo/solo-context.md`));
+  assert.ok(!system.includes('.am/demo-p1/solo-context.md'));
+  assert.ok(notes(part, 'demo-p1').includes(CONTEXT_NOTE));
+  assert.equal(p.result.solo.context, true);
+  // The whole path: the plan stage saves the memory; with the session record gone, the do stage is told to read it.
+  const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY', 'Done.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SMALL, '.am/demo/solo-context.md': '# memory\n' }] } });
+  const opts = { waitMs: 150, pollMs: 20 };
+  const planned = await run(dir, ['plan', 'demo', '--solo'], opts);
+  assert.equal(planned.result.solo.context, false);
+  assert.ok(existsSync(CONTEXT_FILE(dir)));
+  rmSync(SOLO_FILE(dir));
+  const done = await run(dir, ['do', 'demo', '--solo'], opts);
+  assert.equal(done.result.status, 'DONE');
+  assert.ok(systemOf(dir, 'do').includes(READ_LINE));
+  assert.ok(notes(dir).includes(CONTEXT_NOTE));
+  assert.equal(done.result.solo.context, true);
 });
 
 // ------------------------------------------------------------------ stage sessions on the user's values (inline call)
@@ -3174,7 +3280,7 @@ test('follow: a --solo call prints its own worker\'s result, which names the own
   const f = startFollow(dir, ['check', 'demo', '--solo']);
   assert.equal(await f.done, 0);
   const line = JSON.parse(f.text);
-  assert.deepEqual([line.status, line.solo], ['NOTE', { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session' }]);
+  assert.deepEqual([line.status, line.solo], ['NOTE', { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session', context: false }]);
   assert.equal(JSON.parse(readOr(WF(dir, 'result'))).solo, 'demo');
   // A part task of the task demo: its own folder, the owner demo.
   const part = makeRepo(t, { plan: SMALL, fake: NOTED });

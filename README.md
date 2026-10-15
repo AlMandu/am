@@ -264,6 +264,7 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 네 단계를 각각 새 `c
 - Claude Code 에서는 단계 명령마다 `--solo` 를 붙여, 네 단계가 새 세션 대신 한 세션을 이어 씁니다. 단계 사이에는 그 세션의 대화를 압축(`/compact`)하므로 앞 단계의 맥락을 잃지 않으면서 대화가 맥락 한도를 넘지 않습니다. 이어 쓰는 세션은 `.am/<slug>/solo-session.json` 에 기록됩니다.
 - 압축은 Claude Code 에서만 합니다. Codex 와, 세션을 띄울 수 없는 PC 에서는 `am:auto` 처럼 원래 대화 한 세션으로 진행하고 압축은 없습니다.
 - 압축 호출의 모델·effort 는 아래 사용자 설정 파일의 `compact` 키를 따릅니다(값은 "모델과 effort 기본값" 표).
+- 기억 파일: 단계마다 끝 답 직전에 그 세션의 기억(결정과 이유, 남은 문제, 작업 파일에 없는 내용)을 `.am/<slug>/solo-context.md` 에 덮어씁니다. 기록된 세션이 없거나, 압축이 실패하거나, 이어 연 단계가 오류로 끝나 새 세션으로 바뀌면 그 새 세션이 이 파일을 먼저 읽고 이어 갑니다. 이 파일은 지우지 않고, `.am/` 아래라 커밋되지 않습니다.
 
 #### 큰 작업은 부분으로 나눔
 
@@ -274,8 +275,8 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 네 단계를 각각 새 `c
 
 #### 진행 소식과 마지막 답
 
-- `am:auto` 의 진행 소식에 더해 다음 줄이 나옵니다: `conversation compacted before the <단계> stage of <slug>`(단계 사이 압축), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작).
-- 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유가 나옵니다.
+- `am:auto` 의 진행 소식에 더해 다음 줄이 나옵니다: `conversation compacted before the <단계> stage of <slug>`(단계 사이 압축), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
+- 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유와 저장된 기억을 받았는지가 나옵니다.
 - 중간에 멈추면 원인을 고치거나 질문에 답한 뒤 `am:solo <slug>` 로 이어 갑니다.
 
 ## 왜 이렇게 만들었나
