@@ -9,7 +9,7 @@ import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, merge: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, merge: 80, sessions: 80 };
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
@@ -137,6 +137,15 @@ test('am:auto keeps the anchors am:solo refers to', () => {
   assert.ok(step[2].includes('claude plugin list --json'), 'step 2');
   assert.ok(step[4].includes('Hand-over:'), 'step 4');
   assert.ok(step[7].includes('After a hand-over'), 'step 7');
+});
+
+test('am:sessions runs the read-only report script once and the model may invoke it', () => {
+  const skill = read('sessions');
+  assert.ok(skill.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/sessions.mjs"`'));
+  assert.ok(existsSync(path.join(ROOT, '..', 'scripts', 'sessions.mjs')), 'plugin/scripts/sessions.mjs');
+  // No Codex manifest: the model may pick this skill on its own in both tools.
+  assert.ok(!existsSync(path.join(ROOT, 'sessions', 'agents', 'openai.yaml')));
+  assert.match(skill, /Change, remove or stop nothing/);
 });
 
 test('am:auto starts the progress command next to every stage command', async () => {
