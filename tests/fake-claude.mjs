@@ -66,7 +66,7 @@ const runBuild = () => {
 
 let prompt = flag('-p') || '';
 const session = flag('--resume') || randomUUID();
-appendFileSync(path.join(stateDir, 'fake-calls.jsonl'), `${JSON.stringify({ prompt, argv, cwd })}\n`);
+appendFileSync(path.join(stateDir, 'fake-calls.jsonl'), `${JSON.stringify({ prompt, argv, cwd, cache5m: process.env.FORCE_PROMPT_CACHING_5M ?? null })}\n`);
 const markFile = (key) => path.join(stateDir, `fake-mark-${key.replace(':', '-')}`);
 let marked = null; // 이 호출이 끝나며 남길 "<단계>:<slug>" 표시
 const waitFor = async (phase, slug) => {

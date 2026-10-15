@@ -825,17 +825,17 @@ test('within the limit no compaction session runs', async (t) => {
   assert.ok(!existsSync(path.join(dir, '.am', 'demo', 'stage-compact.system.md')));
 });
 
-test('do, commit and the compaction session write the cache for 5 minutes; plan, check and a hand-over do not', async (t) => {
-  assert.deepEqual(CACHE_5M_KINDS, ['do', 'commit', 'compact']);
+test('every stage session and the compaction session write the cache for 5 minutes; a hand-over does not', async (t) => {
+  assert.deepEqual(CACHE_5M_KINDS, ['plan', 'do', 'check', 'commit', 'compact']);
   const cases = [
-    [['plan', 'demo'], { replies: ['AM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } }, undefined, [null]],
+    [['plan', 'demo'], { replies: ['AM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } }, undefined, ['1']],
     // The second call asks the same session again for its end line.
     [['do', 'demo'], { replies: ['Implemented.', 'AM_STAGE: DONE'] }, SMALL, ['1', '1']],
-    [['check', 'demo'], { replies: ['AM_STAGE: NOTE'] }, SMALL, [null]],
+    [['check', 'demo'], { replies: ['AM_STAGE: NOTE'] }, SMALL, ['1']],
     [['commit', 'demo'], { replies: ['AM_STAGE: COMMITTED'] }, SMALL, ['1']],
     [['do', 'demo'], { replies: ['AM_STAGE: HANDED'] }, LARGE, [null], { orchestrator: () => '/orch' }],
-    // The compaction session before a check: 5 minutes for it, 1 hour for the check.
-    [['check', 'demo'], { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] }, BIG, ['1', null]],
+    // The compaction session before a check, then the check.
+    [['check', 'demo'], { replies: ['AM_STAGE: COMPACTED', 'AM_STAGE: NOTE'], writes: [{ '.am/demo/plan.md': SHORT }] }, BIG, ['1', '1']],
   ];
   for (const [argv, fake, planText, want, opts = {}] of cases) {
     const dir = makeRepo(t, { plan: planText, fake });
@@ -865,7 +865,7 @@ test('sessionEnv: a hand-over gets the owner pid; every other kind loses an inhe
   for (const kind of ['plan', 'check']) {
     const got = sessionEnv(kind, plain, 7);
     assert.notEqual(got, plain, kind);
-    assert.deepEqual(got, { A: '1', DISABLE_AUTOUPDATER: '1' }, kind);
+    assert.deepEqual(got, { A: '1', DISABLE_AUTOUPDATER: '1', FORCE_PROMPT_CACHING_5M: '1' }, kind);
   }
   assert.deepEqual(plain, { A: '1' });
   const given = { A: '1' };

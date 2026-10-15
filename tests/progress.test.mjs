@@ -60,8 +60,12 @@ function setup({ folder = true } = {}) {
   return env;
 }
 
+// The timing tests below are written for a 30-second batch; the default batch is checked on its own.
+const BATCH = 30000;
 // Runs one wait on the virtual clock. Returns what it printed, in how many writes, and when (ms from the start of the test).
 async function run(env, { consumer = 'terminal', onWrite, ...opts } = {}) {
+  opts = { batchMs: BATCH, ...opts };
+  if (opts.batchMs === null) delete opts.batchMs; // null: the default batch
   const writes = [];
   let at = null;
   const out = {
@@ -82,7 +86,7 @@ const START = { ev: 'start', text: 'plan stage started', pid: LIVE, stage: 'plan
 
 test('DEFAULTS keep the start wait inside the quiet time and the whole life under 8 minutes 30 seconds', () => {
   assert.deepEqual(Object.keys(DEFAULTS).sort(), ['batchMs', 'maxLifeMs', 'pollMs', 'quietMs', 'startWaitMs']);
-  assert.equal(DEFAULTS.batchMs, 30000);
+  assert.equal(DEFAULTS.batchMs, 120000);
   assert.equal(DEFAULTS.quietMs, 480000);
   assert.equal(DEFAULTS.startWaitMs, 60000);
   assert.ok(DEFAULTS.startWaitMs <= DEFAULTS.quietMs && DEFAULTS.quietMs < DEFAULTS.maxLifeMs && DEFAULTS.maxLifeMs <= 510000);
@@ -182,6 +186,15 @@ test('a step waits exactly the batch time and takes later lines along; a start d
   assert.deepEqual(r.lines, ['start: check stage started [stage=check]', 'state: running (check, 0 min)']);
 });
 
+test('without batchMs a step waits the default batch time of 2 minutes', async () => {
+  const env = setup();
+  env.add(START);
+  env.addAt(100000, { ev: 'step', text: 'later' });
+  const r = await run(env, { batchMs: null });
+  assert.equal(r.at, DEFAULTS.batchMs);
+  assert.deepEqual(r.lines, ['start: plan stage started [stage=plan]', 'step: later', 'state: running (plan, 2 min)']);
+});
+
 test('alert and end are printed at the next check', async () => {
   const env = setup();
   env.add(START);
@@ -208,7 +221,7 @@ test('a note alone wakes nobody: after the quiet time only the state line, and t
   assert.equal(env.cursor(), cursor);
   env.addAt(520000, { ev: 'step', text: 'news' });
   r = await run(env);
-  assert.equal(r.at, 520000 + DEFAULTS.batchMs);
+  assert.equal(r.at, 520000 + BATCH);
   assert.deepEqual(r.lines, ['note: compacted', 'step: news', 'state: running (plan, 9 min)']);
   assert.equal(env.cursor(), String(env.size()));
 });
@@ -345,7 +358,7 @@ test('another wait that moves the cursor during the wait: no line twice, and the
   env.at(40000, () => writeFileSync(env.paths().cursor, String(env.size())));
   env.addAt(50000, { ev: 'step', text: 'mine' });
   let r = await run(env);
-  assert.equal(r.at, 50000 + DEFAULTS.batchMs); // the batch of 31 s was dropped; a new one began with the line seen at 50 s
+  assert.equal(r.at, 50000 + BATCH); // the batch of 31 s was dropped; a new one began with the line seen at 50 s
   assert.deepEqual(r.lines, ['step: mine', 'state: running (plan, 1 min)']);
   assert.equal(env.cursor(), String(env.size()));
 
@@ -399,7 +412,7 @@ test('a read error in the middle of a wait is no change, not an ended state', as
     env.add({ ev: 'step', text: 'after the error' });
   });
   const r = await run(env);
-  assert.equal(r.at, 50000 + DEFAULTS.batchMs);
+  assert.equal(r.at, 50000 + BATCH);
   assert.deepEqual(r.lines, ['step: after the error', 'state: running (plan, 1 min)']);
 });
 

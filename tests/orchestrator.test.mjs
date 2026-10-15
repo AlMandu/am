@@ -399,6 +399,8 @@ test('정상 흐름: 세 작업을 순서대로 계획 → 구현 → 점검 →
   assert.deepEqual(r.g('log', '--format=%s', 'main..HEAD').trim().split('\n').reverse(), ['feat(t01-a): fake commit', 'feat(t02-b): fake commit', 'feat(t03-c): fake commit']);
   assert.equal(r.g('status', '--porcelain').trim(), '', '.am 과 .orchestrator 는 git 에 안 잡힌다');
   assert.ok(r.calls().every((c) => c.cwd === realpathSync(r.repo)), '예상 파일이 모두 겹치면(src/**) 하나씩, 이 저장소에서 돈다');
+  // doctor 의 시험 호출은 단계 세션이 아니라 대상 밖이다
+  assert.ok(r.calls().filter((c) => c.prompt !== 'Reply with the single word OK.').every((c) => c.cache5m === '1'), '모든 단계 세션이 프롬프트 캐시를 5분 보관으로 쓴다');
   const prompts = r.calls().map((c) => c.prompt).filter((p) => p.startsWith('/am:'));
   assert.deepEqual(prompts.slice(0, 4), ['/am:plan Plan task T01 described in .am/t01-a/brief.md (slug t01-a)', `/am:do t01-a`, '/am:check t01-a', '/am:commit task T01 t01-a']);
   const brief = readFileSync(path.join(r.repo, '.am', 't02-b', 'brief.md'), 'utf8');
@@ -420,6 +422,7 @@ test('점검에서 막히면 구현 세션을 이어 고치고 다시 점검한�
   assert.equal(s.fixRounds, 1);
   const fix = r.calls().find((c) => c.prompt.startsWith('am:check blocked'));
   assert.equal(fix.argv[fix.argv.indexOf('--resume') + 1], s.sessions.implement);
+  assert.equal(fix.cache5m, '1', '이어 고치는 세션도 5분 캐시');
   assert.ok(existsSync(path.join(r.runDir(), 'T01', 'check-1.md')) && existsSync(path.join(r.runDir(), 'T01', 'check-2.md')));
 });
 

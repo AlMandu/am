@@ -22,7 +22,7 @@ const USAGE = 'usage: node progress.mjs <slug> [--consumer <name>]';
 // Unread step and start lines are collected for batchMs; a quiet wait ends after quietMs with the state line only;
 // a wait that begins in an ended state gives a new start startWaitMs to appear (up to maxLifeMs after a recent wait note
 // of a stage that waits for another run). maxLifeMs stays under the 10-minute default limit of a background command.
-export const DEFAULTS = { batchMs: 30000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
+export const DEFAULTS = { batchMs: 120000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
 const EVENTS = ['start', 'step', 'note', 'alert', 'end'];
 const SHOWN = ['stage', 'task', 'status', 'min', 'src'];
 const ENDED = 'state: ended';

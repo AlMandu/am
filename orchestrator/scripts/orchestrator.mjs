@@ -1146,7 +1146,8 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume, slug }) {
   const started = Date.now();
   let r;
   try {
-    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot, slug })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, track: createTracker });
+    // 모든 세션이 프롬프트 캐시를 5분 보관으로 쓴다: 요청 간격이 대개 5분 안이라 1시간 저장보다 싸다
+    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot, slug })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, env: { ...process.env, FORCE_PROMPT_CACHING_5M: '1' }, track: createTracker });
   } finally {
     release();
   }
@@ -3829,7 +3830,7 @@ async function cmdRun(repo, opt) {
 
 // am 의 대기 명령(plugin/scripts/progress.mjs)과 같은 규격이다: 같은 이벤트 줄에는 같은 출력을 낸다.
 // am 과 따로 설치되므로 그 파일을 import 하지 않고 다시 쓴다. 시간 값은 모두 인자로 받는다.
-export const PROGRESS_DEFAULTS = { batchMs: 30000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
+export const PROGRESS_DEFAULTS = { batchMs: 120000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
 const PROGRESS_EVENTS = ['start', 'step', 'note', 'alert', 'end'];
 const PROGRESS_SHOWN = ['stage', 'task', 'status', 'min', 'src'];
 const PROGRESS_ENDED = 'state: ended';

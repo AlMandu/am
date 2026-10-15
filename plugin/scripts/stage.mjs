@@ -20,8 +20,8 @@
 // The hand-over session gets this process's pid as AM_HANDOVER_OWNER, which an orchestrator worker writes as its `owner`;
 // however the hand-over ends (a pushed-out worker too), that worker gets SIGTERM, only while it is alive and holds the
 // orchestrator lock.
-// The do and commit sessions and the compaction session write the prompt cache for 5 minutes, not 1 hour
-// (FORCE_PROMPT_CACHING_5M): they rarely wait that long, and the 5-minute write costs less.
+// Every session but the hand-over writes the prompt cache for 5 minutes, not 1 hour (FORCE_PROMPT_CACHING_5M): they
+// rarely wait that long between requests, and the 5-minute write costs less.
 // After the arguments the user models file (user-models.mjs) is read: broken, the stage ends `failed` with no session and
 // no start line; its compact (else default) values replace COMPACT_MODEL for the compaction session, noted when different,
 // its stage-key (else default) values the skill's frontmatter for the plan, do, check and commit sessions, and
@@ -148,8 +148,8 @@ const TAIL_CHARS = 600;
 // The compaction session runs no skill, so it gets its model and effort as arguments (written by scripts/models.mjs);
 // the user models file's compact/default value replaces it.
 export const COMPACT_MODEL = { model: 'sonnet', effort: 'medium' };
-// Session kinds whose prompt cache is written for 5 minutes. Plan and check wait on reviewers and gates for longer, so they keep 1 hour.
-export const CACHE_5M_KINDS = ['do', 'commit', 'compact'];
+// Session kinds whose prompt cache is written for 5 minutes. Only the hand-over, which waits on orchestrator workers, keeps 1 hour.
+export const CACHE_5M_KINDS = ['plan', 'do', 'check', 'commit', 'compact'];
 // The variable a hand-over session gets with this process's pid; an orchestrator worker it starts writes it to worker.json as `owner`.
 export const HANDOVER_OWNER = 'AM_HANDOVER_OWNER';
 /**

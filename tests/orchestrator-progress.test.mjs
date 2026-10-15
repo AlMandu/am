@@ -218,8 +218,12 @@ function clock(current) {
   return w;
 }
 
+// 아래 시간 테스트는 30초 묶음으로 짰다. 기본 묶음 시간은 따로 확인한다
+const BATCH = 30000;
 /** 대기 한 번. 낸 줄들과 낸 시각(테스트 시작부터의 ms)을 돌려준다. */
 async function waitOn(w, { onWrite, ...opts } = {}) {
+  opts = { batchMs: BATCH, ...opts };
+  if (opts.batchMs === null) delete opts.batchMs; // null 이면 기본 묶음 시간
   const writes = [];
   let at = null;
   const out = {
@@ -238,7 +242,7 @@ async function waitOn(w, { onWrite, ...opts } = {}) {
 
 test('대기: 기본값은 am 과 같은 키이고 전체 수명이 8분 30초를 넘지 않는다', () => {
   assert.deepEqual(Object.keys(D).sort(), ['batchMs', 'maxLifeMs', 'pollMs', 'quietMs', 'startWaitMs']);
-  assert.equal(D.batchMs, 30000);
+  assert.equal(D.batchMs, 120000);
   assert.equal(D.quietMs, 480000);
   assert.equal(D.startWaitMs, 60000);
   assert.ok(D.startWaitMs <= D.quietMs && D.quietMs < D.maxLifeMs && D.maxLifeMs <= 510000);
@@ -322,6 +326,15 @@ test('대기: step 은 정확히 30초 뒤에 그 사이 줄과 함께 나오고
   assert.deepEqual(r.lines, ['start: answer started [stage=answer]', 'state: running (answer, 0 min)']);
 });
 
+test('대기: batchMs 를 넘기지 않으면 step 은 기본 2분을 모은다', async () => {
+  const w = clock('a');
+  w.add('a', START);
+  w.addAt(100000, 'a', { ev: 'step', text: 'later' });
+  const r = await waitOn(w, { batchMs: null });
+  assert.equal(r.at, D.batchMs);
+  assert.deepEqual(r.lines, [START_LINE, 'step: later', 'state: running (run, 2 min)']);
+});
+
 test('대기: alert 와 end 는 다음 확인에 나온다', async () => {
   const w = clock('a');
   w.add('a', START);
@@ -348,7 +361,7 @@ test('대기: note 만 있으면 8분 뒤 상태 줄만 나오고 커서는 그�
   assert.equal(w.cursor('a'), cursor);
   w.addAt(520000, 'a', { ev: 'step', text: 'news' });
   r = await waitOn(w);
-  assert.equal(r.at, 520000 + D.batchMs);
+  assert.equal(r.at, 520000 + BATCH);
   assert.deepEqual(r.lines, ['note: session ended', 'step: news', 'state: running (run, 9 min)']);
 });
 
@@ -420,7 +433,7 @@ test('대기: 다른 대기가 커서를 옮기면 같은 줄을 다시 내지 �
   w.at(40000, () => writeFileSync(w.cursorFile('a'), String(w.size('a'))));
   w.addAt(50000, 'a', { ev: 'step', text: 'mine' });
   let r = await waitOn(w);
-  assert.equal(r.at, 50000 + D.batchMs);
+  assert.equal(r.at, 50000 + BATCH);
   assert.deepEqual(r.lines, ['step: mine', 'state: running (run, 1 min)']);
   assert.equal(w.cursor('a'), String(w.size('a')));
   // 내는 동안 다른 대기가 커서를 더 앞으로 옮기면 그 값이 남는다
@@ -471,7 +484,7 @@ test('대기: 중간의 읽기 오류는 끝난 상태가 아니라 변화 없�
     w.add('a', { ev: 'step', text: 'after the error' });
   });
   const r = await waitOn(w);
-  assert.equal(r.at, 50000 + D.batchMs);
+  assert.equal(r.at, 50000 + BATCH);
   assert.deepEqual(r.lines, ['step: after the error', 'state: running (run, 1 min)']);
 });
 
