@@ -9,7 +9,7 @@
 // show a permission prompt), calls its am skill (the run skill for a hand-over) by slash command (the skill's own model
 // and effort apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
 // file gives the stage other values, and ends with one marker line that this script reads. Called by am:auto:
-//   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]
+//   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
 // Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
 // (originals kept as <name>.orig-<n>.md); `compacted` reports it. The request (request.md) is the user's own words: never
@@ -35,7 +35,12 @@
 // DISABLE_AUTOUPDATER=1. Unless the user settings file's stageMcpServers is true, every session also starts with --strict-mcp-config
 // and an empty MCP config file, .am/<slug>/stage-mcp.json, rewritten right before each session (passed as a path: cmd.exe
 // cannot pass `"`), so it starts no MCP server.
-// Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
+// Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted, solo}.
+// Solo mode: `--solo` says this task owns a shared session, `--solo=<owner>` that it is a part of the task <owner>.
+// The owner (the slug itself for `--solo`) goes into the worker record and the result file and is compared like the
+// flags, so a call with it and one without never take each other's results. `do --solo` never hands the plan to
+// am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
+// The result's `solo` is still null.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
@@ -47,7 +52,7 @@
 // Called again after a WAIT at the follow limit, it follows the same worker on.
 // A result of the same stage and flags that ended with nobody following is taken once by the next call instead of a new
 // start while plan.md and check.md are unchanged (stage-delivered-<pid> mark); a changed or other stage's result is dropped.
-// Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix]` runs the same stage
+// Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix] [--solo | --solo=<owner>]` runs the same stage
 // while holding .am/<slug>/stage-worker.json (one worker per task), logs to stage-worker.log, leaves the result line in
 // stage-result.json (its delivered mark: stage-delivered-<pid>) and stops (`failed`) when the follower's stage-heartbeat
 // file stays the same for 30 minutes.
@@ -68,7 +73,7 @@ import { readUserSettings, userSettingsFile } from './user-settings.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]';
+const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]';
 export const STAGES = ['plan', 'do', 'check', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
 // A caller of main that gives only some of them gets the rest from here.
@@ -340,16 +345,27 @@ ${list}
   return { prompt: `Shorten the task files of .am/${slug}/ as your system prompt says`, system };
 }
 
-/** What the do stage becomes: `do`, `handover`, or {error} when the plan cannot tell. */
-export function doKind(planText, { orchestrator = findOrchestrator, fix = false } = {}) {
+const NO_SCALE = 'the plan has no Scale line (`Scale: N implementation runs, M commits` / `규모: 구현 N회, 커밋 M개`); add it to the Summary and run this stage again';
+
+/**
+ * What the do stage becomes: `do`, `handover`, or {error} when the plan cannot tell. With solo, the orchestrator is
+ * never looked up: a handed-over plan, a plan with no Scale line or one of 2 or more implementation runs is an error.
+ */
+export function doKind(planText, { orchestrator = findOrchestrator, fix = false, solo = false } = {}) {
   const info = readPlan(planText);
   // A done mark, or a fix after am:check, means this plan is implemented here, whatever else its Change log mentions.
   if (fix || info.started) return { kind: 'do' };
+  if (solo) {
+    if (info.handedOver) return { error: 'this plan was handed to am-orchestrator: continue it with the am:auto skill' };
+    if (!info.scale) return { error: NO_SCALE };
+    if (!withinOneRun(info.scale)) return { error: 'the plan has 2 or more implementation runs: run it part by part from its Parts section (for a part plan, change that plan to one implementation run)' };
+    return { kind: 'do' };
+  }
   if (info.handedOver) return { kind: 'handover', resume: true, orchRoot: orchestrator() || '' };
   if (withinOneRun(info.scale)) return { kind: 'do' };
   const orchRoot = orchestrator();
   if (!orchRoot) return { kind: 'do' };
-  if (!info.scale) return { error: 'the plan has no Scale line (`Scale: N implementation runs, M commits` / `규모: 구현 N회, 커밋 M개`); add it to the Summary and run this stage again' };
+  if (!info.scale) return { error: NO_SCALE };
   return { kind: 'handover', resume: false, orchRoot };
 }
 
@@ -1040,13 +1056,19 @@ const BAD_ARGS = `bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`;
 /** The stage, slug and flags of the command line, or null when they are not a valid call. */
 export function stageArgs(argv) {
   const [stage, slug, ...flags] = argv;
-  if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) return null;
-  return { stage, slug, push: flags.includes('--push'), fix: flags.includes('--fix') };
+  const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+  const owners = flags.filter((f) => f === '--solo' || f.startsWith('--solo=')).map((f) => (f === '--solo' ? slug : f.slice('--solo='.length)));
+  if (!STAGES.includes(stage) || !SLUG.test(slug || '') || owners.length > 1 || !owners.every((o) => SLUG.test(o))) return null;
+  if (flags.some((f) => f !== '--push' && f !== '--fix' && f !== '--solo' && !f.startsWith('--solo='))) return null;
+  return { stage, slug, push: flags.includes('--push'), fix: flags.includes('--fix'), solo: owners.length ? { owner: owners[0] } : null };
 }
+
+/** Whether a worker record or result file names this stage, these flags and this solo owner (no key: no owner). */
+const sameCall = (r, { stage, push, fix, solo }) => Boolean(r) && r.stage === stage && r.push === push && r.fix === fix && (r.solo ?? null) === (solo?.owner ?? null);
 
 /** A result line with no session behind it, in the key order of main's result. */
 export function stageLine(stage, slug, status, reason) {
-  return JSON.stringify({ stage, slug, status, reason, costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null });
+  return JSON.stringify({ stage, slug, status, reason, costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null, solo: null });
 }
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
@@ -1056,12 +1078,12 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     out.write(BAD_ARGS);
     return 1;
   }
-  const { stage, slug, push, fix } = args;
+  const { stage, slug, push, fix, solo } = args;
   // Limits the caller left out (undefined or null) are the defaults; any other value is used as given.
   const limits = Object.fromEntries(Object.keys(TIMEOUT_MIN).map((key) => [key, timeoutMin[key] ?? TIMEOUT_MIN[key]]));
   const dir = path.join(cwd, '.am', slug);
   const planFile = path.join(dir, 'plan.md');
-  const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null };
+  const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null, solo: null };
   let finish = null; // set once the start event is written
   const done = (fields = {}) => {
     Object.assign(result, fields);
@@ -1092,7 +1114,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   let held = null; // the lock, kept to the end when the start line could not be written
   // The do stage's kind is read once, before the wait. A hand-over (its sessions are the orchestrator's) and a do stage that
   // cannot start a session take no part in the memory check.
-  const k = stage === 'do' ? doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix }) : null;
+  const k = stage === 'do' ? doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix, solo: Boolean(solo) }) : null;
   const joins = !(k && (k.error || k.kind === 'handover'));
   const recordsDir = sessionsDirOf(env);
   let record = null; // this stage's `.gate` record, held to the end once the memory check passed
@@ -1359,6 +1381,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     return 1;
   }
   const { stage, slug, push, fix } = args;
+  const owner = args.solo?.owner ?? null;
   const { cwd = process.cwd(), now = Date.now, alive = pidAlive, kill = signalRun } = rest;
   const dir = path.join(cwd, '.am', slug);
   const file = (name) => path.join(dir, WORKER_FILES[name]);
@@ -1370,7 +1393,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     }
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const lockOpts = { now, alive, fields: { stage, push, fix }, staleMs };
+  const lockOpts = { now, alive, fields: { stage, push, fix, solo: owner }, staleMs };
   let lock = takeLock(file('record'), lockOpts);
   if (lock?.suspect) {
     await sleep(confirmMs);
@@ -1378,10 +1401,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
   }
   // The worker before this one releases its record only after main returned: try again for a moment. A worker of this
   // same stage already runs it: no second try.
-  const sameStage = () => {
-    const r = readJson(file('record'));
-    return Boolean(r) && r.stage === stage && r.push === push && r.fix === fix;
-  };
+  const sameStage = () => sameCall(readJson(file('record')), args);
   const giveUp = Date.now() + busyMs;
   while (lock && lock.busy !== undefined && !sameStage() && Date.now() < giveUp) {
     await sleep(busyPollMs);
@@ -1429,7 +1449,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
   const writeResult = (line, delivered) => {
     const target = file('result');
     const tmp = `${target}.${process.pid}.tmp`;
-    const res = { pid: process.pid, stage, push, fix, line, t: new Date(now()).toISOString(), delivered, plan: fileState(dir, 'plan.md'), check: fileState(dir, 'check.md') };
+    const res = { pid: process.pid, stage, push, fix, solo: owner, line, t: new Date(now()).toISOString(), delivered, plan: fileState(dir, 'plan.md'), check: fileState(dir, 'check.md') };
     try {
       writeFileSync(tmp, `${JSON.stringify(res)}\n`);
       // Synchronous waits: the stop path exits right after this.
@@ -1560,7 +1580,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
     out.write(BAD_ARGS);
     return 1;
   }
-  const { stage, slug, push, fix } = args;
+  const { stage, slug } = args;
   const dir = path.join(cwd, '.am', slug);
   if (!existsSync(dir)) return main(argv, { ...rest, cwd, env, out, now, alive });
   const file = (name) => path.join(dir, WORKER_FILES[name]);
@@ -1574,7 +1594,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   // Only a result of this stage and flags written after this call began: not an older one, not another stage's.
   const accepted = () => {
     const r = readJson(file('result'));
-    if (!r || r.stage !== stage || r.push !== push || r.fix !== fix || typeof r.line !== 'string') return null;
+    if (!sameCall(r, args) || typeof r.line !== 'string') return null;
     return Date.parse(r.t) >= began ? r : null;
   };
   const markable = (pid) => Number.isInteger(pid) && pid > 0;
@@ -1594,7 +1614,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   // Whether a pending result may stand for this call: same stage and flags, not a wait, not a stop, and plan.md and
   // check.md as it left them. Its age does not count.
   const deliverable = (r) => {
-    if (r.stage !== stage || r.push !== push || r.fix !== fix) return false;
+    if (!sameCall(r, args)) return false;
     let line = null;
     try {
       line = JSON.parse(r.line);
@@ -1633,11 +1653,12 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
     }
     suspectSeen = null;
     const r = readJson(file('record'));
-    if (r && r.stage === stage && r.push === push && r.fix === fix) {
+    if (sameCall(r, args)) {
       if (typeof r.t === 'number') followedT = r.t;
       return { kind: 'same', pid: r.pid };
     }
-    const name = r && typeof r.stage === 'string' ? `${r.stage}${r.push ? ' --push' : ''}${r.fix ? ' --fix' : ''}` : 'other';
+    const soloName = r?.solo ? (r.solo === slug ? ' --solo' : ` --solo=${r.solo}`) : '';
+    const name = r && typeof r.stage === 'string' ? `${r.stage}${r.push ? ' --push' : ''}${r.fix ? ' --fix' : ''}${soloName}` : 'other';
     return { kind: 'other', pid: r?.pid ?? '?', name };
   };
   const otherReason = (seen) => `waiting for another stage of this task: the ${seen.name} stage is still running (pid ${seen.pid})`;

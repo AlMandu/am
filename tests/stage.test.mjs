@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -248,6 +248,47 @@ test('doKind: hand over a large new plan only when the run skill is installed', 
   assert.deepEqual(doKind(`${mention}## Change log\n`, { orchestrator: orch }), { kind: 'do' });
 });
 
+test('stageArgs: --solo names the task itself as owner, --solo=<owner> another task; one solo flag at most', () => {
+  assert.equal(stageArgs(['do', 'demo', '--solo']).solo.owner, 'demo');
+  assert.equal(stageArgs(['plan', 'demo-p1', '--solo=demo']).solo.owner, 'demo');
+  assert.deepEqual(stageArgs(['do', 'demo', '--push', '--solo', '--fix']), { stage: 'do', slug: 'demo', push: true, fix: true, solo: { owner: 'demo' } });
+  assert.deepEqual(stageArgs(['do', 'demo']), { stage: 'do', slug: 'demo', push: false, fix: false, solo: null });
+  for (const flags of [['--solo=Bad'], ['--solo='], ['--solo=-x'], ['--solo', '--solo=demo'], ['--solo', '--solo'], ['--solo=a', '--solo=b'], ['--sol']]) {
+    assert.equal(stageArgs(['do', 'demo', ...flags]), null, flags.join(' '));
+  }
+});
+
+test('doKind: with solo the orchestrator is never looked up; a handed-over or large plan is an error', () => {
+  const never = () => assert.fail('the orchestrator was looked up');
+  const handed = `${LARGE}## 변경 기록\n- am-orchestrator run 스킬로 넘김, run.id 20261007-1200, 시작 브랜치 main\n`;
+  for (const orchestrator of [never, () => '/orch', () => null]) {
+    const o = { orchestrator, solo: true };
+    assert.deepEqual(doKind(SMALL, o), { kind: 'do' });
+    assert.match(doKind(LARGE, o).error, /Parts section/);
+    assert.deepEqual(doKind(LARGE.replace('1. a.', '1. a. (완료)'), o), { kind: 'do' });
+    assert.deepEqual(doKind(LARGE, { ...o, fix: true }), { kind: 'do' });
+    assert.match(doKind(handed, o).error, /handed to am-orchestrator: continue it with the am:auto skill/);
+    assert.deepEqual(doKind(handed.replace('1. a.', '1. a. (done)'), o), { kind: 'do' });
+    assert.match(doKind('# p\n## Steps\n1. a\n', o).error, /no Scale line/);
+  }
+});
+
+test('solo: do --solo of a large plan ends `failed` with no session and no hand-over; results carry solo null', async (t) => {
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo'], { orchestrator: () => '/orch' });
+  assert.equal(result.status, 'failed');
+  assert.match(result.reason, /Parts section/);
+  assert.equal(result.solo, null);
+  assert.equal(calls.length, 0);
+  assert.ok(!existsSync(path.join(dir, 'calls.jsonl')));
+  assert.deepEqual(evs(events(dir)), ['start', 'end']);
+  const planned = makeRepo(t, { fake: PLANNED });
+  const p = await run(planned, ['plan', 'demo', '--solo']);
+  assert.deepEqual({ ...p.result, reply: !!p.result.reply }, PLAN_RESULT);
+  assert.deepEqual(Object.keys(p.result), Object.keys(PLAN_RESULT));
+  assert.deepEqual(Object.keys(JSON.parse(stageLine('plan', 'demo', 'WAIT', ''))), Object.keys(PLAN_RESULT));
+});
+
 test('am:auto and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
   const LINE = /`(- Hand-over: [^`\n]+)`/;
   const fromAuto = LINE.exec(AUTO);
@@ -328,7 +369,7 @@ test('a plan stage runs one session and reports its marker, cost, reply and refu
   const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } } });
   const { code, result, calls } = await run(dir, ['plan', 'demo']);
   assert.equal(code, 0);
-  assert.deepEqual({ ...result, reply: !!result.reply }, { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null });
+  assert.deepEqual({ ...result, reply: !!result.reply }, { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null, solo: null });
   assert.equal(calls.length, 1);
   assert.equal(flag(calls[0], '-p'), '/am:plan Read the request in .am/demo/request.md (slug demo)');
   assert.match(readFileSync(path.join(dir, flag(calls[0], '--append-system-prompt-file')), 'utf8'), /This is the plan stage/);
@@ -649,7 +690,7 @@ function events(dir, slug = 'demo') {
 const evs = (list) => list.map((e) => e.ev);
 const ends = (list) => list.filter((e) => e.ev === 'end');
 const PLANNED = { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } };
-const PLAN_RESULT = { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null };
+const PLAN_RESULT = { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null, solo: null };
 
 test('events: a stage writes start with its pid and one end with status and minutes', async (t) => {
   const dir = makeRepo(t, { fake: PLANNED });
@@ -2440,6 +2481,21 @@ test('worker: a normal stage leaves its result line, the plan file state and the
   assert.equal(await startWorker(flagged, ['do', 'demo', '--push', '--fix']).done, 0);
   const r = workerState(flagged).result;
   assert.deepEqual([r.stage, r.push, r.fix, JSON.parse(r.line).status], ['do', true, true, 'DONE']);
+  assert.equal(r.solo, null);
+  const solo = makeRepo(t, { plan: SMALL, fake: NOTED });
+  assert.equal(await startWorker(solo, ['check', 'demo', '--solo']).done, 0);
+  assert.deepEqual([workerState(solo).result.solo, JSON.parse(workerState(solo).result.line).status], ['demo', 'NOTE']);
+});
+
+test('worker: a live worker of the same stage without solo is not this --solo call: it tries again, then stops', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const owner = JSON.stringify({ pid: LIVE, t: 1, stage: 'check', push: false, fix: false });
+  writeFileSync(WF(dir, 'record'), owner);
+  const began = Date.now();
+  assert.equal(await startWorker(dir, ['check', 'demo', '--solo'], { alive: aliveOnly, busyMs: 300, busyPollMs: 20 }).done, 1);
+  assert.ok(Date.now() - began >= 300);
+  assert.equal(callsOf(dir), null);
+  assert.deepEqual([workerState(dir).result, workerState(dir).record], [null, owner]);
 });
 
 test('worker: a live worker of the task keeps a new one out; a dead or unchanged stale one does not', async (t) => {
@@ -2719,6 +2775,24 @@ test('follow: a stage runs in a worker of its own and prints the same line main 
   assert.ok(heartbeatOf(dir));
 });
 
+test('follow: a --solo call prints its own worker\'s result, which names the owner', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: NOTED });
+  const f = startFollow(dir, ['check', 'demo', '--solo']);
+  assert.equal(await f.done, 0);
+  const line = JSON.parse(f.text);
+  assert.deepEqual([line.status, line.solo], ['NOTE', null]);
+  assert.equal(JSON.parse(readOr(WF(dir, 'result'))).solo, 'demo');
+  // A part task of the task demo: its own folder, the owner demo.
+  const part = makeRepo(t, { plan: SMALL, fake: NOTED });
+  const partDir = path.join(part, '.am', 'demo-p1');
+  mkdirSync(partDir, { recursive: true });
+  writeFileSync(path.join(partDir, 'plan.md'), SMALL);
+  const g = startFollow(part, ['check', 'demo-p1', '--solo=demo']);
+  assert.equal(await g.done, 0);
+  assert.equal(JSON.parse(g.text).status, 'NOTE');
+  assert.equal(JSON.parse(readFileSync(path.join(partDir, WORKER_FILES.result), 'utf8')).solo, 'demo');
+});
+
 test('follow: a live worker of the same stage and flags is followed, and only its new result is printed', async (t) => {
   const dir = makeRepo(t, { plan: SMALL });
   writeFileSync(WF(dir, 'record'), record({ stage: 'check' }));
@@ -2728,6 +2802,8 @@ test('follow: a live worker of the same stage and flags is followed, and only it
   const first = heartbeatOf(dir);
   await until(() => heartbeatOf(dir) !== first);
   writeFileSync(WF(dir, 'result'), resultOf({ stage: 'check', fix: true, line: stageLine('check', 'demo', 'NOTE', 'other flags') }));
+  await pause(200);
+  writeFileSync(WF(dir, 'result'), resultOf({ stage: 'check', solo: 'demo', line: stageLine('check', 'demo', 'NOTE', 'other solo') }));
   await pause(200);
   assert.equal(f.text, '');
   const line = stageLine('check', 'demo', 'BLOCK', 'new');
@@ -2739,10 +2815,17 @@ test('follow: a live worker of the same stage and flags is followed, and only it
 });
 
 test('follow: another stage, or the same stage with other flags, is waited for and then WAIT; once it ends this stage runs', async (t) => {
-  for (const [held, name] of [[{ stage: 'do', fix: true }, 'do --fix'], [{ stage: 'check', fix: true }, 'check --fix']]) {
+  const cases = [
+    [{ stage: 'do', fix: true }, 'do --fix', []],
+    [{ stage: 'check', fix: true }, 'check --fix', []],
+    [{ stage: 'check' }, 'check', ['--solo']],
+    [{ stage: 'check', solo: 'demo' }, 'check --solo', []],
+    [{ stage: 'do', solo: 'main' }, 'do --solo=main', ['--solo']],
+  ];
+  for (const [held, name, flags] of cases) {
     const dir = makeRepo(t, { plan: SMALL });
     writeFileSync(WF(dir, 'record'), record(held));
-    const f = startFollow(dir, ['check', 'demo'], { workerCmd: NO_SPAWN, alive: aliveOnly, waitMs: 200 });
+    const f = startFollow(dir, ['check', 'demo', ...flags], { workerCmd: NO_SPAWN, alive: aliveOnly, waitMs: 200 });
     assert.equal(await f.done, 0);
     const line = JSON.parse(f.text);
     assert.equal(line.status, 'WAIT');
@@ -3012,11 +3095,14 @@ test('follow: a pending result of another stage, other flags, a wait or a stop i
     { stage: 'check', fix: true, line: stageLine('check', 'demo', 'NOTE', 'fixed') },
     { stage: 'check', line: stageLine('check', 'demo', 'WAIT', 'waiting') },
     { stage: 'check', line: stageLine('check', 'demo', 'failed', 'stopped by SIGTERM') },
+    // Solo: a result with no owner is not a --solo call's, and one with an owner not a call's without it.
+    { stage: 'check', line: stageLine('check', 'demo', 'NOTE', 'no solo'), flags: ['--solo'] },
+    { stage: 'check', solo: 'demo', line: stageLine('check', 'demo', 'NOTE', 'solo') },
   ];
-  for (const fields of lines) {
+  for (const { flags = [], ...fields } of lines) {
     const dir = makeRepo(t, { plan: SMALL, fake: NOTED });
     writeFileSync(WF(dir, 'result'), earlier({ ...fields, plan: planState(dir) }));
-    const f = startFollow(dir, ['check', 'demo']);
+    const f = startFollow(dir, ['check', 'demo', ...flags]);
     assert.equal(await f.done, 0);
     const out = JSON.parse(f.text);
     assert.deepEqual([out.stage, out.status], ['check', 'NOTE'], fields.line);
@@ -3338,7 +3424,7 @@ process.stdout.write(JSON.stringify(r.cleaned));
 });
 
 test('cleanup news: a note and a worker log line only when something was stopped; the result line keeps its keys', async (t) => {
-  const keys = ['stage', 'slug', 'status', 'reason', 'costUsd', 'sessionId', 'reply', 'denied', 'compacted'];
+  const keys = ['stage', 'slug', 'status', 'reason', 'costUsd', 'sessionId', 'reply', 'denied', 'compacted', 'solo'];
   const notes = (dir) => events(dir).filter((e) => e.ev === 'note' && e.text.startsWith('cleaned up')).map((e) => e.text);
   const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
   let logged = '';
