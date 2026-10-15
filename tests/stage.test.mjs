@@ -209,7 +209,22 @@ test('instructions: slash call of the stage skill, unattended rules written out 
     // Every stage kind gets the one-command line, once: the permission rules of most stages match one plain command only.
     assert.ok(system.includes(`\n${oneCommand}\n`), `${s}: one command per call`);
     assert.equal(system.split(oneCommand).length, 2, `${s}: one command per call, once`);
+    // In push mode the push keyword is the confirmation the push needs, in every stage; without push it is not named.
+    const pushOk = '(the push keyword is that confirmation for the push)';
+    assert.equal(instructions(s, 'demo', { push: true }).system.split(pushOk).length, 2, `${s}: push confirmation once`);
+    assert.ok(!system.includes(pushOk), `${s}: no push confirmation without push`);
+    // The last stop: plan cannot be planned, check has none (am:check always ends with a verdict), the rest cannot finish.
+    if (s === 'plan') assert.ok(system.includes('the request cannot be planned') && !system.includes('cannot finish (below)'), s);
+    else if (s === 'check') assert.ok(!system.includes('cannot finish') && !system.includes('cannot be planned') && system.includes('or when the two reviewers of a technical choice still split on it after their rounds.\n'), s);
+    else assert.ok(system.includes('this stage cannot finish (below)'), s);
   }
+  // The commit stage ends with BLOCKED when a commit is blocked or fails; the hook line keeps only what is the hook's own.
+  const commit = instructions('commit', 'demo').system;
+  const blocked = '- A commit that is blocked or fails: leave the files as they are, say why, and end with AM_STAGE: BLOCKED.';
+  assert.equal(commit.split(blocked).length, 2);
+  const hook = commit.split('\n').find((l) => l.startsWith('- If a hook rejects the commit'));
+  assert.ok(hook && !hook.includes('leave the files') && !hook.includes('AM_STAGE'), hook);
+  assert.ok(commit.includes(`${hook}\n${blocked}\n`));
   // The compaction session has no shell tool, so it does not get that line.
   assert.ok(!compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]).system.includes(oneCommand));
   // The same mark rule in am:auto (with code marks there).
@@ -240,7 +255,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const resume of [true, false]) assert.ok(instructions('handover', 'demo', { resume }).system.includes('every line of `autoDecided` and `secondOpinions`'), `resume ${resume}`);
 });
 
-test('instructions: solo changes three sentences of the unattended rules and adds the Parts rule to the plan stage', () => {
+test('instructions: solo changes three sentences of the unattended rules (four in the commit stage) and adds the Parts rule to the plan stage', () => {
   const swaps = [
     ['You are one stage of the am:auto skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner compacts the conversation when it fills 20 percent or more of the context window, and continues in a new session when compacting is not enough.'],
     ['- Running am:auto is the user\'s request', '- Running am:solo is the user\'s request'],
@@ -252,7 +267,7 @@ test('instructions: solo changes three sentences of the unattended rules and add
     assert.equal(instructions(s, 'demo', { push, solo: null }).system, plain, `${s} push ${push}: solo null changes nothing`);
     const { system } = instructions(s, 'demo', { push, solo: { owner: 'demo' } });
     let back = system;
-    for (const [from, to] of swaps) {
+    for (const [from, to] of s === 'commit' ? [...swaps, ['The am:auto run asks for this commit', 'The am:solo run asks for this commit']] : swaps) {
       assert.equal(system.split(to).length, 2, `${s}: ${to} once`);
       assert.ok(!system.includes(from), `${s}: ${from} gone`);
       back = back.replace(to, from);
@@ -300,7 +315,7 @@ test('instructions: soloClear adds the clear rule after the save rule, names the
   const rule = '\n- This stage starts in a new session: the runner cleared the shared session of this am:solo task because it still filled 20 percent or more of the context window after compaction. If you have difficulty continuing the work right after this (why a decision was made, what an earlier stage did or left open), read .am/demo/solo-clear-context.md, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.\n';
   assert.equal(cleared, `${plain.slice(0, -1)}${rule}`);
   assert.ok(!cleared.includes('Before anything else'));
-  assert.ok(instructions('do', 'demo', { solo: { owner: 'demo' }, soloClear: 'solo-context.md' }).system.endsWith('read .am/demo/solo-context.md, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.\n'));
+  assert.ok(instructions('do', 'demo', { solo: { owner: 'demo' }, soloClear: 'solo-context.md' }).system.endsWith('read .am/demo/solo-context.md, the memory the earlier stages saved. Where it differs from the task files or a recorded user answer, those win.\n'));
   // soloClear without solo changes nothing.
   assert.equal(instructions('do', 'demo', { soloClear: SOLO_CLEAR_CONTEXT }).system, instructions('do', 'demo').system);
 });
@@ -2413,7 +2428,7 @@ test('solo clear: a save that wrote nothing points the new session at solo-conte
     assert.ok(!existsSync(CLEAR_FILE(dir)), what);
     const system = systemOf(dir, 'do');
     assert.equal(system.includes(CLEAR_RULE), memory, what);
-    if (memory) assert.ok(system.includes('read .am/demo/solo-context.md, the context saved right before the clear'), what);
+    if (memory) assert.ok(system.includes('read .am/demo/solo-context.md, the memory the earlier stages saved'), what);
     assert.ok(!system.includes('Before anything else'), what);
     const said = notes(dir);
     assert.ok(said.includes(`solo: context still 25% of the window after compaction; started a new session${memory ? ' that may read .am/demo/solo-context.md' : ''}`), what);
