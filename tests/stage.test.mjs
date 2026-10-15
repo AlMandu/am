@@ -504,6 +504,25 @@ test('solo session: a recorded session that ends with an error is replaced by a 
   assert.equal(result.status, 'DONE');
   assert.equal(soloRecord(dir).sessionId, 'sess-2');
   assert.equal(result.solo.sessionId, 'sess-2');
+  // The dropped conversation's 0.25 is added to the new session's 0.5.
+  assert.equal(result.costUsd, 0.75);
+});
+
+test('solo session: a replaced session adds only what was reported, also when the new session reports nothing', async (t) => {
+  // No report from the failed call and none before it: only the new session's 0.5.
+  const crashed = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'], crashes: [1] } });
+  writeFileSync(SOLO_FILE(crashed), JSON.stringify(ASKED('do')));
+  const a = await run(crashed, ['do', 'demo', '--solo']);
+  assert.equal(a.calls.length, 2);
+  assert.equal(a.result.status, 'DONE');
+  assert.equal(a.result.costUsd, 0.5);
+  // The new session ends with no report: the dropped conversation's 0.25 stays.
+  const silent = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'], errors: [1], crashes: [2] } });
+  writeFileSync(SOLO_FILE(silent), JSON.stringify(ASKED('do')));
+  const b = await run(silent, ['do', 'demo', '--solo']);
+  assert.equal(b.calls.length, 2);
+  assert.equal(b.result.status, 'failed');
+  assert.equal(b.result.costUsd, 0.25);
 });
 
 test('solo session: a continued session that runs out of time is not replaced and leaves the record', async (t) => {
@@ -2303,8 +2322,9 @@ test('solo compaction: only a NEEDS_DECISION end of the same stage of the same s
 });
 
 test('solo compaction: a failed compaction starts the stage in a new session and says why', async (t) => {
-  const cases = [[{ errors: [2] }, {}], [{ crashes: [2] }, {}], [{ exits: [2] }, {}], [{ hang: [2] }, { timeoutMin: { compact: 0.005 } }]];
-  for (const [fake, opts] of cases) {
+  // The dropped conversation's cost is its last report: the compaction's, else the first measurement's.
+  const cases = [[{ errors: [2] }, {}, 1.25], [{ crashes: [2] }, {}, 1], [{ exits: [2] }, {}, 1.25], [{ hang: [2] }, { timeoutMin: { compact: 0.005 } }, 1]];
+  for (const [fake, opts, cost] of cases) {
     const what = JSON.stringify(fake);
     const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', 'Done.\nAM_STAGE: DONE'], sessions: ['sess-0', null, 'sess-2'], ...fake } });
     writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
@@ -2318,6 +2338,7 @@ test('solo compaction: a failed compaction starts the stage in a new session and
     assert.equal(result.solo.compacted, false, what);
     assert.equal(result.status, 'DONE', what);
     assert.equal(soloRecord(dir).sessionId, 'sess-2', what);
+    assert.equal(result.costUsd, cost, what);
   }
 });
 
@@ -2331,6 +2352,18 @@ test('solo compaction: a stage error after it falls back to a new session and ke
   assert.equal(result.solo.compacted, true);
   assert.match(result.solo.fresh, /^claude ended with an error/);
   assert.equal(result.status, 'DONE');
+  // The failed call's 1.0 is added to the new session's 1.25.
+  assert.equal(result.costUsd, 2.25);
+});
+
+test('solo compaction: a stage call that crashes after it adds the compaction\'s cost, not the second measurement\'s', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', LOW, 'x', 'Done.\nAM_STAGE: DONE'], crashes: [4] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 5);
+  assert.equal(result.status, 'DONE');
+  // The compaction's 0.5 plus the new session's 1.25; the second measurement's 0.75 is not used.
+  assert.equal(result.costUsd, 1.75);
 });
 
 test('solo compaction: a stage that runs out of time after it leaves the record on the compacted session', async (t) => {

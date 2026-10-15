@@ -51,7 +51,8 @@
 // call that may write that file only) and the stage starts in a new session (a clear) whose rules say to read that file,
 // or solo-context.md when it was not saved, if it has difficulty going on; the cleared conversation's cost is added. Every
 // measurement is a note. With no record, an unreadable one, a failed compaction, or a continued call that ends with an error other than a
-// time-out, it runs once in a new session and writes a note. When the stage has a session ID, it rewrites the record with
+// time-out, it runs once in a new session and writes a note; after a failed compaction or continued call, the dropped
+// conversation's last reported cost is added. When the stage has a session ID, it rewrites the record with
 // it and the end status. Every solo stage is told to rewrite .am/<owner>/solo-context.md, the shared session's memory, before
 // its final reply; a stage that starts in a new session (not a clear) while that file exists gets a rules file that tells it to read the
 // file first, and a note. The result's `solo` is {owner, sessionId, compacted, fresh, context}: `fresh` says why a new session was
@@ -1373,7 +1374,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;
   writeFileSync(path.join(cwd, systemRel), inst.system);
   const timeoutMs = limits[kind] * 60000;
-  let dropped = 0; // the cost of a solo session cleared before the stage: the new session does not report it
+  let dropped = 0; // the cost of a solo conversation dropped before or during the stage: the new session does not report it
+  let kept = null; // the last cost the continued solo conversation reported before the stage
+  const cost = (x) => (x.parsed && Number.isFinite(x.parsed.total_cost_usd) ? x.parsed.total_cost_usd : null);
 
   const call = async (args) => {
     // A hand-over's orchestrator worker is stopped before the cleanup, which leaves it and its descendants alone.
@@ -1444,7 +1447,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
         if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
       };
       // One call that continues the session `id` before the stage, with the compaction session's environment and time limit.
-      // Its cost is not added: the continued stage call reports the whole conversation.
+      // Its cost is not added: the continued stage call reports the whole conversation; when the conversation is dropped
+      // instead, its last reported cost is.
       const side = async (p, id, { permission = SOLO_COMPACT_PERM, model = compactModel, who = 'compact' } = {}) => {
         writeMcpConfig(cwd, mcpConfig);
         const r = await exec(bin, [...pre, ...claudeArgs(permission, { prompt: p, resume: id, pluginDir, model, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
@@ -1465,6 +1469,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       const pct = (p) => `${Math.round(p * 10) / 10}%`;
       const first = await measure(rec.sessionId);
       if (first.r.spawnError) return unavailable(first);
+      kept = cost(first);
       if (first.percent !== null && first.percent < SOLO_CONTEXT_LIMIT) {
         event({ ev: 'note', text: `solo: context ${pct(first.percent)} of the window; continued without compaction` });
         sessionResume = first.id;
@@ -1478,7 +1483,10 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
           const cause = firstLine(`compaction: ${cr.failed}`);
           event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
           result.solo.fresh = cause;
+          dropped = cost(cr) ?? cost(first) ?? 0;
+          result.costUsd += dropped;
         } else {
+          kept = cost(cr) ?? kept;
           sessionResume = cr.id;
           result.solo.compacted = true;
           event({ ev: 'note', text: `conversation compacted before the ${kind} stage of ${slug}` });
@@ -1505,7 +1513,6 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
             }
             const file = saved ? SOLO_CLEAR_CONTEXT : existsSync(path.join(cwd, '.am', solo.owner, SOLO_CONTEXT)) ? SOLO_CONTEXT : null;
             // The cleared conversation's cost, as its last call reported it.
-            const cost = (x) => (x.parsed && Number.isFinite(x.parsed.total_cost_usd) ? x.parsed.total_cost_usd : null);
             dropped = cost(sv) ?? cost(cr) ?? 0;
             result.costUsd += dropped;
             sessionResume = null;
@@ -1540,6 +1547,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
     result.solo.fresh = cause;
     result.sessionId = null;
+    // The dropped conversation's cost: the larger of the failed call's report and the last one before the stage.
+    dropped += Math.max(cost({ parsed }) ?? 0, kept ?? 0);
+    result.costUsd = compaction.costUsd + dropped;
     giveContext();
     ({ r, parsed } = await call(firstArgs(null)));
     if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
