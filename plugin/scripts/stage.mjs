@@ -42,10 +42,13 @@
 // am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
 // A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
 // plan only its one part when it is a part. A solo stage continues the session named in .am/<owner>/solo-session.json with
-// --resume (its rules file and permissions as usual); with no record, an unreadable one, or a continued call that ends
-// with an error other than a time-out, it runs once in a new session and writes a note. When the stage has a session ID,
-// it rewrites the record with it and the end status. The result's `solo` is {owner, sessionId, compacted, fresh}: `fresh`
-// says why a new session was started (null when the recorded one went on); `compacted` stays false for now.
+// --resume (its rules file and permissions as usual). Unless the record is a NEEDS_DECISION end of this same stage of this
+// slug, a /compact call first shortens that conversation (the compaction model, the compaction session's environment and
+// time limit, no tool); the stage continues the session ID it returns (strict form, else the recorded one), recorded at
+// once. With no record, an unreadable one, a failed compaction, or a continued call that ends with an error other than a
+// time-out, it runs once in a new session and writes a note. When the stage has a session ID, it rewrites the record with
+// it and the end status. The result's `solo` is {owner, sessionId, compacted, fresh}: `fresh` says why a new session was
+// started (null when the recorded one went on); `compacted` says the conversation was compacted before the stage.
 // A part waits for its owner only while an owner stage runs, not in the owner's gap between stages, and waits for other
 // tasks with the owner's place in line when that is earlier than its own.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
@@ -939,13 +942,19 @@ export function compactionProblem(name, before, after) {
 export const COMPACT_PENDING = 'compact-pending.json';
 // The session a solo task's stages continue, under .am/<owner>/: {sessionId, slug, stage, status, t}, rewritten after each stage.
 export const SOLO_SESSION = 'solo-session.json';
+// Sessions may write under .am/ and a session ID becomes a --resume argument that may pass through cmd.exe; one starting
+// with `-` would be read as another claude option, so only a strict form is used.
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+// The prompt of the call that compacts a solo session before a stage it does not simply continue. No quote and no `%`,
+// so it passes through cmd.exe (cmdExeArgs).
+export const SOLO_COMPACT_PROMPT = '/compact Keep what the next stage of this am:solo task needs: the slugs, the parts and stages done and their end lines, the decisions made and why, open issues. The task files under .am/ hold the details.';
+// That call only runs /compact: no tool.
+const SOLO_COMPACT_PERM = { mode: 'dontAsk', allow: [], deny: ['AskUserQuestion'] };
 
 /** The owner's session record, or null when it is missing, broken or names no usable session ID. */
 export function readSoloSession(cwd, owner) {
   const rec = readJson(path.join(cwd, '.am', owner, SOLO_SESSION));
-  // Sessions may write under .am/ and the ID becomes a --resume argument that may pass through cmd.exe; one starting
-  // with `-` would be read as another claude option, so only a strict form is used.
-  if (!rec || typeof rec !== 'object' || typeof rec.sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(rec.sessionId)) return null;
+  if (!rec || typeof rec !== 'object' || typeof rec.sessionId !== 'string' || !SESSION_ID.test(rec.sessionId)) return null;
   return rec;
 }
 
@@ -1353,8 +1362,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     };
   }
   if (stageModel) event({ ev: 'note', text: `model ${stageModel.model}, effort ${stageModel.effort} from the user's setting ${userFile}` });
-  const problem = (x) => {
-    if (x.r.timedOut) return `no end within ${limits[kind]} minutes; the session was stopped`;
+  const problem = (x, minutes = limits[kind]) => {
+    if (x.r.timedOut) return `no end within ${minutes} minutes; the session was stopped`;
     if (!x.parsed) return `unreadable output (exit ${x.r.code}): ${(x.r.stderr || x.r.stdout).trim().slice(-TAIL_CHARS)}`;
     if (x.r.code !== 0 || x.parsed.is_error) return `claude ended with an error (${x.parsed.subtype || `exit ${x.r.code}`}): ${String(x.parsed.result || x.r.stderr).trim().slice(-TAIL_CHARS)}`;
     return null;
@@ -1365,12 +1374,36 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (solo) {
     const rec = readSoloSession(cwd, solo.owner);
     let fresh = null;
-    if (rec) sessionResume = rec.sessionId;
-    else {
+    if (!rec) {
       fresh = 'no recorded session';
       event({ ev: 'note', text: 'solo: no recorded session; started a new one' });
     }
     result.solo = { owner: solo.owner, sessionId: null, compacted: false, fresh };
+    // Only the same stage of the same task after a question goes straight on; any other stage compacts the conversation first.
+    if (rec && rec.slug === slug && rec.stage === kind && rec.status === 'NEEDS_DECISION') sessionResume = rec.sessionId;
+    else if (rec) {
+      if (modelNote) event({ ev: 'note', text: modelNote });
+      writeMcpConfig(cwd, mcpConfig);
+      const cr = await exec(bin, [...pre, ...claudeArgs(SOLO_COMPACT_PERM, { prompt: SOLO_COMPACT_PROMPT, resume: rec.sessionId, pluginDir, model: compactModel, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
+      report('compact', cr.cleaned);
+      if (cr.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${cr.spawnError}` });
+      // Its cost is not added: the continued stage call reports the whole conversation.
+      const parsed = parseResult(cr.stdout);
+      const failed = problem({ r: cr, parsed }, limits.compact);
+      if (failed) {
+        const cause = firstLine(`compaction: ${failed}`);
+        event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
+        result.solo.fresh = cause;
+      } else {
+        const id = typeof parsed.session_id === 'string' && SESSION_ID.test(parsed.session_id) ? parsed.session_id : rec.sessionId;
+        sessionResume = id;
+        result.solo.compacted = true;
+        event({ ev: 'note', text: `conversation compacted before the ${kind} stage of ${slug}` });
+        // Recorded at once, so a stage that ends without a session ID never sends the next one back to the uncompacted conversation.
+        const err = writeSoloSession(cwd, solo.owner, { sessionId: id, slug, stage: kind, status: 'failed', t: new Date(now()).toISOString() });
+        if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
+      }
+    }
   }
   const firstArgs = (resume) => claudeArgs(perm, { prompt, systemFile: systemRel, resume, pluginDir, model: stageModel, mcpConfig });
   let { r, parsed } = await call(firstArgs(sessionResume));
