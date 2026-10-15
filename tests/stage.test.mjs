@@ -4207,6 +4207,13 @@ test('permissions: the commit stage only unstages; a hand-over switches only to 
   assert.ok(text.includes('switch to the start branch with `git switch <branch>`'));
   assert.match(AUTO, /- Stash: <oid>, base <commit>/, 'am:auto step 4 keeps the same rule');
   assert.ok(AUTO.includes('switch to the start branch with `git switch <branch>`'));
+  // A resumed hand-over whose merge is logged still puts back the stashes it has not put back.
+  const resumed = instructions('handover', 'demo', { orchRoot: '/orch', resume: true }).system;
+  assert.ok(resumed.includes('If the log also records the merge, skip the merge: only the push below and each `Stash:` line not yet logged as put back (the stash rule below) are left.'));
+  assert.ok(!resumed.includes('only the push below is left'));
+  assert.ok(AUTO.includes('`git stash apply <oid>` and log it only when'), 'am:auto logs a stash it put back');
+  assert.ok(AUTO.includes('only pushes and puts back each `Stash:` line not yet logged as put back, by that rule.'));
+  assert.ok(!AUTO.includes('whose merge is logged only pushes.'));
 });
 
 test('handedStartBranch: the start branch of the last fixed hand-over line', () => {
