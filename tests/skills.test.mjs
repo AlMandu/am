@@ -63,7 +63,9 @@ test('every skill sets the model and effort its turn runs with', () => {
 
 test('am:merge moves the commits am:commit records and never pushes', () => {
   const skill = read('merge');
-  for (const s of ['.am/<slug>/commits.md', '.orchestrator/runs/<run>/state.json', 'git merge --no-ff', '--include-untracked', 'git cherry-pick -x', '.am/<slug>/merge.md', 'node "${CLAUDE_PLUGIN_ROOT}/hooks/gate.mjs" --run --json', '.orchestrator/lock.json']) assert.ok(skill.includes(s), s);
+  for (const s of ['.am/<slug>/commits.md', '.orchestrator/runs/<run>/state.json', 'git merge --no-ff', '--include-untracked', 'git cherry-pick -x', '.am/<slug>/merge.md', 'node "${CLAUDE_PLUGIN_ROOT}/hooks/gate.mjs" --run --json', '.orchestrator/lock.json', '## Parts', '- Part <k>:', '.am/<slug>-p<k>/request.md', '.am/<slug>-p<k>/commits.md', '`.am/<slug>-p<n>/` folder (n a number)']) assert.ok(skill.includes(s), s);
+  // am:solo writes a part's request first line and am:merge reads it to find the part's commits.md.
+  for (const name of ['solo', 'merge']) assert.ok(read(name).includes('`Part <k> of <N> of .am/<slug>/plan.md:`'), name);
   assert.match(skill, /Never push/);
   assert.match(skill, /that nothing was pushed/);
   // am:commit writes the record, except in a session am-orchestrator started (the words every orchestrator session gets).
