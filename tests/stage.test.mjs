@@ -175,7 +175,7 @@ test('the compaction session: its own model and markers, a prompt cmd.exe can pa
   const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
   assert.ok(!/["%]/.test(prompt), prompt);
   assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
-  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), or the user\'s answer', '(자동 결정), (second opinion, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back']) assert.ok(system.includes(keep), keep);
+  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), or the user\'s answer', '(자동 결정), (second opinion, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back', '`## Parts` section', '`- Part <k> done: …`']) assert.ok(system.includes(keep), keep);
 });
 
 test('instructions: slash call of the stage skill, unattended rules written out in every stage', () => {
@@ -722,6 +722,19 @@ test('compactionProblem: a heading of any level must stay', () => {
   assert.match(compactionProblem('plan.md', before, before.replace('### 기본값 적용', '## 기본값 적용')), /heading lost: ### 기본값 적용/);
 });
 
+test('compactionProblem: Parts lines and part done lines must stay', () => {
+  const before = '# p\n## Parts\n- Part 1: Steps 1-3 — a\n- Part 2: Steps 4-5 — b\n## Change log\n- Part 1 done: demo-p1\n';
+  assert.match(compactionProblem('plan.md', before, before.replace('- Part 2: Steps 4-5 — b\n', '')), /part lines 3 -> 2/);
+  assert.match(compactionProblem('plan.md', before, before.replace('- Part 1 done: demo-p1\n', '')), /part lines 3 -> 2/);
+  // Only the count is checked, not what a line says.
+  assert.equal(compactionProblem('plan.md', before, before.replace('— a', '— x')), null);
+  // Other bullets and indents count too.
+  const other = before.replace('- Part 1:', '* Part 1:').replace('- Part 1 done:', '  - Part 2 done:');
+  assert.equal(compactionProblem('plan.md', before, other), null);
+  assert.match(compactionProblem('plan.md', other, other.replace('  - Part 2 done: demo-p1\n', '')), /part lines 3 -> 2/);
+  assert.match(compactionProblem('plan.md', other, other.replace('* Part 1: Steps 1-3 — a\n', '')), /part lines 3 -> 2/);
+});
+
 test('compactionProblem: a verdict label wins over an earlier opposite word', () => {
   assert.equal(compactionProblem('check.md', 'No BLOCK finding.\nVerdict: NOTE\n', 'Verdict: NOTE\n'), null);
   assert.match(compactionProblem('check.md', 'No BLOCK finding.\n## 판정\n- 판정: NOTE\n', 'No BLOCK finding.\n## 판정\n- 판정: BLOCK\n'), /verdict NOTE -> BLOCK/);
@@ -1209,6 +1222,32 @@ test('otherRuns: in a gap the earlier seat goes first, slug order on a tie; a wa
   assert.deepEqual(others(dir, 21).runs, ['a']);
 });
 
+test('otherRuns: a part is not held by its owner\'s gap, only by its live stage, and takes its seat', (t) => {
+  const dir = makeRepo(t);
+  const look = (slug, min, owner) => otherRuns(dir, slug, { now: () => T0 + min * 60000, alive: aliveOnly, ...(owner === undefined ? {} : { owner }) });
+  // The owner's plan stage just ended READY: its gap holds other tasks, not its part.
+  taskEvents(dir, 'demo', stageLines('plan', 'READY'));
+  assert.deepEqual(look('demo-p1', 6, 'demo'), { runs: [], text: '' });
+  assert.deepEqual(look('demo-p1', 6), { runs: ['demo'], text: 'demo (between stages)' });
+  assert.deepEqual(look('demo-p1', 6, 'demo-p1').runs, ['demo'], 'an owner that is the slug itself is no part');
+  // A live owner stage still holds the part.
+  taskEvents(dir, 'demo', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'plan' })]);
+  assert.deepEqual(look('demo-p1', 6, 'demo'), { runs: ['demo'], text: 'demo (plan stage running)' });
+  // The owner only waiting: no hold either.
+  taskEvents(dir, 'demo', [evAt(5, { ev: 'note', text: 'w', stage: 'wait' })]);
+  assert.deepEqual(look('demo-p1', 6, 'demo').runs, []);
+  assert.deepEqual(look('demo-p1', 6).runs, ['demo']);
+  // The part takes the owner's earlier seat against another task's gap.
+  taskEvents(dir, 'demo', stageLines('plan', 'READY', { from: 0, to: 5 }));
+  taskEvents(dir, 'x', [evAt(2, { ev: 'note', text: 'w', stage: 'wait' })]);
+  assert.deepEqual(look('demo-p1', 6, 'demo').runs, []);
+  assert.deepEqual(look('demo-p1', 6).runs, ['demo', 'x']);
+  assert.deepEqual(look('x', 6).runs, ['demo']);
+  // Another task's gap still holds a part whose owner's seat is later.
+  taskEvents(dir, 'a', stageLines('do', 'DONE', { from: -2, to: 4 }));
+  assert.deepEqual(look('demo-p1', 6, 'demo').runs, ['a']);
+});
+
 test('otherRuns: the orchestrator blocks by its live lock and in the gap after split or answer, not for the run this task handed over', (t) => {
   const dir = makeRepo(t, { plan: SMALL });
   const orch = path.join(dir, '.orchestrator');
@@ -1310,6 +1349,31 @@ test('wait: a blocked stage starts no session and ends with WAIT after the wait 
   assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['note', 'wait']]);
   assert.match(list[0].text, /a \(do stage running\)/);
   assert.ok(!existsSync(LOCK(dir)));
+});
+
+test('wait: a part stage is not held by its owner\'s gap; a live owner stage still holds it', async (t) => {
+  const part = (pid) => {
+    const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo-p1/plan.md': SMALL } } });
+    mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+    writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+    const at = (fields) => `${JSON.stringify({ t: new Date().toISOString(), ...fields })}\n`;
+    const lines = [at({ ev: 'start', text: 's', pid, stage: 'plan' })];
+    if (pid === DEAD) lines.push(at({ ev: 'end', text: 'e', stage: 'plan', status: 'READY' }));
+    taskEvents(dir, 'demo', lines);
+    return dir;
+  };
+  const opts = { alive: aliveOnly, waitMs: 150, pollMs: 20 };
+  const goes = await run(part(DEAD), ['plan', 'demo-p1', '--solo=demo'], opts);
+  assert.equal(goes.result.status, 'READY');
+  assert.equal(goes.calls.length, 1);
+  const alone = await run(part(DEAD), ['plan', 'demo-p1'], opts);
+  assert.equal(alone.result.status, 'WAIT');
+  assert.equal(alone.result.reason, 'waiting for another run of this repository: demo (between stages)');
+  assert.deepEqual(alone.calls, []);
+  const live = await run(part(LIVE), ['plan', 'demo-p1', '--solo=demo'], opts);
+  assert.equal(live.result.status, 'WAIT');
+  assert.match(live.result.reason, /demo \(plan stage running\)/);
+  assert.deepEqual(live.calls, []);
 });
 
 test('wait: a stage goes on once the other run ends within the wait time', async (t) => {

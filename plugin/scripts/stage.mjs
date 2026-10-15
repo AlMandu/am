@@ -42,6 +42,8 @@
 // am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
 // A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
 // plan only its one part when it is a part. Each stage still opens a new session. The result's `solo` is still null.
+// A part waits for its owner only while an owner stage runs, not in the owner's gap between stages, and waits for other
+// tasks with the owner's place in line when that is earlier than its own.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
@@ -344,7 +346,7 @@ Files to shorten (token counts are this runner's estimate: 4 ASCII characters, o
 ${list}
 - Change only these files, in place, with the Edit or Write tool. Change nothing else. The runner keeps a copy of each original and tells the next session where it is.
 - Never change .am/${slug}/request.md: it is the user's request in their own words. This session cannot edit that file, and if the runner finds it changed it puts everything back.
-- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
+- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; every line of the \`## Parts\` section (\`- Part <k>: …\`); Change log lines \`- Part <k> done: …\`; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
 - Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), (second opinion, and the word OPEN.
 - Shorten: explanations and background, long reasons (one line each), examples, Change log lines that repeat or were superseded.
 - Do not add anything, and do not change what a kept line says.
@@ -531,14 +533,21 @@ export const RECORD_SETTLE_MS = 45000;
  * tie) or we have none. The orchestrator blocks while a live pid holds its lock, and for graceMs after a split or answer
  * end that leads to its next command, unless that run is the one this task handed over. Unless trustStale, a stage
  * whose worker record went untouched for WORKER_STALE_MS, and a lock untouched for its own `leaseMs`, do not block.
+ * A part (owner other than slug) is held by its owner only while an owner stage runs, and takes the owner's seat when
+ * that is earlier.
  */
-export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, trustStale = false } = {}) {
+export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, trustStale = false, owner = null } = {}) {
   const o = { now, alive, graceMs };
+  const part = owner && owner !== slug ? owner : null;
   // A record of a live pid whose owner stopped touching it, with no reason to wait for the owner.
   const left = (file, ms) => !trustStale && existsSync(file) && ownerState(file, { now, alive, staleMs: ms }) !== 'live';
   const am = path.join(cwd, '.am');
   const eventsOf = (name) => readFrom(path.join(am, name, 'progress.jsonl'), 0).events;
   const mine = taskState(eventsOf(slug), o);
+  if (part) {
+    const seats = [mine.seat, taskState(eventsOf(part), o).seat].filter((s) => !Number.isNaN(s));
+    mine.seat = seats.length ? Math.min(...seats) : NaN;
+  }
   const found = [];
   let names = [];
   try {
@@ -550,7 +559,7 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
     const s = taskState(eventsOf(name), o);
     if (s.live && left(path.join(am, name, WORKER_FILES.record), staleMs)) s.live = false;
     if (s.live) found.push({ name, text: `${name} (${s.stage || 'a'} stage running)` });
-    else if (s.gap && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
+    else if (s.gap && name !== part && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
   }
   const orch = path.join(cwd, '.orchestrator');
   const lock = readJson(path.join(orch, 'lock.json'));
@@ -896,6 +905,7 @@ const COUNTED = [
   [/\((?:second opinion|2차 의견(?! 없음))/gi, 'second opinion marks'],
   [/\bOPEN\b/g, 'OPEN marks'],
   [/^\d+\.\s/gm, 'numbered lines'],
+  [/^\s*[-*]\s+Part \d+(?: done)?:/gm, 'part lines'],
 ];
 
 /**
@@ -1164,7 +1174,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       blocked = memoryWait(short);
     } else if (lock.busy !== undefined) blocked = repoWait(`another stage of this repository is starting (pid ${lock.busy ?? '?'})`);
     else {
-      const other = otherRuns(cwd, slug, { now, alive, graceMs, trustStale: Date.now() < settleUntil });
+      const other = otherRuns(cwd, slug, { now, alive, graceMs, trustStale: Date.now() < settleUntil, owner: solo?.owner ?? null });
       const short = !other.runs.length && joins ? memoryCheck() : null;
       if (!other.runs.length && !short) {
         if (event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage })) lock.release();
