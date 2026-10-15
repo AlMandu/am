@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -230,6 +230,45 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const resume of [true, false]) assert.ok(instructions('handover', 'demo', { resume }).system.includes('every line of `autoDecided` and `secondOpinions`'), `resume ${resume}`);
 });
 
+test('instructions: solo changes three sentences of the unattended rules and adds the Parts rule to the plan stage', () => {
+  const swaps = [
+    ['You are one stage of the am:auto skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; the runner compacts the conversation between stages.'],
+    ['- Running am:auto is the user\'s request', '- Running am:solo is the user\'s request'],
+    ['this stage starts again in a new session.', 'this stage continues in this same session.'],
+  ];
+  const oneCommand = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
+  for (const s of [...STAGES, 'handover']) for (const push of [false, true]) {
+    const plain = instructions(s, 'demo', { push }).system;
+    assert.equal(instructions(s, 'demo', { push, solo: null }).system, plain, `${s} push ${push}: solo null changes nothing`);
+    const { system } = instructions(s, 'demo', { push, solo: { owner: 'demo' } });
+    let back = system;
+    for (const [from, to] of swaps) {
+      assert.equal(system.split(to).length, 2, `${s}: ${to} once`);
+      assert.ok(!system.includes(from), `${s}: ${from} gone`);
+      back = back.replace(to, from);
+    }
+    // Only these sentences and the plan's Parts line differ from the rules without solo.
+    if (s === 'plan') back = back.replace(/\n- If the Scale line says 2 or more implementation runs, add a section headed exactly `## Parts`[^\n]*/, '');
+    assert.equal(back, plain, `${s} push ${push}`);
+    // The fixed wording of the stage rules holds in the solo form too.
+    assert.match(system, /the mark \(auto-decided\), translated into the plan's language \(\(자동 결정\) in a Korean plan\)/, s);
+    for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds']) assert.ok(system.includes(stop), `${s}: ${stop}`);
+    assert.match(system, /marked OPEN[\s\S]*AM_STAGE: NEEDS_DECISION/, s);
+    for (const m of MARKS[s]) assert.ok(system.includes(`AM_STAGE: ${m}`), `${s}: ${m}`);
+    assert.ok(system.includes(`\n${oneCommand}\n`), `${s}: one command per call`);
+    assert.equal(system.split(oneCommand).length, 2, `${s}: one command per call, once`);
+  }
+  const owner = instructions('plan', 'demo', { solo: { owner: 'demo' } }).system;
+  for (const part of ['## Parts', PART_LINE, 'consecutive Steps', 'never start with a number and never carry a done mark']) assert.ok(owner.includes(part), part);
+  const partPlan = instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system;
+  assert.ok(partPlan.includes('plan only the one part of the parent plan that .am/demo-p1/request.md names, as at most one implementation run, and with no Parts section'));
+  assert.ok(!partPlan.includes('## Parts'));
+  for (const s of ['do', 'check', 'commit']) {
+    const { system } = instructions(s, 'demo', { solo: { owner: 'demo' } });
+    assert.ok(!system.includes('## Parts') && !system.includes('This is a part plan'), s);
+  }
+});
+
 test('doKind: hand over a large new plan only when the run skill is installed', () => {
   const orch = () => '/orch';
   assert.deepEqual(doKind(SMALL, { orchestrator: orch }), { kind: 'do' });
@@ -287,6 +326,20 @@ test('solo: do --solo of a large plan ends `failed` with no session and no hand-
   assert.deepEqual({ ...p.result, reply: !!p.result.reply }, PLAN_RESULT);
   assert.deepEqual(Object.keys(p.result), Object.keys(PLAN_RESULT));
   assert.deepEqual(Object.keys(JSON.parse(stageLine('plan', 'demo', 'WAIT', ''))), Object.keys(PLAN_RESULT));
+  // The session gets the solo rules: the owner's plan stage the Parts rule.
+  const ownerSystem = readFileSync(path.join(planned, '.am', 'demo', 'stage-plan.system.md'), 'utf8');
+  assert.ok(ownerSystem.includes('am:solo skill') && ownerSystem.includes('## Parts'));
+});
+
+test('solo: the plan stage of a part (--solo=<owner>) is told to plan only its part', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo-p1/plan.md': SMALL } } });
+  mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+  writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+  const { result } = await run(dir, ['plan', 'demo-p1', '--solo=demo']);
+  assert.equal(result.status, 'READY');
+  const system = readFileSync(path.join(dir, '.am', 'demo-p1', 'stage-plan.system.md'), 'utf8');
+  assert.ok(system.includes('This is a part plan'));
+  assert.ok(!system.includes('## Parts'));
 });
 
 test('am:auto and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
@@ -359,6 +412,12 @@ test('reading the end: result object, marker line, claude arguments', () => {
   assert.deepEqual(strict.slice(0, 6), args.slice(0, 6));
   assert.equal(flag(strict, '--append-system-prompt-file'), '.am/demo/stage-check.system.md');
   assert.equal(flag(resumed, '--resume'), 'sess-1');
+  // A resumed call with a system file gets it right after --resume (a solo stage reopens the shared session).
+  const reopened = claudeArgs(permissions('check'), { prompt: '/am:check demo', resume: 'sess-1', systemFile: '.am/demo/stage-check.system.md', mcpConfig: mcp });
+  assert.equal(flag(reopened, '--resume'), 'sess-1');
+  assert.equal(reopened[reopened.indexOf('--resume') + 2], '--append-system-prompt-file');
+  assert.equal(flag(reopened, '--append-system-prompt-file'), '.am/demo/stage-check.system.md');
+  assert.match(reopened[reopened.indexOf('--mcp-config') + 2], /^--/);
   // An installed copy lives in the plugin cache; any other copy was loaded with --plugin-dir and is passed on.
   const env = { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), 'cfg') };
   assert.equal(pluginDirFor(path.join(env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'am-workflow', 'am', '0.1.14'), env), '');

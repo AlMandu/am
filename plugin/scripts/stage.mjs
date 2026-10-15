@@ -40,7 +40,8 @@
 // The owner (the slug itself for `--solo`) goes into the worker record and the result file and is compared like the
 // flags, so a call with it and one without never take each other's results. `do --solo` never hands the plan to
 // am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
-// The result's `solo` is still null.
+// A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
+// plan only its one part when it is a part. Each stage still opens a new session. The result's `solo` is still null.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
@@ -255,18 +256,26 @@ const ONE_COMMAND = '- Run each shell command as its own call: one command per c
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
 /** The unattended rules of am:auto's "Running without stops" section, written for one stage session. */
-const unattended = (slug, stage, push) => `You are one stage of the am:auto skill, started in a fresh session by the am stage runner. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
-- Running am:auto is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
+const unattended = (slug, stage, push, solo = false) => `${solo ? 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; the runner compacts the conversation between stages.' : 'You are one stage of the am:auto skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
+- Running ${solo ? 'am:solo' : 'am:auto'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
 - A question about what the user sees or what is in scope: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, through its second opinion; never wait for the user on them, except a choice its two reviewers still split on after their rounds.
 - A decision under Decisions that is marked as the user's answer is final; apply it.
 - Stop only when the next action would delete user data or files that existed before this run, change a saved-data format, or migrate data; when it would change anything outside this repository (other folders, external services, installed packages)${push ? ', other than the push asked for' : ''}; when the user's or the project's instructions say it needs confirmation; when the two reviewers of a technical choice still split on it after their rounds; or when ${stage === 'plan' ? 'the request cannot be planned' : 'this stage cannot finish (below)'}.
-- To stop for a question: leave the files as they are, write the decision card (as the skill's rules describe it, for someone who has seen neither this session nor the code) under Decisions in plan.md marked OPEN, record the reason there, repeat the card in your final reply, and end with AM_STAGE: NEEDS_DECISION. The user's answer comes back in plan.md and this stage starts again in a new session.
+- To stop for a question: leave the files as they are, write the decision card (as the skill's rules describe it, for someone who has seen neither this session nor the code) under Decisions in plan.md marked OPEN, record the reason there, repeat the card in your final reply, and end with AM_STAGE: NEEDS_DECISION. The user's answer comes back in plan.md and this stage ${solo ? 'continues in this same session' : 'starts again in a new session'}.
 - Keep the final reply short: what this stage did, what it decided for the user, and any deviation from the plan.`;
 
+/** The form of one line of a solo owner plan's `## Parts` section. */
+export const PART_LINE = '- Part <k>: Steps <a>-<b> — <the part\'s scope in one line>';
+
+// A solo owner plan above one implementation run is split into parts; a part plan covers one of them.
+const soloPlanRule = (slug, solo) => !solo ? '' : solo.owner === slug
+  ? `\n- If the Scale line says 2 or more implementation runs, add a section headed exactly \`## Parts\` (in English, whatever the plan's language) right after the Summary, with one line per part in this form: \`${PART_LINE}\`. The parts take consecutive Steps in order and together cover every Step, each part at most one implementation run; these lines never start with a number and never carry a done mark.`
+  : `\n- This is a part plan: plan only the one part of the parent plan that .am/${slug}/request.md names, as at most one implementation run, and with no Parts section.`;
+
 const STAGE_RULES = {
-  plan: (slug) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
+  plan: (slug, { solo } = {}) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
 - Always write .am/${slug}/plan.md, even when the change looks small: skip the step that offers to do a small change directly.
-- Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.
+- Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.${soloPlanRule(slug, solo)}
 - Do not implement, even where the skill would go on after the plan; the next stage does that.
 - What this session can do: read anything; create or change files only under .am/${slug}/ and the current-task mark .am/.active with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
 - ${MARK('plan')}`,
@@ -315,13 +324,13 @@ export function skillCall(stage, slug, { push = false, resume = false } = {}) {
 }
 
 /** The prompt and appended system prompt of one session, with the plugin and skill it calls and that skill's arguments. */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null } = {}) {
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null, solo = null } = {}) {
   const { plugin, skill, args } = skillCall(stage, slug, { push, resume });
   const prompt = `/${plugin}:${skill}${args ? ` ${args}` : ''}`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && [...CODEX_STAGES, 'handover'].includes(stage) ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume })}\n${ONE_COMMAND}${note}${shortened}\n` };
+  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push, Boolean(solo))}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, solo })}\n${ONE_COMMAND}${note}${shortened}\n` };
 }
 
 /**
@@ -838,7 +847,8 @@ export const inlineSkill = (text, args, amRoot) => String(text).replace(FRONTMAT
 export const inlinePrompt = (slug, kind, name) => `Follow the instructions in .am/${slug}/skill-${kind}.md exactly. They are the ${name} skill, invoked by the user with the arguments already filled in.`;
 
 /** The claude arguments of one session. No --model or --effort for a slash call: it carries the skill's own. `model` for the compaction session and an inline stage call.
- * `mcpConfig`, a path, adds --strict-mcp-config --mcp-config <path>; --mcp-config is variadic: always followed by another option. */
+ * `mcpConfig`, a path, adds --strict-mcp-config --mcp-config <path>; --mcp-config is variadic: always followed by another option.
+ * A resumed call with a systemFile gets it too (a solo stage reopens the shared session). */
 export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null, mcpConfig = '' }) {
   const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', perm.mode];
   if (model) args.push('--model', model.model, '--effort', model.effort);
@@ -847,7 +857,7 @@ export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', m
   if (pluginDir) args.push('--plugin-dir', pluginDir);
   if (mcpConfig) args.push('--strict-mcp-config', '--mcp-config', mcpConfig);
   if (resume) args.push('--resume', resume);
-  else args.push('--append-system-prompt-file', systemFile);
+  if (systemFile) args.push('--append-system-prompt-file', systemFile);
   return args;
 }
 
@@ -1199,7 +1209,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   finishers.add(finish);
 
   let kind = stage;
-  let opts = { push, fix };
+  let opts = { push, fix, solo };
   let orchRoot = '';
   if (stage === 'do') {
     if (k.error) return done({ reason: k.error });
