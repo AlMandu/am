@@ -41,7 +41,11 @@
 // flags, so a call with it and one without never take each other's results. `do --solo` never hands the plan to
 // am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
 // A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
-// plan only its one part when it is a part. Each stage still opens a new session. The result's `solo` is still null.
+// plan only its one part when it is a part. A solo stage continues the session named in .am/<owner>/solo-session.json with
+// --resume (its rules file and permissions as usual); with no record, an unreadable one, or a continued call that ends
+// with an error other than a time-out, it runs once in a new session and writes a note. When the stage has a session ID,
+// it rewrites the record with it and the end status. The result's `solo` is {owner, sessionId, compacted, fresh}: `fresh`
+// says why a new session was started (null when the recorded one went on); `compacted` stays false for now.
 // A part waits for its owner only while an owner stage runs, not in the owner's gap between stages, and waits for other
 // tasks with the owner's place in line when that is earlier than its own.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
@@ -933,6 +937,36 @@ export function compactionProblem(name, before, after) {
 // The record of a compaction in progress, under .am/<slug>/: the texts to put back, written before the session starts and
 // removed once its outcome is settled. A stage that finds it (a stop or a forced kill during the session) puts them back first.
 export const COMPACT_PENDING = 'compact-pending.json';
+// The session a solo task's stages continue, under .am/<owner>/: {sessionId, slug, stage, status, t}, rewritten after each stage.
+export const SOLO_SESSION = 'solo-session.json';
+
+/** The owner's session record, or null when it is missing, broken or names no usable session ID. */
+export function readSoloSession(cwd, owner) {
+  const rec = readJson(path.join(cwd, '.am', owner, SOLO_SESSION));
+  // Sessions may write under .am/ and the ID becomes a --resume argument that may pass through cmd.exe; one starting
+  // with `-` would be read as another claude option, so only a strict form is used.
+  if (!rec || typeof rec !== 'object' || typeof rec.sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(rec.sessionId)) return null;
+  return rec;
+}
+
+/** Writes the owner's session record through a temp file in the same folder (never creates the folder): null, or the error text. */
+export function writeSoloSession(cwd, owner, record) {
+  const target = path.join(cwd, '.am', owner, SOLO_SESSION);
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(record)}\n`);
+    renameSync(tmp, target);
+    return null;
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Left behind.
+    }
+    return String(err?.message || err);
+  }
+}
+
 // Compaction sessions of this process still running; a stop puts their files back once the sessions are killed.
 const compacting = new Set();
 
@@ -1319,14 +1353,37 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     };
   }
   if (stageModel) event({ ev: 'note', text: `model ${stageModel.model}, effort ${stageModel.effort} from the user's setting ${userFile}` });
-  const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir, model: stageModel, mcpConfig }));
-  if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
   const problem = (x) => {
     if (x.r.timedOut) return `no end within ${limits[kind]} minutes; the session was stopped`;
     if (!x.parsed) return `unreadable output (exit ${x.r.code}): ${(x.r.stderr || x.r.stdout).trim().slice(-TAIL_CHARS)}`;
     if (x.r.code !== 0 || x.parsed.is_error) return `claude ended with an error (${x.parsed.subtype || `exit ${x.r.code}`}): ${String(x.parsed.result || x.r.stderr).trim().slice(-TAIL_CHARS)}`;
     return null;
   };
+  const firstLine = (s) => String(s || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
+  // A solo stage continues the session its owner's record names; without a usable one it starts a new session.
+  let sessionResume = null;
+  if (solo) {
+    const rec = readSoloSession(cwd, solo.owner);
+    let fresh = null;
+    if (rec) sessionResume = rec.sessionId;
+    else {
+      fresh = 'no recorded session';
+      event({ ev: 'note', text: 'solo: no recorded session; started a new one' });
+    }
+    result.solo = { owner: solo.owner, sessionId: null, compacted: false, fresh };
+  }
+  const firstArgs = (resume) => claudeArgs(perm, { prompt, systemFile: systemRel, resume, pluginDir, model: stageModel, mcpConfig });
+  let { r, parsed } = await call(firstArgs(sessionResume));
+  if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
+  // The recorded session could not be continued (not a time-out): the stage runs once more in a new session.
+  if (sessionResume && !r.timedOut && (!parsed || r.code !== 0 || parsed.is_error)) {
+    const cause = firstLine(problem({ r, parsed }));
+    event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
+    result.solo.fresh = cause;
+    result.sessionId = null;
+    ({ r, parsed } = await call(firstArgs(null)));
+    if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
+  }
   let why = problem({ r, parsed });
   const text = String(parsed?.result ?? '');
   let mark = why ? null : lastMark(text, MARKS[kind]);
@@ -1350,6 +1407,14 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (why) result.reason = why;
   else if (!mark) result.reason = 'the session ended without an AM_STAGE line';
   else result.status = mark;
+  if (solo) {
+    // A failed write only costs the next stage its continuation: it starts a new session.
+    if (result.sessionId) {
+      const err = writeSoloSession(cwd, solo.owner, { sessionId: result.sessionId, slug, stage: kind, status: result.status, t: new Date(now()).toISOString() });
+      if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
+    }
+    result.solo.sessionId = result.sessionId;
+  }
   return done();
 }
 

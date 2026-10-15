@@ -23,7 +23,8 @@ const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'
 // A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end),
-//   "delay": ms (every call answers after that long) }
+//   "delay": ms (every call answers after that long), "errors": [1] (calls that, after their writes, answer is_error with
+//   subtype error_during_execution and exit 1), "sessions": ["sess-1", "sess-2"] (the session_id of the nth call, else sess-1) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const argv = process.argv.slice(2);
@@ -41,7 +42,9 @@ for (const f of (s.removes || [])[n - 1] || []) rmSync(f, { force: true });
 if (s.crash) { process.stderr.write(s.stderr || 'boom'); process.exit(3); }
 const replies = s.replies || ['done\\nAM_STAGE: READY'];
 const text = replies[Math.min(n, replies.length) - 1];
-process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
+const failed = (s.errors || []).includes(n);
+process.stdout.write(JSON.stringify({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, result: failed ? 'No conversation found' : text, session_id: (s.sessions || [])[n - 1] || 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
+if (failed) process.exitCode = 1;
 }
 `;
 
@@ -323,7 +326,7 @@ test('solo: do --solo of a large plan ends `failed` with no session and no hand-
   assert.deepEqual(evs(events(dir)), ['start', 'end']);
   const planned = makeRepo(t, { fake: PLANNED });
   const p = await run(planned, ['plan', 'demo', '--solo']);
-  assert.deepEqual({ ...p.result, reply: !!p.result.reply }, PLAN_RESULT);
+  assert.deepEqual({ ...p.result, reply: !!p.result.reply }, { ...PLAN_RESULT, solo: { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session' } });
   assert.deepEqual(Object.keys(p.result), Object.keys(PLAN_RESULT));
   assert.deepEqual(Object.keys(JSON.parse(stageLine('plan', 'demo', 'WAIT', ''))), Object.keys(PLAN_RESULT));
   // The session gets the solo rules: the owner's plan stage the Parts rule.
@@ -340,6 +343,112 @@ test('solo: the plan stage of a part (--solo=<owner>) is told to plan only its p
   const system = readFileSync(path.join(dir, '.am', 'demo-p1', 'stage-plan.system.md'), 'utf8');
   assert.ok(system.includes('This is a part plan'));
   assert.ok(!system.includes('## Parts'));
+});
+
+const SOLO_FILE = (dir, owner = 'demo') => path.join(dir, '.am', owner, 'solo-session.json');
+const soloRecord = (dir, owner = 'demo') => JSON.parse(readFileSync(SOLO_FILE(dir, owner), 'utf8'));
+const notes = (dir, slug = 'demo') => events(dir, slug).filter((e) => e.ev === 'note').map((e) => e.text);
+const RECORDED = { sessionId: 'sess-0', slug: 'demo', stage: 'plan', status: 'READY', t: '2026-10-15T00:00:00.000Z' };
+
+test('solo session: without a record the stage starts a new session and records it', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  const { result, calls } = await run(dir, ['plan', 'demo', '--solo']);
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].includes('--resume'));
+  const { t: at, ...rec } = soloRecord(dir);
+  assert.deepEqual(rec, { sessionId: 'sess-1', slug: 'demo', stage: 'plan', status: 'READY' });
+  assert.equal(new Date(at).toISOString(), at);
+  assert.ok(notes(dir).includes('solo: no recorded session; started a new one'));
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session' });
+});
+
+test('solo session: a recorded session is continued with the stage\'s rules and permissions', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 1);
+  const a = calls[0];
+  assert.equal(flag(a, '--resume'), 'sess-0');
+  assert.equal(a[a.indexOf('--resume') + 2], '--append-system-prompt-file');
+  assert.equal(flag(a, '--append-system-prompt-file'), '.am/demo/stage-do.system.md');
+  assert.equal(flag(a, '--permission-mode'), 'acceptEdits');
+  assert.ok(flag(a, '--disallowedTools').split(',').includes('Bash(git commit *)'));
+  assert.equal(flag(a, '-p'), '/am:do demo');
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual([soloRecord(dir).stage, soloRecord(dir).status, soloRecord(dir).sessionId], ['do', 'DONE', 'sess-1']);
+  assert.equal(result.solo.fresh, null);
+  assert.ok(!notes(dir).some((n) => n.startsWith('solo:')));
+});
+
+test('solo session: an unreadable record is never passed on; the stage starts a new session', async (t) => {
+  const bad = ['{broken', JSON.stringify({ slug: 'demo' }), JSON.stringify({ sessionId: 'a b&c' }), JSON.stringify({ sessionId: '-x' }), JSON.stringify({ sessionId: '--dangerously-skip-permissions' })];
+  for (const text of bad) {
+    const dir = makeRepo(t, { fake: PLANNED });
+    writeFileSync(SOLO_FILE(dir), text);
+    const { result, calls } = await run(dir, ['plan', 'demo', '--solo']);
+    assert.equal(calls.length, 1, text);
+    assert.ok(!calls[0].includes('--resume'), text);
+    for (const v of ['a b&c', '-x', '--dangerously-skip-permissions']) assert.ok(!calls[0].includes(v), text);
+    assert.ok(notes(dir).includes('solo: no recorded session; started a new one'), text);
+    assert.equal(result.solo.fresh, 'no recorded session', text);
+  }
+});
+
+test('solo session: a recorded session that ends with an error is replaced by a new one, once', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'], errors: [1], sessions: ['sess-0', 'sess-2'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 2);
+  assert.equal(flag(calls[0], '--resume'), 'sess-0');
+  assert.ok(!calls[1].includes('--resume'));
+  assert.equal(flag(calls[1], '-p'), flag(calls[0], '-p'));
+  assert.equal(flag(calls[1], '--append-system-prompt-file'), flag(calls[0], '--append-system-prompt-file'));
+  const note = notes(dir).find((n) => n.startsWith('solo: could not continue the recorded session ('));
+  assert.ok(note && note.endsWith('); started a new session'), note);
+  assert.match(result.solo.fresh, /^claude ended with an error \(error_during_execution\)/);
+  assert.ok(note.includes(result.solo.fresh));
+  assert.equal(result.status, 'DONE');
+  assert.equal(soloRecord(dir).sessionId, 'sess-2');
+  assert.equal(result.solo.sessionId, 'sess-2');
+});
+
+test('solo session: a continued session that runs out of time is not replaced and leaves the record', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['check', 'demo', '--solo'], { timeoutMin: { check: 0.005 } });
+  assert.equal(calls.length, 1);
+  assert.equal(result.status, 'failed');
+  assert.match(result.reason, /^no end within/);
+  assert.ok(!notes(dir).some((n) => n.startsWith('solo: could not continue')));
+  assert.deepEqual(soloRecord(dir), RECORDED);
+});
+
+test('solo session: a part continues and rewrites its owner\'s record, never one of its own', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo-p1/plan.md': SMALL } } });
+  mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+  writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['plan', 'demo-p1', '--solo=demo']);
+  assert.equal(flag(calls[0], '--resume'), 'sess-0');
+  assert.deepEqual([soloRecord(dir).slug, soloRecord(dir).stage], ['demo-p1', 'plan']);
+  assert.ok(!existsSync(SOLO_FILE(dir, 'demo-p1')));
+  assert.equal(result.solo.owner, 'demo');
+});
+
+test('solo session: a stage that stops for a decision still records its session', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: ['Q\nAM_STAGE: NEEDS_DECISION'] } });
+  const { result } = await run(dir, ['plan', 'demo', '--solo']);
+  assert.equal(result.status, 'NEEDS_DECISION');
+  assert.equal(soloRecord(dir).status, 'NEEDS_DECISION');
+});
+
+test('solo session: a record that cannot be saved leaves the result as it is and creates no folder', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Checked.\nAM_STAGE: NOTE'] } });
+  const { result } = await run(dir, ['check', 'demo', '--solo=nofolder']);
+  assert.equal(result.status, 'NOTE');
+  assert.ok(notes(dir).some((n) => n.startsWith('solo: the session record could not be saved (')));
+  assert.ok(!existsSync(path.join(dir, '.am', 'nofolder')));
+  assert.equal(result.solo.sessionId, 'sess-1');
 });
 
 test('am:auto and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
@@ -2903,7 +3012,7 @@ test('follow: a --solo call prints its own worker\'s result, which names the own
   const f = startFollow(dir, ['check', 'demo', '--solo']);
   assert.equal(await f.done, 0);
   const line = JSON.parse(f.text);
-  assert.deepEqual([line.status, line.solo], ['NOTE', null]);
+  assert.deepEqual([line.status, line.solo], ['NOTE', { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session' }]);
   assert.equal(JSON.parse(readOr(WF(dir, 'result'))).solo, 'demo');
   // A part task of the task demo: its own folder, the owner demo.
   const part = makeRepo(t, { plan: SMALL, fake: NOTED });
