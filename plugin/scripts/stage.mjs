@@ -224,8 +224,9 @@ export const CODEX_STAGES = ['plan'];
  * Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root.
  * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
  * `startBranch`: the branch a hand-over merges back into, the only one it may switch to (none when it is not a plain name).
+ * `files`: the task files a compaction session may edit, by name inside `.am/<slug>/` (none without a slug).
  */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', installedAm = [], startBranch = '', soloOwner = '' } = {}) {
+export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', files = [], installedAm = [], startBranch = '', soloOwner = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
   const codex = CODEX_STAGES.includes(stage) ? [...new Set([amRoot, ...installedAm].flatMap((root) => nodeScript(path.join(root, 'scripts', 'codex-opinion.mjs'))))] : [];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
@@ -246,8 +247,9 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
       // the user's changes in this tree); after `--` git reads only paths, so no `--worktree` slips in. Bash only: PowerShell might eat the `--`.
       return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? ['commits.md', 'handoff.md'].flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : []), ...(soloOwner ? [`Edit(/.am/${soloOwner}/${SOLO_CONTEXT})`, `Edit(.am/${soloOwner}/${SOLO_CONTEXT})`] : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'compact':
-      // Shortens task files under .am/ before a stage; nothing else. The request is denied, which wins over the allowance.
-      return { mode: 'dontAsk', allow: [...read, ...edit('.am')], deny: [...noHuman, ...(slug ? [`Edit(/.am/${slug}/request.md)`, `Edit(.am/${slug}/request.md)`] : [])] };
+      // Shortens only the picked task files before a stage (plain `.md` names, nothing that widens a path); nothing else. The
+      // request is denied too, which wins should it ever be picked.
+      return { mode: 'dontAsk', allow: [...read, ...(slug ? files.filter((f) => /^[\w.-]+\.md$/.test(f)).flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : [])], deny: [...noHuman, ...(slug ? [`Edit(/.am/${slug}/request.md)`, `Edit(.am/${slug}/request.md)`] : [])] };
     case 'handover': {
       const orch = orchRoot ? nodeScript(path.join(orchRoot, 'scripts', 'orchestrator.mjs')) : [];
       // Switching only to the start branch: switch never restores paths, while `git checkout <name>` does when the name is no branch.
@@ -1076,7 +1078,7 @@ function originalName(slug, name, taken) {
 
 /**
  * Shortens the task files a stage of this kind reads when they hold more than the limit, in a short claude session of
- * their own. Each shortened file keeps its original as `<name>.orig-<n>.md`. A failed check, a session without its marker
+ * their own, which may edit only the files picked. Each shortened file keeps its original as `<name>.orig-<n>.md`. A failed check, a session without its marker
  * or over its time puts every original back and removes the new copies; so does a session that touched request.md, which
  * is put back as well. The session runs on `model` ({model, effort}); `modelNote`, when set, is noted as it starts. Returns {compacted, costUsd, cleaned}; `compacted` is
  * null (nothing to do), {files, before, after, originals}, or {files, failed}.
@@ -1084,9 +1086,6 @@ function originalName(slug, name, taken) {
 async function compactContext(cwd, slug, kind, { fix = false, env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, limit = CONTEXT_LIMIT, target = CONTEXT_TARGET, model = COMPACT_MODEL, modelNote = '', mcpConfig = '', note = () => {}, track = createTracker } = {}) {
   const abs = (rel) => path.join(cwd, rel);
   const read = (rel) => (existsSync(abs(rel)) ? readFileSync(abs(rel), 'utf8') : null);
-  // An earlier compaction of this task that never finished: its files go back before anything is measured.
-  const recovered = recoverCompaction(cwd, slug);
-  if (recovered.length) note(`an unfinished shortening was undone: ${recovered.join(', ')} put back`);
   const texts = {};
   for (const name of contextFiles(kind, { fix })) {
     const t = read(`.am/${slug}/${name}`);
@@ -1123,7 +1122,7 @@ async function compactContext(cwd, slug, kind, { fix = false, env = process.env,
   let r;
   try {
     writeMcpConfig(cwd, mcpConfig);
-    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug }), { prompt, systemFile: systemRel, model, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000, track });
+    r = await exec(bin, [...pre, ...claudeArgs(permissions('compact', { slug, files: names }), { prompt, systemFile: systemRel, model, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: timeoutMin.compact * 60000, track });
   } finally {
     compacting.delete(undo);
   }
@@ -1224,6 +1223,10 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const lockFile = path.join(cwd, '.am', '.admission.lock');
   const waitBegan = Date.now(); // the wait is timed by the clock that setTimeout uses
   let held = null; // the lock, kept to the end when the start line could not be written
+  // An earlier compaction of this task that never finished: its files go back before anything reads them, the do stage's
+  // kind included. The worker already holds the task's stage-worker.json, so no compaction of this task runs meanwhile.
+  const recovered = recoverCompaction(cwd, slug);
+  if (recovered.length) event({ ev: 'note', text: `an unfinished shortening was undone: ${recovered.join(', ')} put back` });
   // The do stage's kind is read once, before the wait. A hand-over (its sessions are the orchestrator's) and a do stage that
   // cannot start a session take no part in the memory check.
   const k = stage === 'do' ? doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix, solo: Boolean(solo) }) : null;

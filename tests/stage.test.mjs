@@ -148,7 +148,7 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   for (const r of ['Edit(/am-gate.json)', 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git stash push *)']) assert.ok(hand.allow.includes(r), r);
   assert.ok(permissions('handover', { orchRoot: '/orch', push: true }).allow.includes('Bash(git push *)'));
   for (const s of [...STAGES, 'handover']) assert.ok(permissions(s).deny.includes('AskUserQuestion'), s);
-  // The compaction session reads and writes only under .am/: no shell at all.
+  // The compaction session reads, and writes only the picked task files: no shell at all.
   const compact = permissions('compact');
   assert.equal(compact.mode, 'dontAsk');
   // Only the plan stage may run the Codex script: of the runner's am and of every installed am, in both quote forms.
@@ -166,12 +166,20 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
     assert.ok(!p.allow.some((r) => r.includes('codex-opinion')), s);
   }
   assert.ok(!permissions('commit', { amRoot: '/am', installedAm: ['/inst/a'] }).allow.some((r) => r.includes('node')), 'commit runs no node script');
-  assert.deepEqual(compact.allow, ['Read', 'Glob', 'Grep', 'Edit(/.am/**)', 'Edit(.am/**)']);
+  assert.deepEqual(compact.allow, ['Read', 'Glob', 'Grep']);
   assert.deepEqual(compact.deny, ['AskUserQuestion']);
-  // With the slug, the request is denied in both path forms: a deny rule wins over the .am/ allowance.
-  const guarded = permissions('compact', { slug: 'demo' });
-  assert.deepEqual(guarded.allow, compact.allow);
-  assert.deepEqual(guarded.deny, ['AskUserQuestion', 'Edit(/.am/demo/request.md)', 'Edit(.am/demo/request.md)']);
+  // With the slug, only the picked files in both path forms; the request is denied in both, should it ever be picked.
+  const one = permissions('compact', { slug: 'demo', files: ['plan.md'] });
+  assert.deepEqual(one.allow, ['Read', 'Glob', 'Grep', 'Edit(/.am/demo/plan.md)', 'Edit(.am/demo/plan.md)']);
+  const two = permissions('compact', { slug: 'demo', files: ['plan.md', 'check.md'] });
+  assert.deepEqual(two.allow, ['Read', 'Glob', 'Grep', 'Edit(/.am/demo/plan.md)', 'Edit(.am/demo/plan.md)', 'Edit(/.am/demo/check.md)', 'Edit(.am/demo/check.md)']);
+  // A name that would widen the path gets no rule.
+  assert.deepEqual(permissions('compact', { slug: 'demo', files: ['**', '../x.md', 'plan.md'] }).allow, one.allow);
+  assert.deepEqual(permissions('compact', { files: ['plan.md'] }).allow, ['Read', 'Glob', 'Grep']);
+  for (const p of [compact, one, two]) {
+    assert.ok(!p.allow.some((r) => /\.am\/\*\*|\.am\/other\/|compact-pending\.json|request\.md/.test(r)), JSON.stringify(p.allow));
+  }
+  for (const p of [one, two]) assert.deepEqual(p.deny, ['AskUserQuestion', 'Edit(/.am/demo/request.md)', 'Edit(.am/demo/request.md)']);
 });
 
 test('the compaction session: its own model and markers, a prompt cmd.exe can pass', () => {
@@ -738,7 +746,9 @@ test('task files above the limit are shortened in a session of their own before 
   assert.match(flag(calls[0], '-p'), /^Shorten the task files of \.am\/demo\//);
   assert.equal(flag(calls[0], '--append-system-prompt-file'), '.am/demo/stage-compact.system.md');
   assert.equal(flag(calls[0], '--model'), COMPACT_MODEL.model);
-  assert.equal(flag(calls[0], '--allowedTools'), 'Read,Glob,Grep,Edit(/.am/**),Edit(.am/**)');
+  assert.equal(flag(calls[0], '--allowedTools'), 'Read,Glob,Grep,Edit(/.am/demo/plan.md),Edit(.am/demo/plan.md)');
+  const denied = flag(calls[0], '--disallowedTools').split(',');
+  assert.ok(denied.includes('Edit(/.am/demo/request.md)') && denied.includes('Edit(.am/demo/request.md)'));
   assert.equal(flag(calls[1], '-p'), '/am:do demo');
   assert.ok(!calls[1].includes('--model'));
   assert.equal(plan(dir), SHORT);
@@ -4253,15 +4263,30 @@ test('compaction: a record is written before the session and removed after; a le
   assert.ok(!existsSync(path.join(dir, '.am', 'x.md')));
 });
 
-test('compaction: the next stage puts back what a killed compaction left, and notes it', async (t) => {
-  const dir = makeRepo(t, { plan: '# half\n', fake: { replies: ['Checked.\nAM_STAGE: NOTE'] } });
+test('compaction: the next check or commit stage puts back what a killed compaction left, and notes it', async (t) => {
+  for (const [stage, reply, status] of [['check', 'Checked.\nAM_STAGE: NOTE', 'NOTE'], ['commit', 'Committed.\nAM_STAGE: COMMITTED', 'COMMITTED']]) {
+    const dir = makeRepo(t, { plan: '# half\n', fake: { replies: [reply] } });
+    const pdir = path.join(dir, '.am', 'demo');
+    writeFileSync(path.join(pdir, 'plan.orig-1.md'), SMALL);
+    writeFileSync(path.join(pdir, COMPACT_PENDING), JSON.stringify({ pid: 1, texts: { 'plan.md': SMALL }, request: 'Fix the typo', originals: ['.am/demo/plan.orig-1.md'] }));
+    const { result } = await run(dir, [stage, 'demo']);
+    assert.equal(result.status, status, stage);
+    assert.equal(plan(dir), SMALL, stage);
+    assert.ok(events(dir).some((e) => e.ev === 'note' && /unfinished shortening was undone: plan\.md put back/.test(e.text)), stage);
+  }
+});
+
+test('compaction: a do stage judges the plan put back from a killed compaction, not the shortened one', async (t) => {
+  // The original has a done step, so the plan has started and stays in this session; the shortened copy lost the mark.
+  const ORIG = LARGE.replace('1. a. Check: x', '1. a. Check: x (done)');
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Implemented.\nAM_STAGE: DONE'] } });
   const pdir = path.join(dir, '.am', 'demo');
-  writeFileSync(path.join(pdir, 'plan.orig-1.md'), SMALL);
-  writeFileSync(path.join(pdir, COMPACT_PENDING), JSON.stringify({ pid: 1, texts: { 'plan.md': SMALL }, request: 'Fix the typo', originals: ['.am/demo/plan.orig-1.md'] }));
-  const { result } = await run(dir, ['check', 'demo']);
-  assert.equal(result.status, 'NOTE');
-  assert.equal(plan(dir), SMALL);
+  writeFileSync(path.join(pdir, COMPACT_PENDING), JSON.stringify({ pid: 1, texts: { 'plan.md': ORIG }, request: 'Fix the typo', originals: [] }));
+  const { result } = await run(dir, ['do', 'demo'], ORCH);
+  assert.equal(result.stage, 'do');
+  assert.equal(plan(dir), ORIG);
   assert.ok(events(dir).some((e) => e.ev === 'note' && /unfinished shortening was undone: plan\.md put back/.test(e.text)));
+  assert.ok(!existsSync(path.join(pdir, COMPACT_PENDING)));
 });
 
 test('compaction: a stop during the compaction session puts the files back once the session is killed', { skip: process.platform === 'win32' }, async (t) => {
