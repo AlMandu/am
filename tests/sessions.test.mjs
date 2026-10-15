@@ -66,6 +66,38 @@ function record(sessions, name, data, ageMin = 0) {
 
 const report = (opts) => render(collect(opts), opts);
 
+// The am-orchestrator files of a working tree: lock.json (touched minutes before T0), worker.json and the run's files.
+function orch(repo, { lock, worker = null, run = 'R1', tasks = null, state = null, events = [], lockAgeMin = 0 }) {
+  const dir = path.join(repo, '.orchestrator');
+  mkdirSync(path.join(dir, 'worker'), { recursive: true });
+  const lockPath = path.join(dir, 'lock.json');
+  writeFileSync(lockPath, JSON.stringify({ command: 'run', startedAt: iso(20), ...lock }));
+  const at = new Date(T0 - lockAgeMin * 60000);
+  utimesSync(lockPath, at, at);
+  if (worker) writeFileSync(path.join(dir, 'worker', 'worker.json'), JSON.stringify({ command: 'run', args: [], startedAt: iso(20), ...worker }));
+  const runDir = path.join(dir, 'runs', run);
+  mkdirSync(runDir, { recursive: true });
+  if (tasks) writeFileSync(path.join(runDir, 'tasks.json'), JSON.stringify({ tasks }));
+  if (state) writeFileSync(path.join(runDir, 'state.json'), JSON.stringify(state));
+  if (events.length) writeFileSync(path.join(runDir, 'progress.jsonl'), events.map((e) => `${JSON.stringify(e)}\n`).join(''));
+  return dir;
+}
+
+const TASKS = [
+  { id: 'T01', title: 'first task' },
+  { id: 'T02', title: 'second task' },
+  { id: 'T03', title: 'third task' },
+];
+const RUN_EVENTS = [
+  { t: iso(5), ev: 'step', text: 'implement started', task: 'T01' },
+  { t: iso(3), ev: 'step', text: 'check started', task: 'T02' },
+  { t: iso(1), ev: 'step', text: 'tests running', task: 'T01' },
+];
+const LEASE = { pid: LIVE, run: 'R1', leaseMs: 5 * 60000 };
+// A session record (`.gate` when gate) of the live pid: phase, where, started minutes before T0.
+const orchRecord = (sessions, repo, n, phase, where, min, gate = false) =>
+  record(sessions, `testhost~${LIVE}~${n}${gate ? '.gate' : ''}.json`, { pid: LIVE, host: 'test host', repo, phase, where, startedAt: iso(min) });
+
 test('(a) a do stage: elapsed from its start, done steps, latest news; its .gate record adds no second line', () => {
   const { repo, sessions, opts } = makePc();
   const dir = task(repo, 't1', {
@@ -156,6 +188,117 @@ test('(g) a live record of another host adds neither a line nor a working tree',
   assert.equal(render(snap, opts), NONE);
 });
 
+test('(b) orchestrator hand-over: the run goes under the am:auto task whose worker owns it, with its running tasks', () => {
+  const { repo, sessions, opts } = makePc();
+  task(repo, 'h2', {
+    worker: { pid: LIVE, t: T0 - 10 * 60000, stage: 'do' },
+    events: [
+      { t: iso(9), ev: 'start', text: 'stage do started', pid: LIVE, stage: 'do' },
+      { t: iso(9), ev: 'note', text: 'handed to the am-orchestrator run skill', stage: 'handover' },
+    ],
+  });
+  orch(repo, {
+    lock: LEASE,
+    worker: { pid: LIVE, owner: LIVE },
+    tasks: TASKS,
+    state: { tasks: { T01: { status: 'planned', running: 'implement' }, T02: { status: 'implemented', running: 'check' }, T03: { status: 'pending' } } },
+    events: RUN_EVENTS,
+  });
+  orchRecord(sessions, repo, 1, 'implement', '.orchestrator/runs/R1/T01', 4);
+  assert.equal(
+    report(opts),
+    [
+      `세션 보고 (${hhmm(T0)})`,
+      `${repo} (현재 작업 트리)`,
+      '  am:auto 작업 h2 — 인계 단계 세션, 9분째 · 마지막 소식: handed to the am-orchestrator run skill (9분 전)',
+      '    └ 인계: am-orchestrator 실행 R1',
+      '      T01 first task — 구현 세션, 4분째 · 마지막 소식: tests running (1분 전)',
+      '      T02 second task — 점검 단계 대기 중 · 마지막 소식: check started (3분 전)',
+      '',
+    ].join('\n'),
+  );
+});
+
+test('(c) a run the user started goes straight under its working tree, also with no am:auto task; a split session', () => {
+  const { repo, sessions, opts } = makePc();
+  orch(repo, { lock: LEASE, worker: { pid: LIVE }, tasks: TASKS, events: [{ t: iso(2), ev: 'note', text: 'splitting the design' }] });
+  orchRecord(sessions, repo, 1, 'split', '.orchestrator/runs/R1/_split', 6);
+  assert.equal(
+    report(opts),
+    [`세션 보고 (${hhmm(T0)})`, `${repo} (현재 작업 트리)`, '  am-orchestrator 실행 R1', '    작업 나누기 세션, 6분째 · 마지막 소식: splitting the design (2분 전)', ''].join('\n'),
+  );
+  // An owner that is no live am:auto task's worker keeps the run under its tree, after the tree's tasks.
+  task(repo, 'w9', { worker: { pid: LIVE, t: T0 - 60000, stage: 'plan' } });
+  orch(repo, { lock: LEASE, worker: { pid: LIVE, owner: 77 }, tasks: TASKS, state: { tasks: { T03: { running: 'commit' } } } });
+  const lines = report(opts).split('\n');
+  assert.deepEqual(lines.slice(2, 5), ['  am:auto 작업 w9 — 계획 단계 대기 중, 1분째', '  am-orchestrator 실행 R1', '    작업 나누기 세션, 6분째 · 마지막 소식: splitting the design (2분 전)']);
+  assert.ok(lines.includes('    T03 third task — 커밋 단계 대기 중'), lines.join('\n'));
+});
+
+test('(d) a dead or lapsed lock shows nothing, even with a stale running task; a lock with no lease keeps the pid rule', () => {
+  const state = { tasks: { T01: { running: 'implement' } } };
+  for (const [lock, lockAgeMin] of [
+    [{ ...LEASE, pid: DEAD }, 0],
+    [LEASE, 6],
+  ]) {
+    const { repo, sessions, opts } = makePc();
+    orch(repo, { lock, worker: { pid: lock.pid }, tasks: TASKS, state, lockAgeMin });
+    orchRecord(sessions, repo, 1, 'implement', '.orchestrator/runs/R1/T01', 4);
+    assert.equal(report(opts), NONE);
+  }
+  const { repo, opts } = makePc();
+  orch(repo, { lock: { pid: LIVE, run: 'R1' }, tasks: TASKS, state, lockAgeMin: 60 });
+  assert.match(report(opts), /^ {4}T01 first task — 구현 단계 대기 중$/m);
+});
+
+test('a live run with nothing under it is getting the next task ready; a lock with no run names its command', () => {
+  const { repo, opts } = makePc();
+  orch(repo, { lock: LEASE, tasks: TASKS, state: { tasks: { T01: { status: 'done' } } } });
+  assert.match(report(opts), /^ {2}am-orchestrator 실행 R1 · 다음 작업 준비 중$/m);
+  orch(repo, { lock: { pid: LIVE, command: 'doctor', leaseMs: 5 * 60000 } });
+  assert.match(report(opts), /^ {2}am-orchestrator doctor 명령 · 다음 작업 준비 중$/m);
+});
+
+test('gates, workspace setup and an answer session', () => {
+  const { repo, sessions, opts } = makePc();
+  orch(repo, { lock: LEASE, tasks: TASKS, state: { tasks: { T01: { running: 'check' } } }, events: RUN_EVENTS });
+  orchRecord(sessions, repo, 1, 'gate', repo, 2, true);
+  orchRecord(sessions, repo, 2, 'worktreeSetup', path.join(repo, '.orchestrator', 'worktrees', 'T02'), 3, true);
+  orchRecord(sessions, repo, 3, 'answer', '.orchestrator/runs/R1/T03', 1);
+  let lines = report(opts).split('\n');
+  assert.deepEqual(lines.slice(2), [
+    '  am-orchestrator 실행 R1',
+    '    T01 first task — 게이트 확인 중, 2분째 · 마지막 소식: tests running (1분 전)',
+    '    T03 third task — 답 반영 세션, 1분째',
+    '    작업 공간 준비 중, 3분째',
+    '',
+  ]);
+  // Two running tasks in the main tree: the gate cannot be told apart and gets its own line.
+  orch(repo, { lock: LEASE, tasks: TASKS, state: { tasks: { T01: { running: 'check' }, T02: { running: 'check', worktree: '' } } } });
+  lines = report(opts).split('\n');
+  assert.ok(lines.includes('    게이트 확인 중, 2분째'), lines.join('\n'));
+  assert.ok(lines.includes('    T01 first task — 점검 단계 대기 중 · 마지막 소식: tests running (1분 전)'), lines.join('\n'));
+  // A task in its own workspace takes the gate whose where is that folder.
+  orch(repo, { lock: LEASE, tasks: TASKS, state: { tasks: { T01: { running: 'check' }, T02: { running: 'check', worktree: '.orchestrator/worktrees/T02' } } } });
+  orchRecord(sessions, repo, 1, 'gate', path.join(repo, '.orchestrator', 'worktrees', 'T02'), 2, true);
+  lines = report(opts).split('\n');
+  assert.ok(lines.includes('    T02 second task — 게이트 확인 중, 2분째 · 마지막 소식: check started (3분 전)'), lines.join('\n'));
+});
+
+test('records of another pid do not attach, and a run name with .. reads no run files', () => {
+  const { repo, sessions, opts } = makePc();
+  orch(repo, { lock: LEASE, tasks: TASKS, state: { tasks: { T01: { running: 'implement' } } } });
+  record(sessions, `testhost~5151~1.json`, { pid: 5151, repo, phase: 'implement', where: '.orchestrator/runs/R1/T01', startedAt: iso(4) });
+  const live = (pid) => pid === LIVE || pid === 5151;
+  assert.match(report({ ...opts, alive: live }), /^ {4}T01 first task — 구현 단계 대기 중$/m);
+  const outside = path.join(repo, '.orchestrator', 'x');
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(path.join(outside, 'tasks.json'), JSON.stringify({ tasks: TASKS }));
+  writeFileSync(path.join(outside, 'state.json'), JSON.stringify({ tasks: { T01: { running: 'implement' } } }));
+  orch(repo, { lock: { ...LEASE, run: '../x' } });
+  assert.equal(report(opts).split('\n').slice(2).join('\n'), '  am-orchestrator run 명령 · 다음 작업 준비 중\n');
+});
+
 // Every file under a folder: path, content and mtime.
 function listing(root) {
   const out = [];
@@ -180,11 +323,15 @@ test('(h) read-only: collect, render and main change no file', () => {
   });
   record(sessions, `testhost~${LIVE}~1.gate.json`, { pid: LIVE, repo, phase: 'am:auto do', where: dir, startedAt: iso(4) });
   record(sessions, `testhost~${DEAD}~1.gate.json`, { pid: DEAD, repo, phase: 'am:auto do', where: dir, startedAt: iso(4) });
+  orch(repo, { lock: LEASE, worker: { pid: LIVE, owner: LIVE }, tasks: TASKS, state: { tasks: { T01: { running: 'implement' } } }, events: RUN_EVENTS });
+  orchRecord(sessions, repo, 2, 'implement', '.orchestrator/runs/R1/T01', 4);
+  orchRecord(sessions, repo, 3, 'gate', repo, 1, true);
   const before = listing(base);
   render(collect(opts), opts);
   let text = '';
   assert.equal(main([], { ...opts, out: { write: (s) => (text += s) } }), 0);
   assert.match(text, /r1 — 압축 단계 세션/);
+  assert.match(text, /└ 인계: am-orchestrator 실행 R1\n {6}T01 first task — 게이트 확인 중/);
   assert.deepEqual(listing(base), before);
 });
 
