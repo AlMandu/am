@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_COMPACT_PROMPT, SOLO_CONTEXT_LIMIT, SOLO_CONTEXT_PROMPT, SOLO_CLEAR_CONTEXT, contextPercent, soloClearSavePrompt, soloClearPerm } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -23,7 +23,10 @@ const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'
 // A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
 //   "writes": [{ "path": "content written by the 1st call only" }, ...], "removes": [["path deleted by the 1st call only"], ...], "hang": [1] (calls that never end),
-//   "delay": ms (every call answers after that long) }
+//   "delay": ms (every call answers after that long), "errors": [1] (calls that, after their writes, answer is_error with
+//   subtype error_during_execution and exit 1), "crashes": [1] (calls that, after their writes, write "stderr" or boom to stderr and exit 3),
+//   "exits": [1] (calls that answer as usual but exit 1), "sessions": ["sess-1", "sess-2"] (the session_id of the nth call, else sess-1;
+//   null leaves session_id out) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const argv = process.argv.slice(2);
@@ -38,10 +41,12 @@ if ((s.hang || []).includes(n)) setTimeout(() => {}, 60000);
 else {
 for (const [f, t] of Object.entries({ ...s.write, ...(s.writes || [])[n - 1] })) { mkdirSync(path.dirname(f), { recursive: true }); writeFileSync(f, t); }
 for (const f of (s.removes || [])[n - 1] || []) rmSync(f, { force: true });
-if (s.crash) { process.stderr.write(s.stderr || 'boom'); process.exit(3); }
+if (s.crash || (s.crashes || []).includes(n)) { process.stderr.write(s.stderr || 'boom'); process.exit(3); }
 const replies = s.replies || ['done\\nAM_STAGE: READY'];
 const text = replies[Math.min(n, replies.length) - 1];
-process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
+const failed = (s.errors || []).includes(n);
+process.stdout.write(JSON.stringify({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, result: failed ? 'No conversation found' : text, session_id: (s.sessions || [])[n - 1] === null ? undefined : (s.sessions || [])[n - 1] || 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
+if (failed || (s.exits || []).includes(n)) process.exitCode = 1;
 }
 `;
 
@@ -128,6 +133,11 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)', 'Edit(/.am/demo/handoff.md)', 'Edit(.am/demo/handoff.md)']);
   assert.deepEqual(recorded.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
   assert.deepEqual(recorded.deny, commit.deny);
+  // A solo commit stage may also write its owner's memory file; the rest stays as it is.
+  const solo = permissions('commit', { slug: 'demo-p1', soloOwner: 'demo' });
+  assert.deepEqual(solo.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo-p1/commits.md)', 'Edit(.am/demo-p1/commits.md)', 'Edit(/.am/demo-p1/handoff.md)', 'Edit(.am/demo-p1/handoff.md)', 'Edit(/.am/demo/solo-context.md)', 'Edit(.am/demo/solo-context.md)']);
+  assert.deepEqual(solo.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
+  assert.deepEqual(solo.deny, commit.deny);
   assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says, and after the last one update \.am\/demo\/handoff\.md as the skill says; those are the only files this session can write/);
   // The plan stage may also write the current-task mark, which its .am/ allowance already covers.
   assert.match(instructions('plan', 'demo').system, /only under \.am\/demo\/ and the current-task mark \.am\/\.active with the Write or Edit tool/);
@@ -175,7 +185,7 @@ test('the compaction session: its own model and markers, a prompt cmd.exe can pa
   const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
   assert.ok(!/["%]/.test(prompt), prompt);
   assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
-  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), or the user\'s answer', '(자동 결정), (second opinion, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back']) assert.ok(system.includes(keep), keep);
+  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), or the user\'s answer', '(자동 결정), (second opinion, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back', '`## Parts` section', '`- Part <k> done: …`']) assert.ok(system.includes(keep), keep);
 });
 
 test('instructions: slash call of the stage skill, unattended rules written out in every stage', () => {
@@ -230,6 +240,103 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const resume of [true, false]) assert.ok(instructions('handover', 'demo', { resume }).system.includes('every line of `autoDecided` and `secondOpinions`'), `resume ${resume}`);
 });
 
+test('instructions: solo changes three sentences of the unattended rules and adds the Parts rule to the plan stage', () => {
+  const swaps = [
+    ['You are one stage of the am:auto skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner compacts the conversation when it fills 20 percent or more of the context window, and continues in a new session when compacting is not enough.'],
+    ['- Running am:auto is the user\'s request', '- Running am:solo is the user\'s request'],
+    ['this stage starts again in a new session.', 'this stage continues in this same session.'],
+  ];
+  const oneCommand = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
+  for (const s of [...STAGES, 'handover']) for (const push of [false, true]) {
+    const plain = instructions(s, 'demo', { push }).system;
+    assert.equal(instructions(s, 'demo', { push, solo: null }).system, plain, `${s} push ${push}: solo null changes nothing`);
+    const { system } = instructions(s, 'demo', { push, solo: { owner: 'demo' } });
+    let back = system;
+    for (const [from, to] of swaps) {
+      assert.equal(system.split(to).length, 2, `${s}: ${to} once`);
+      assert.ok(!system.includes(from), `${s}: ${from} gone`);
+      back = back.replace(to, from);
+    }
+    // Only these sentences, the plan's Parts line, the commit stage's writable files and the memory save rule differ from the rules without solo.
+    if (s === 'plan') back = back.replace(/\n- If the Scale line says 2 or more implementation runs, add a section headed exactly `## Parts`[^\n]*/, '');
+    if (s === 'commit') back = back.replace('those two and .am/demo/solo-context.md (below) are the only files', 'those are the only files');
+    const save = back.match(/\n- Before your final reply, also when you stop, rewrite \.am\/demo\/solo-context\.md whole with the Write tool[^\n]*/);
+    assert.ok(save && back.endsWith(`${save[0]}\n`), `${s}: the save rule ends the rules`);
+    back = back.replace(save[0], '');
+    assert.equal(back, plain, `${s} push ${push}`);
+    assert.ok(!system.includes('This stage starts in a new session'), `${s}: no read rule without soloRead`);
+    // The fixed wording of the stage rules holds in the solo form too.
+    assert.match(system, /the mark \(auto-decided\), translated into the plan's language \(\(자동 결정\) in a Korean plan\)/, s);
+    for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds']) assert.ok(system.includes(stop), `${s}: ${stop}`);
+    assert.match(system, /marked OPEN[\s\S]*AM_STAGE: NEEDS_DECISION/, s);
+    for (const m of MARKS[s]) assert.ok(system.includes(`AM_STAGE: ${m}`), `${s}: ${m}`);
+    assert.ok(system.includes(`\n${oneCommand}\n`), `${s}: one command per call`);
+    assert.equal(system.split(oneCommand).length, 2, `${s}: one command per call, once`);
+  }
+  const owner = instructions('plan', 'demo', { solo: { owner: 'demo' } }).system;
+  for (const part of ['## Parts', PART_LINE, 'consecutive Steps', 'never start with a number and never carry a done mark']) assert.ok(owner.includes(part), part);
+  const partPlan = instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system;
+  assert.ok(partPlan.includes('plan only the one part of the parent plan that .am/demo-p1/request.md names, as at most one implementation run, and with no Parts section'));
+  assert.ok(!partPlan.includes('## Parts'));
+  for (const s of ['do', 'check', 'commit']) {
+    const { system } = instructions(s, 'demo', { solo: { owner: 'demo' } });
+    assert.ok(!system.includes('## Parts') && !system.includes('This is a part plan'), s);
+  }
+  // A part saves and reads its owner's memory file; the read rule comes only with soloRead, after the save rule.
+  const read = instructions('do', 'demo-p1', { solo: { owner: 'demo' }, soloRead: true }).system;
+  assert.ok(read.includes('rewrite .am/demo/solo-context.md whole with the Write tool, in the plan\'s language and in about 60 lines or fewer'));
+  assert.ok(read.endsWith('- This stage starts in a new session: the shared session of this am:solo task could not be continued. Before anything else, read .am/demo/solo-context.md, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.\n'));
+  assert.ok(!read.includes('.am/demo-p1/solo-context.md'));
+  assert.ok(instructions('commit', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('those two and .am/demo/solo-context.md (below) are the only files this session can write'));
+  assert.ok(instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('only under .am/demo-p1/, .am/demo/solo-context.md (below) and the current-task mark'));
+  assert.ok(!instructions('plan', 'demo', { solo: { owner: 'demo' } }).system.includes('(below) and the current-task mark'));
+  // soloRead without solo changes nothing.
+  assert.equal(instructions('do', 'demo', { soloRead: true }).system, instructions('do', 'demo').system);
+});
+
+test('instructions: soloClear adds the clear rule after the save rule, names the file and says read only on difficulty', () => {
+  const plain = instructions('do', 'demo-p1', { solo: { owner: 'demo' } }).system;
+  const cleared = instructions('do', 'demo-p1', { solo: { owner: 'demo' }, soloClear: SOLO_CLEAR_CONTEXT }).system;
+  const rule = '\n- This stage starts in a new session: the runner cleared the shared session of this am:solo task because it still filled 20 percent or more of the context window after compaction. If you have difficulty continuing the work right after this (why a decision was made, what an earlier stage did or left open), read .am/demo/solo-clear-context.md, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.\n';
+  assert.equal(cleared, `${plain.slice(0, -1)}${rule}`);
+  assert.ok(!cleared.includes('Before anything else'));
+  assert.ok(instructions('do', 'demo', { solo: { owner: 'demo' }, soloClear: 'solo-context.md' }).system.endsWith('read .am/demo/solo-context.md, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.\n'));
+  // soloClear without solo changes nothing.
+  assert.equal(instructions('do', 'demo', { soloClear: SOLO_CLEAR_CONTEXT }).system, instructions('do', 'demo').system);
+});
+
+test('contextPercent: reads the percent of /context, else used / total; null when neither is there', () => {
+  const cases = [
+    ['## Context Usage\n\n**Model:** claude-opus-5-5  \n**Tokens:** 24.5k / 1m (2%)\n\n| Free space | 942.5k | 94.2% |', 2],
+    ['**Tokens:** 40k / 200k (20%)', 20],
+    ['**Tokens:** 39.9k / 200.0k (19.9%)', 19.9],
+    ['Tokens: 15,200 / 200,000 (7.6 %)', 7.6],
+    ['tokens:15.2K/200K', 7.6],
+    ['**Tokens:** 50k / 1M', 5],
+    ['Tokens: 300000 / 1m', 30],
+    ['Tokens: 24500 / 200000\nMessages: 3k', 12.25],
+    ['Tokens: 10k / 0', null],
+    ['No context data', null],
+    ['| Free space | 942.5k | 94.2% |', null],
+    ['', null],
+    [undefined, null],
+  ];
+  for (const [text, want] of cases) {
+    const got = contextPercent(text);
+    if (want === null) assert.equal(got, null, String(text));
+    else assert.ok(Math.abs(got - want) < 1e-9, `${text}: ${got}`);
+  }
+  assert.equal(SOLO_CONTEXT_LIMIT, 20);
+  assert.ok(contextPercent('Tokens: 40k / 200k (20%)') >= SOLO_CONTEXT_LIMIT && contextPercent('Tokens: 39k / 200k (19.5%)') < SOLO_CONTEXT_LIMIT);
+});
+
+test('solo clear: the context and save prompts pass through cmd.exe, and the save call may write the clear file only', () => {
+  for (const p of [SOLO_CONTEXT_PROMPT, soloClearSavePrompt('demo')]) assert.doesNotThrow(() => cmdExeArgs(['-p', p]), p);
+  const prompt = soloClearSavePrompt('demo');
+  assert.ok(prompt.includes('rewrite .am/demo/solo-clear-context.md whole with the Write tool') && prompt.includes('.am/demo/solo-context.md') && prompt.includes('Write no other file'));
+  assert.deepEqual(soloClearPerm('demo'), { mode: 'dontAsk', allow: ['Edit(/.am/demo/solo-clear-context.md)', 'Edit(.am/demo/solo-clear-context.md)'], deny: ['AskUserQuestion'] });
+});
+
 test('doKind: hand over a large new plan only when the run skill is installed', () => {
   const orch = () => '/orch';
   assert.deepEqual(doKind(SMALL, { orchestrator: orch }), { kind: 'do' });
@@ -246,6 +353,178 @@ test('doKind: hand over a large new plan only when the run skill is installed', 
   // A step that names the hand-over test file and run ID field is not a hand-over: a small plan stays with am:do.
   const mention = SMALL.replace('1. a. Check: x\n', '1. a. Check: x\n2. `tests/orchestrator-skill.test.mjs`: pin that the am:auto hand-over line carries `run.id`. Check: y\n');
   assert.deepEqual(doKind(`${mention}## Change log\n`, { orchestrator: orch }), { kind: 'do' });
+});
+
+test('stageArgs: --solo names the task itself as owner, --solo=<owner> another task; one solo flag at most', () => {
+  assert.equal(stageArgs(['do', 'demo', '--solo']).solo.owner, 'demo');
+  assert.equal(stageArgs(['plan', 'demo-p1', '--solo=demo']).solo.owner, 'demo');
+  assert.deepEqual(stageArgs(['do', 'demo', '--push', '--solo', '--fix']), { stage: 'do', slug: 'demo', push: true, fix: true, solo: { owner: 'demo' } });
+  assert.deepEqual(stageArgs(['do', 'demo']), { stage: 'do', slug: 'demo', push: false, fix: false, solo: null });
+  for (const flags of [['--solo=Bad'], ['--solo='], ['--solo=-x'], ['--solo', '--solo=demo'], ['--solo', '--solo'], ['--solo=a', '--solo=b'], ['--sol']]) {
+    assert.equal(stageArgs(['do', 'demo', ...flags]), null, flags.join(' '));
+  }
+});
+
+test('doKind: with solo the orchestrator is never looked up; a handed-over or large plan is an error', () => {
+  const never = () => assert.fail('the orchestrator was looked up');
+  const handed = `${LARGE}## 변경 기록\n- am-orchestrator run 스킬로 넘김, run.id 20261007-1200, 시작 브랜치 main\n`;
+  for (const orchestrator of [never, () => '/orch', () => null]) {
+    const o = { orchestrator, solo: true };
+    assert.deepEqual(doKind(SMALL, o), { kind: 'do' });
+    assert.match(doKind(LARGE, o).error, /Parts section/);
+    assert.deepEqual(doKind(LARGE.replace('1. a.', '1. a. (완료)'), o), { kind: 'do' });
+    assert.deepEqual(doKind(LARGE, { ...o, fix: true }), { kind: 'do' });
+    assert.match(doKind(handed, o).error, /handed to am-orchestrator: continue it with the am:auto skill/);
+    assert.deepEqual(doKind(handed.replace('1. a.', '1. a. (done)'), o), { kind: 'do' });
+    assert.match(doKind('# p\n## Steps\n1. a\n', o).error, /no Scale line/);
+  }
+});
+
+test('solo: do --solo of a large plan ends `failed` with no session and no hand-over; results carry solo null', async (t) => {
+  const dir = makeRepo(t, { plan: LARGE, fake: { replies: ['Run done.\nAM_STAGE: HANDED'] } });
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo'], { orchestrator: () => '/orch' });
+  assert.equal(result.status, 'failed');
+  assert.match(result.reason, /Parts section/);
+  assert.equal(result.solo, null);
+  assert.equal(calls.length, 0);
+  assert.ok(!existsSync(path.join(dir, 'calls.jsonl')));
+  assert.deepEqual(evs(events(dir)), ['start', 'end']);
+  const planned = makeRepo(t, { fake: PLANNED });
+  const p = await run(planned, ['plan', 'demo', '--solo']);
+  assert.deepEqual({ ...p.result, reply: !!p.result.reply }, { ...PLAN_RESULT, solo: { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session', context: false } });
+  assert.deepEqual(Object.keys(p.result), Object.keys(PLAN_RESULT));
+  assert.deepEqual(Object.keys(JSON.parse(stageLine('plan', 'demo', 'WAIT', ''))), Object.keys(PLAN_RESULT));
+  // The session gets the solo rules: the owner's plan stage the Parts rule.
+  const ownerSystem = readFileSync(path.join(planned, '.am', 'demo', 'stage-plan.system.md'), 'utf8');
+  assert.ok(ownerSystem.includes('am:solo skill') && ownerSystem.includes('## Parts'));
+});
+
+test('solo: the plan stage of a part (--solo=<owner>) is told to plan only its part', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo-p1/plan.md': SMALL } } });
+  mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+  writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+  const { result } = await run(dir, ['plan', 'demo-p1', '--solo=demo']);
+  assert.equal(result.status, 'READY');
+  const system = readFileSync(path.join(dir, '.am', 'demo-p1', 'stage-plan.system.md'), 'utf8');
+  assert.ok(system.includes('This is a part plan'));
+  assert.ok(!system.includes('## Parts'));
+});
+
+const SOLO_FILE = (dir, owner = 'demo') => path.join(dir, '.am', owner, 'solo-session.json');
+const soloRecord = (dir, owner = 'demo') => JSON.parse(readFileSync(SOLO_FILE(dir, owner), 'utf8'));
+const notes = (dir, slug = 'demo') => events(dir, slug).filter((e) => e.ev === 'note').map((e) => e.text);
+const RECORDED = { sessionId: 'sess-0', slug: 'demo', stage: 'plan', status: 'READY', t: '2026-10-15T00:00:00.000Z' };
+// Result texts of /context below and above the solo limit.
+const LOW = '## Context Usage\n\n**Tokens:** 10k / 200k (5%)\n';
+const HIGH = '## Context Usage\n\n**Tokens:** 60k / 200k (30%)\n';
+
+test('solo session: without a record the stage starts a new session and records it', async (t) => {
+  const dir = makeRepo(t, { fake: PLANNED });
+  const { result, calls } = await run(dir, ['plan', 'demo', '--solo']);
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].includes('--resume'));
+  const { t: at, ...rec } = soloRecord(dir);
+  assert.deepEqual(rec, { sessionId: 'sess-1', slug: 'demo', stage: 'plan', status: 'READY' });
+  assert.equal(new Date(at).toISOString(), at);
+  assert.ok(notes(dir).includes('solo: no recorded session; started a new one'));
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session', context: false });
+});
+
+// The same stage after a question goes straight on, with no compaction.
+const ASKED = (stage) => ({ ...RECORDED, stage, status: 'NEEDS_DECISION' });
+
+test('solo session: a recorded session is continued with the stage\'s rules and permissions', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(ASKED('do')));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 1);
+  const a = calls[0];
+  assert.equal(flag(a, '--resume'), 'sess-0');
+  assert.equal(a[a.indexOf('--resume') + 2], '--append-system-prompt-file');
+  assert.equal(flag(a, '--append-system-prompt-file'), '.am/demo/stage-do.system.md');
+  assert.equal(flag(a, '--permission-mode'), 'acceptEdits');
+  assert.ok(flag(a, '--disallowedTools').split(',').includes('Bash(git commit *)'));
+  assert.equal(flag(a, '-p'), '/am:do demo');
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual([soloRecord(dir).stage, soloRecord(dir).status, soloRecord(dir).sessionId], ['do', 'DONE', 'sess-1']);
+  assert.equal(result.solo.fresh, null);
+  assert.ok(!notes(dir).some((n) => n.startsWith('solo:')));
+});
+
+test('solo session: an unreadable record is never passed on; the stage starts a new session', async (t) => {
+  const bad = ['{broken', JSON.stringify({ slug: 'demo' }), JSON.stringify({ sessionId: 'a b&c' }), JSON.stringify({ sessionId: '-x' }), JSON.stringify({ sessionId: '--dangerously-skip-permissions' })];
+  for (const text of bad) {
+    const dir = makeRepo(t, { fake: PLANNED });
+    writeFileSync(SOLO_FILE(dir), text);
+    const { result, calls } = await run(dir, ['plan', 'demo', '--solo']);
+    assert.equal(calls.length, 1, text);
+    assert.ok(!calls[0].includes('--resume'), text);
+    for (const v of ['a b&c', '-x', '--dangerously-skip-permissions']) assert.ok(!calls[0].includes(v), text);
+    assert.ok(notes(dir).includes('solo: no recorded session; started a new one'), text);
+    assert.equal(result.solo.fresh, 'no recorded session', text);
+  }
+});
+
+test('solo session: a recorded session that ends with an error is replaced by a new one, once', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'], errors: [1], sessions: ['sess-0', 'sess-2'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(ASKED('do')));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 2);
+  assert.equal(flag(calls[0], '--resume'), 'sess-0');
+  assert.ok(!calls[1].includes('--resume'));
+  assert.equal(flag(calls[1], '-p'), flag(calls[0], '-p'));
+  assert.equal(flag(calls[1], '--append-system-prompt-file'), flag(calls[0], '--append-system-prompt-file'));
+  const note = notes(dir).find((n) => n.startsWith('solo: could not continue the recorded session ('));
+  assert.ok(note && note.endsWith('); started a new session'), note);
+  assert.match(result.solo.fresh, /^claude ended with an error \(error_during_execution\)/);
+  assert.ok(note.includes(result.solo.fresh));
+  assert.equal(result.status, 'DONE');
+  assert.equal(soloRecord(dir).sessionId, 'sess-2');
+  assert.equal(result.solo.sessionId, 'sess-2');
+});
+
+test('solo session: a continued session that runs out of time is not replaced and leaves the record', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { hang: [1] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(ASKED('check')));
+  const { result, calls } = await run(dir, ['check', 'demo', '--solo'], { timeoutMin: { check: 0.005 } });
+  assert.equal(calls.length, 1);
+  assert.equal(result.status, 'failed');
+  assert.match(result.reason, /^no end within/);
+  assert.ok(!notes(dir).some((n) => n.startsWith('solo: could not continue')));
+  assert.deepEqual(soloRecord(dir), ASKED('check'));
+});
+
+test('solo session: a part continues and rewrites its owner\'s record, never one of its own', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: [HIGH, 'Compacted.', LOW, 'Planned.\nAM_STAGE: READY'], write: { '.am/demo-p1/plan.md': SMALL }, sessions: ['sess-0', 'sess-c', 'sess-c'] } });
+  mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+  writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['plan', 'demo-p1', '--solo=demo']);
+  // Another slug: the context use is measured; above the limit the conversation is compacted, measured again, and the stage
+  // continues the ID the compaction returned.
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls.map((a) => flag(a, '-p')).slice(0, 3), [SOLO_CONTEXT_PROMPT, SOLO_COMPACT_PROMPT, SOLO_CONTEXT_PROMPT]);
+  assert.deepEqual(calls.map((a) => flag(a, '--resume')), ['sess-0', 'sess-0', 'sess-c', 'sess-c']);
+  assert.ok(flag(calls[3], '-p').startsWith('/am:plan ') && flag(calls[3], '-p').includes('demo-p1'));
+  assert.deepEqual([soloRecord(dir).slug, soloRecord(dir).stage], ['demo-p1', 'plan']);
+  assert.ok(!existsSync(SOLO_FILE(dir, 'demo-p1')));
+  assert.equal(result.solo.owner, 'demo');
+});
+
+test('solo session: a stage that stops for a decision still records its session', async (t) => {
+  const dir = makeRepo(t, { fake: { replies: ['Q\nAM_STAGE: NEEDS_DECISION'] } });
+  const { result } = await run(dir, ['plan', 'demo', '--solo']);
+  assert.equal(result.status, 'NEEDS_DECISION');
+  assert.equal(soloRecord(dir).status, 'NEEDS_DECISION');
+});
+
+test('solo session: a record that cannot be saved leaves the result as it is and creates no folder', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Checked.\nAM_STAGE: NOTE'] } });
+  const { result } = await run(dir, ['check', 'demo', '--solo=nofolder']);
+  assert.equal(result.status, 'NOTE');
+  assert.ok(notes(dir).some((n) => n.startsWith('solo: the session record could not be saved (')));
+  assert.ok(!existsSync(path.join(dir, '.am', 'nofolder')));
+  assert.equal(result.solo.sessionId, 'sess-1');
 });
 
 test('am:auto and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
@@ -318,6 +597,12 @@ test('reading the end: result object, marker line, claude arguments', () => {
   assert.deepEqual(strict.slice(0, 6), args.slice(0, 6));
   assert.equal(flag(strict, '--append-system-prompt-file'), '.am/demo/stage-check.system.md');
   assert.equal(flag(resumed, '--resume'), 'sess-1');
+  // A resumed call with a system file gets it right after --resume (a solo stage reopens the shared session).
+  const reopened = claudeArgs(permissions('check'), { prompt: '/am:check demo', resume: 'sess-1', systemFile: '.am/demo/stage-check.system.md', mcpConfig: mcp });
+  assert.equal(flag(reopened, '--resume'), 'sess-1');
+  assert.equal(reopened[reopened.indexOf('--resume') + 2], '--append-system-prompt-file');
+  assert.equal(flag(reopened, '--append-system-prompt-file'), '.am/demo/stage-check.system.md');
+  assert.match(reopened[reopened.indexOf('--mcp-config') + 2], /^--/);
   // An installed copy lives in the plugin cache; any other copy was loaded with --plugin-dir and is passed on.
   const env = { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), 'cfg') };
   assert.equal(pluginDirFor(path.join(env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'am-workflow', 'am', '0.1.14'), env), '');
@@ -328,7 +613,7 @@ test('a plan stage runs one session and reports its marker, cost, reply and refu
   const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } } });
   const { code, result, calls } = await run(dir, ['plan', 'demo']);
   assert.equal(code, 0);
-  assert.deepEqual({ ...result, reply: !!result.reply }, { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null });
+  assert.deepEqual({ ...result, reply: !!result.reply }, { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null, solo: null });
   assert.equal(calls.length, 1);
   assert.equal(flag(calls[0], '-p'), '/am:plan Read the request in .am/demo/request.md (slug demo)');
   assert.match(readFileSync(path.join(dir, flag(calls[0], '--append-system-prompt-file')), 'utf8'), /This is the plan stage/);
@@ -622,6 +907,19 @@ test('compactionProblem: a heading of any level must stay', () => {
   assert.match(compactionProblem('plan.md', before, before.replace('### 기본값 적용', '## 기본값 적용')), /heading lost: ### 기본값 적용/);
 });
 
+test('compactionProblem: Parts lines and part done lines must stay', () => {
+  const before = '# p\n## Parts\n- Part 1: Steps 1-3 — a\n- Part 2: Steps 4-5 — b\n## Change log\n- Part 1 done: demo-p1\n';
+  assert.match(compactionProblem('plan.md', before, before.replace('- Part 2: Steps 4-5 — b\n', '')), /part lines 3 -> 2/);
+  assert.match(compactionProblem('plan.md', before, before.replace('- Part 1 done: demo-p1\n', '')), /part lines 3 -> 2/);
+  // Only the count is checked, not what a line says.
+  assert.equal(compactionProblem('plan.md', before, before.replace('— a', '— x')), null);
+  // Other bullets and indents count too.
+  const other = before.replace('- Part 1:', '* Part 1:').replace('- Part 1 done:', '  - Part 2 done:');
+  assert.equal(compactionProblem('plan.md', before, other), null);
+  assert.match(compactionProblem('plan.md', other, other.replace('  - Part 2 done: demo-p1\n', '')), /part lines 3 -> 2/);
+  assert.match(compactionProblem('plan.md', other, other.replace('* Part 1: Steps 1-3 — a\n', '')), /part lines 3 -> 2/);
+});
+
 test('compactionProblem: a verdict label wins over an earlier opposite word', () => {
   assert.equal(compactionProblem('check.md', 'No BLOCK finding.\nVerdict: NOTE\n', 'Verdict: NOTE\n'), null);
   assert.match(compactionProblem('check.md', 'No BLOCK finding.\n## 판정\n- 판정: NOTE\n', 'No BLOCK finding.\n## 판정\n- 판정: BLOCK\n'), /verdict NOTE -> BLOCK/);
@@ -649,7 +947,7 @@ function events(dir, slug = 'demo') {
 const evs = (list) => list.map((e) => e.ev);
 const ends = (list) => list.filter((e) => e.ev === 'end');
 const PLANNED = { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo/plan.md': SMALL } };
-const PLAN_RESULT = { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null };
+const PLAN_RESULT = { stage: 'plan', slug: 'demo', status: 'READY', reason: '', costUsd: 0.25, sessionId: 'sess-1', reply: true, denied: ['Bash: git push'], compacted: null, solo: null };
 
 test('events: a stage writes start with its pid and one end with status and minutes', async (t) => {
   const dir = makeRepo(t, { fake: PLANNED });
@@ -1109,6 +1407,32 @@ test('otherRuns: in a gap the earlier seat goes first, slug order on a tie; a wa
   assert.deepEqual(others(dir, 21).runs, ['a']);
 });
 
+test('otherRuns: a part is not held by its owner\'s gap, only by its live stage, and takes its seat', (t) => {
+  const dir = makeRepo(t);
+  const look = (slug, min, owner) => otherRuns(dir, slug, { now: () => T0 + min * 60000, alive: aliveOnly, ...(owner === undefined ? {} : { owner }) });
+  // The owner's plan stage just ended READY: its gap holds other tasks, not its part.
+  taskEvents(dir, 'demo', stageLines('plan', 'READY'));
+  assert.deepEqual(look('demo-p1', 6, 'demo'), { runs: [], text: '' });
+  assert.deepEqual(look('demo-p1', 6), { runs: ['demo'], text: 'demo (between stages)' });
+  assert.deepEqual(look('demo-p1', 6, 'demo-p1').runs, ['demo'], 'an owner that is the slug itself is no part');
+  // A live owner stage still holds the part.
+  taskEvents(dir, 'demo', [evAt(0, { ev: 'start', text: 's', pid: LIVE, stage: 'plan' })]);
+  assert.deepEqual(look('demo-p1', 6, 'demo'), { runs: ['demo'], text: 'demo (plan stage running)' });
+  // The owner only waiting: no hold either.
+  taskEvents(dir, 'demo', [evAt(5, { ev: 'note', text: 'w', stage: 'wait' })]);
+  assert.deepEqual(look('demo-p1', 6, 'demo').runs, []);
+  assert.deepEqual(look('demo-p1', 6).runs, ['demo']);
+  // The part takes the owner's earlier seat against another task's gap.
+  taskEvents(dir, 'demo', stageLines('plan', 'READY', { from: 0, to: 5 }));
+  taskEvents(dir, 'x', [evAt(2, { ev: 'note', text: 'w', stage: 'wait' })]);
+  assert.deepEqual(look('demo-p1', 6, 'demo').runs, []);
+  assert.deepEqual(look('demo-p1', 6).runs, ['demo', 'x']);
+  assert.deepEqual(look('x', 6).runs, ['demo']);
+  // Another task's gap still holds a part whose owner's seat is later.
+  taskEvents(dir, 'a', stageLines('do', 'DONE', { from: -2, to: 4 }));
+  assert.deepEqual(look('demo-p1', 6, 'demo').runs, ['a']);
+});
+
 test('otherRuns: the orchestrator blocks by its live lock and in the gap after split or answer, not for the run this task handed over', (t) => {
   const dir = makeRepo(t, { plan: SMALL });
   const orch = path.join(dir, '.orchestrator');
@@ -1210,6 +1534,31 @@ test('wait: a blocked stage starts no session and ends with WAIT after the wait 
   assert.deepEqual(list.map((e) => [e.ev, e.stage]), [['note', 'wait']]);
   assert.match(list[0].text, /a \(do stage running\)/);
   assert.ok(!existsSync(LOCK(dir)));
+});
+
+test('wait: a part stage is not held by its owner\'s gap; a live owner stage still holds it', async (t) => {
+  const part = (pid) => {
+    const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY'], write: { '.am/demo-p1/plan.md': SMALL } } });
+    mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+    writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+    const at = (fields) => `${JSON.stringify({ t: new Date().toISOString(), ...fields })}\n`;
+    const lines = [at({ ev: 'start', text: 's', pid, stage: 'plan' })];
+    if (pid === DEAD) lines.push(at({ ev: 'end', text: 'e', stage: 'plan', status: 'READY' }));
+    taskEvents(dir, 'demo', lines);
+    return dir;
+  };
+  const opts = { alive: aliveOnly, waitMs: 150, pollMs: 20 };
+  const goes = await run(part(DEAD), ['plan', 'demo-p1', '--solo=demo'], opts);
+  assert.equal(goes.result.status, 'READY');
+  assert.equal(goes.calls.length, 1);
+  const alone = await run(part(DEAD), ['plan', 'demo-p1'], opts);
+  assert.equal(alone.result.status, 'WAIT');
+  assert.equal(alone.result.reason, 'waiting for another run of this repository: demo (between stages)');
+  assert.deepEqual(alone.calls, []);
+  const live = await run(part(LIVE), ['plan', 'demo-p1', '--solo=demo'], opts);
+  assert.equal(live.result.status, 'WAIT');
+  assert.match(live.result.reason, /demo \(plan stage running\)/);
+  assert.deepEqual(live.calls, []);
 });
 
 test('wait: a stage goes on once the other run ends within the wait time', async (t) => {
@@ -1798,6 +2147,372 @@ test('a user value equal to COMPACT_MODEL leaves no note; without a compaction t
   assert.equal(r.calls.length, 1);
   assert.ok(!r.calls[0].includes('--model'));
   assert.deepEqual(evs(events(small)), ['start', 'end']);
+});
+
+// ------------------------------------------------------------------ solo session compaction between stages
+
+const COMPACT_FAIL = 'solo: could not continue the recorded session (compaction: ';
+
+const DO_MODEL = skillDefaults(path.join(REPO, 'plugin'), 'do');
+const SOLO_COMPACTING = [HIGH, 'Compacted.', LOW, 'Done.\nAM_STAGE: DONE'];
+
+test('solo compaction: at or above the limit the session is compacted with no tool, measured again, and the stage continues the returned ID', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: SOLO_COMPACTING, sessions: ['sess-0', 'sess-c', 'sess-c'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo'], { env: cleanEnv(t) });
+  assert.equal(calls.length, 4);
+  const [m, c, m2, s] = calls;
+  // The measurements run on the stage's model, so that its context window counts; the compaction on the compaction model.
+  for (const [a, p, id, model] of [[m, SOLO_CONTEXT_PROMPT, 'sess-0', DO_MODEL], [c, SOLO_COMPACT_PROMPT, 'sess-0', COMPACT_MODEL], [m2, SOLO_CONTEXT_PROMPT, 'sess-c', DO_MODEL]]) {
+    assert.equal(flag(a, '-p'), p);
+    assert.equal(flag(a, '--resume'), id);
+    assert.deepEqual([flag(a, '--model'), flag(a, '--effort')], [model.model, model.effort], p);
+    assert.equal(flag(a, '--permission-mode'), 'dontAsk');
+    assert.ok(!a.includes('--allowedTools') && !a.includes('--append-system-prompt-file'));
+    assert.equal(flag(a, '--disallowedTools'), 'AskUserQuestion');
+    assert.equal(flag(a, '--mcp-config'), '.am/demo/stage-mcp.json');
+  }
+  assert.deepEqual(cacheEnv(dir).slice(0, 3), ['1', '1', '1']);
+  assert.equal(flag(s, '-p'), '/am:do demo');
+  assert.equal(flag(s, '--resume'), 'sess-c');
+  assert.equal(s[s.indexOf('--resume') + 2], '--append-system-prompt-file');
+  assert.equal(flag(s, '--permission-mode'), 'acceptEdits');
+  assert.ok(flag(s, '--disallowedTools').split(',').includes('Bash(git commit *)'));
+  const said = notes(dir);
+  for (const n of ['solo: context 30% of the window; compacting', 'conversation compacted before the do stage of demo', 'solo: context 5% of the window after compaction']) assert.ok(said.includes(n), n);
+  assert.deepEqual([soloRecord(dir).stage, soloRecord(dir).status], ['do', 'DONE']);
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', compacted: true, fresh: null, context: false });
+  // Only the stage call's cost: it reports the whole conversation.
+  assert.equal(result.costUsd, 1);
+  assert.deepEqual(result.denied, []);
+});
+
+test('solo compaction: below the limit the stage continues the measured session with no compaction', async (t) => {
+  for (const [sessions, id] of [[['sess-0'], 'sess-0'], [['sess-m'], 'sess-m'], [[null], 'sess-0'], [['-bad'], 'sess-0']]) {
+    const what = JSON.stringify(sessions);
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: [LOW, 'Done.\nAM_STAGE: DONE'], sessions } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+    assert.equal(calls.length, 2, what);
+    assert.equal(flag(calls[0], '-p'), SOLO_CONTEXT_PROMPT, what);
+    assert.equal(flag(calls[1], '--resume'), id, what);
+    assert.ok(!calls.some((a) => flag(a, '-p') === SOLO_COMPACT_PROMPT), what);
+    assert.ok(notes(dir).includes('solo: context 5% of the window; continued without compaction'), what);
+    assert.ok(!notes(dir).some((n) => n.startsWith('conversation compacted')), what);
+    assert.deepEqual([result.status, result.solo.compacted, result.solo.fresh, result.solo.context], ['DONE', false, null, false], what);
+  }
+  // Exactly the limit counts as reached.
+  const edge = makeRepo(t, { plan: SMALL, fake: { replies: ['**Tokens:** 40k / 200k (20%)', 'Compacted.', LOW, 'Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(edge), JSON.stringify(RECORDED));
+  const e = await run(edge, ['do', 'demo', '--solo']);
+  assert.equal(flag(e.calls[1], '-p'), SOLO_COMPACT_PROMPT);
+  assert.equal(e.result.solo.compacted, true);
+});
+
+test('solo compaction: a use that cannot be read is compacted, and one unreadable after compaction goes on', async (t) => {
+  // No token count, then none again: compacted and continued.
+  const plain = makeRepo(t, { plan: SMALL, fake: { replies: ['No data', 'Compacted.', 'No data', 'Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(plain), JSON.stringify(RECORDED));
+  const a = await run(plain, ['do', 'demo', '--solo']);
+  assert.equal(a.calls.length, 4);
+  assert.ok(a.calls[3].includes('--resume'));
+  assert.ok(notes(plain).includes('solo: context use could not be read (no token count in its output); compacting'));
+  assert.ok(notes(plain).includes('solo: context use after compaction could not be read (no token count in its output); continued the compacted session'));
+  assert.deepEqual([a.result.status, a.result.solo.compacted, a.result.solo.fresh], ['DONE', true, null]);
+  // A measurement that ends with an error: the session it named is never taken; the recorded one is compacted.
+  const errored = makeRepo(t, { plan: SMALL, fake: { replies: ['x', 'Compacted.', LOW, 'Done.\nAM_STAGE: DONE'], errors: [1], sessions: ['sess-x', 'sess-c', 'sess-c'] } });
+  writeFileSync(SOLO_FILE(errored), JSON.stringify(RECORDED));
+  const b = await run(errored, ['do', 'demo', '--solo']);
+  assert.equal(flag(b.calls[1], '--resume'), 'sess-0');
+  assert.equal(flag(b.calls[3], '--resume'), 'sess-c');
+  assert.ok(notes(errored).some((n) => n.startsWith('solo: context use could not be read (claude ended with an error (error_during_execution)') && n.endsWith('; compacting')));
+  assert.equal(b.result.status, 'DONE');
+});
+
+test('solo compaction: a returned session ID that is missing or not in the strict form leaves the one before', async (t) => {
+  for (const id of [null, '-bad']) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: SOLO_COMPACTING, sessions: ['sess-0', id, id] } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+    assert.equal(calls.length, 4, String(id));
+    assert.equal(flag(calls[2], '--resume'), 'sess-0', String(id));
+    assert.equal(flag(calls[3], '--resume'), 'sess-0', String(id));
+    assert.ok(!calls[3].includes('-bad'));
+    assert.equal(result.solo.compacted, true);
+  }
+});
+
+test("solo compaction: runs on the user file's compact value and notes it", async (t) => {
+  const file = userModels(t, '{"model":{"compact":"haiku"}}');
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: SOLO_COMPACTING } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { calls } = await run(dir, ['do', 'demo', '--solo'], { env: cfgEnv(file) });
+  assert.equal(flag(calls[1], '--model'), 'haiku');
+  assert.equal(flag(calls[0], '--model'), DO_MODEL.model);
+  assert.equal(notes(dir).filter((n) => n === `model haiku, effort ${COMPACT_MODEL.effort} from the user's setting ${file}`).length, 1);
+});
+
+test("solo compaction: the context is measured on the user file's model of the stage", async (t) => {
+  const file = userModels(t, '{"model":{"do":"haiku"},"effort":{"do":"low"}}');
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [LOW, 'Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { calls } = await run(dir, ['do', 'demo', '--solo'], { env: cfgEnv(file) });
+  assert.deepEqual([flag(calls[0], '--model'), flag(calls[0], '--effort')], ['haiku', 'low']);
+  assert.deepEqual([flag(calls[1], '--model'), flag(calls[1], '--effort')], ['haiku', 'low']);
+});
+
+test('solo compaction: only a NEEDS_DECISION end of the same stage of the same slug goes straight on', async (t) => {
+  const cases = [[ASKED('do'), 1], [{ ...RECORDED, stage: 'do', status: 'failed' }, 4], [ASKED('plan'), 4]];
+  for (const [rec, count] of cases) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: count === 1 ? ['Done.\nAM_STAGE: DONE'] : SOLO_COMPACTING } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(rec));
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+    const what = JSON.stringify(rec);
+    assert.equal(calls.length, count, what);
+    assert.equal(flag(calls[0], '--resume'), 'sess-0', what);
+    assert.equal(flag(calls[0], '-p') === SOLO_CONTEXT_PROMPT, count === 4, what);
+    assert.equal(notes(dir).includes('conversation compacted before the do stage of demo'), count === 4, what);
+    assert.equal(result.solo.compacted, count === 4, what);
+  }
+});
+
+test('solo compaction: a failed compaction starts the stage in a new session and says why', async (t) => {
+  const cases = [[{ errors: [2] }, {}], [{ crashes: [2] }, {}], [{ exits: [2] }, {}], [{ hang: [2] }, { timeoutMin: { compact: 0.005 } }]];
+  for (const [fake, opts] of cases) {
+    const what = JSON.stringify(fake);
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', 'Done.\nAM_STAGE: DONE'], sessions: ['sess-0', null, 'sess-2'], ...fake } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo'], opts);
+    assert.equal(calls.length, 3, what);
+    assert.equal(flag(calls[1], '-p'), SOLO_COMPACT_PROMPT, what);
+    assert.ok(!calls[2].includes('--resume'), what);
+    const note = notes(dir).find((n) => n.startsWith(COMPACT_FAIL));
+    assert.ok(note && note.endsWith('); started a new session'), what);
+    assert.ok(result.solo.fresh.startsWith('compaction: ') && note.includes(result.solo.fresh), what);
+    assert.equal(result.solo.compacted, false, what);
+    assert.equal(result.status, 'DONE', what);
+    assert.equal(soloRecord(dir).sessionId, 'sess-2', what);
+  }
+});
+
+test('solo compaction: a stage error after it falls back to a new session and keeps compacted', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', LOW, 'x', 'Done.\nAM_STAGE: DONE'], errors: [4] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 5);
+  assert.equal(flag(calls[3], '--resume'), 'sess-1');
+  assert.ok(!calls[4].includes('--resume'));
+  assert.equal(result.solo.compacted, true);
+  assert.match(result.solo.fresh, /^claude ended with an error/);
+  assert.equal(result.status, 'DONE');
+});
+
+test('solo compaction: a stage that runs out of time after it leaves the record on the compacted session', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', LOW], hang: [4], sessions: ['sess-0', 'sess-c', 'sess-c'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo'], { timeoutMin: { do: 0.005 } });
+  assert.equal(calls.length, 4);
+  assert.equal(result.status, 'failed');
+  const { t: at, ...rec } = soloRecord(dir);
+  assert.deepEqual(rec, { sessionId: 'sess-c', slug: 'demo', stage: 'do', status: 'failed' });
+  assert.equal(new Date(at).toISOString(), at);
+});
+
+test('solo compaction: a claude that cannot start is `unavailable` and keeps the record', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { result } = await run(dir, ['do', 'demo', '--solo'], { claude: [path.join(dir, 'no-such-claude-binary')] });
+  assert.equal(result.status, 'unavailable');
+  assert.match(result.reason, /could not start/);
+  assert.ok(!notes(dir).some((n) => n.startsWith('solo: could not continue')));
+  assert.deepEqual(soloRecord(dir), RECORDED);
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: null, compacted: false, fresh: null, context: false });
+});
+
+test('solo compaction: the prompt passes through cmd.exe', () => {
+  assert.doesNotThrow(() => cmdExeArgs(['-p', SOLO_COMPACT_PROMPT]));
+});
+
+test('solo compaction: a whole solo run continues one session, compacted only before the stages that found it full', async (t) => {
+  const compacted = 'Compacted.';
+  const dir = makeRepo(t, {
+    fake: {
+      replies: ['Planned.\nAM_STAGE: READY', HIGH, compacted, LOW, 'Planned.\nAM_STAGE: READY', LOW, 'Done.\nAM_STAGE: DONE', LOW, 'Checked.\nAM_STAGE: NOTE', HIGH, compacted, LOW, 'Committed.\nAM_STAGE: COMMITTED'],
+      writes: [{ '.am/demo/plan.md': LARGE }, {}, {}, {}, { '.am/demo-p1/plan.md': SMALL }],
+    },
+  });
+  const opts = { waitMs: 150, pollMs: 20 };
+  assert.equal((await run(dir, ['plan', 'demo', '--solo'], opts)).result.status, 'READY');
+  mkdirSync(path.join(dir, '.am', 'demo-p1'), { recursive: true });
+  writeFileSync(path.join(dir, '.am', 'demo-p1', 'request.md'), 'Part 1 of .am/demo/plan.md');
+  const ends = [];
+  for (const stage of ['plan', 'do', 'check', 'commit']) ends.push((await run(dir, [stage, 'demo-p1', '--solo=demo'], opts)).result.status);
+  assert.deepEqual(ends, ['READY', 'DONE', 'NOTE', 'COMMITTED']);
+  const calls = readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(calls.length, 13);
+  assert.equal(calls.filter((a) => flag(a, '-p') === SOLO_COMPACT_PROMPT).length, 2);
+  assert.equal(calls.filter((a) => flag(a, '-p') === SOLO_CONTEXT_PROMPT).length, 6);
+  assert.deepEqual([...new Set(calls.filter((a) => a.includes('--resume')).map((a) => flag(a, '--resume')))], ['sess-1']);
+  assert.equal(calls.filter((a) => a.includes('--resume')).length, 12);
+  const { t: at, ...rec } = soloRecord(dir);
+  assert.deepEqual([rec.slug, rec.stage, rec.status], ['demo-p1', 'commit', 'COMMITTED']);
+  assert.ok(!existsSync(SOLO_FILE(dir, 'demo-p1')));
+  const said = notes(dir, 'demo-p1');
+  for (const stage of ['plan', 'commit']) assert.ok(said.includes(`conversation compacted before the ${stage} stage of demo-p1`), stage);
+  for (const stage of ['do', 'check']) assert.ok(!said.includes(`conversation compacted before the ${stage} stage of demo-p1`), stage);
+  assert.equal(said.filter((n) => n === 'solo: context 5% of the window; continued without compaction').length, 2);
+});
+
+// ------------------------------------------------------------------ solo clear when compaction is not enough
+
+const CLEAR_FILE = (dir, owner = 'demo') => path.join(dir, '.am', owner, 'solo-clear-context.md');
+const CLEAR_RULE = 'the runner cleared the shared session of this am:solo task because it still filled 20 percent or more of the context window after compaction.';
+const STILL = '**Tokens:** 50k / 200k (25%)';
+
+test('solo clear: still at the limit after compaction, the session saves its context and the stage starts in a new session told to read it on difficulty', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', STILL, 'Saved.', 'Done.\nAM_STAGE: DONE'], writes: [{}, {}, {}, { '.am/demo/solo-clear-context.md': '# saved\n' }], sessions: ['sess-0', 'sess-c', 'sess-c', 'sess-c', 'sess-n'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+  writeFileSync(CLEAR_FILE(dir), '# old\n');
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(calls.length, 5);
+  const [save, stage] = calls.slice(3);
+  assert.equal(flag(save, '-p'), soloClearSavePrompt('demo'));
+  assert.equal(flag(save, '--resume'), 'sess-c');
+  assert.equal(flag(save, '--allowedTools'), 'Edit(/.am/demo/solo-clear-context.md),Edit(.am/demo/solo-clear-context.md)');
+  assert.equal(flag(save, '--permission-mode'), 'dontAsk');
+  assert.deepEqual([flag(save, '--model'), flag(save, '--effort')], [COMPACT_MODEL.model, COMPACT_MODEL.effort]);
+  assert.ok(!stage.includes('--resume'));
+  assert.equal(flag(stage, '-p'), '/am:do demo');
+  assert.equal(readFileSync(CLEAR_FILE(dir), 'utf8'), '# saved\n');
+  const system = systemOf(dir, 'do');
+  assert.ok(system.endsWith(`${CLEAR_RULE} If you have difficulty continuing the work right after this (why a decision was made, what an earlier stage did or left open), read .am/demo/solo-clear-context.md, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.\n`));
+  assert.ok(!system.includes('Before anything else') && system.includes(SAVE_LINE));
+  assert.ok(notes(dir).includes('solo: context still 25% of the window after compaction; started a new session that may read .am/demo/solo-clear-context.md'));
+  assert.ok(!notes(dir).includes(CONTEXT_NOTE));
+  assert.equal(result.status, 'DONE');
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-n', compacted: true, fresh: 'context 25% of the window after compaction', context: true });
+  assert.equal(soloRecord(dir).sessionId, 'sess-n');
+  // The new session's cost plus the cleared conversation's, as the save call reported it.
+  assert.equal(result.costUsd, 1.25 + 1);
+});
+
+test('solo clear: a save that wrote nothing points the new session at solo-context.md, or at nothing without it', async (t) => {
+  // An error result still reports the conversation's cost; a crash reports none, so the compaction's counts.
+  for (const [memory, fail, cost, why] of [[true, { errors: [4] }, 1, 'claude ended with an error'], [false, { crashes: [4] }, 0.5, 'unreadable output']]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', STILL, 'x', 'Done.\nAM_STAGE: DONE'], ...fail, sessions: ['sess-0', 'sess-c', 'sess-c', 'sess-c', 'sess-n'] } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+    if (memory) writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+    // An older clear file is never handed on.
+    writeFileSync(CLEAR_FILE(dir), '# old\n');
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+    const what = `memory ${memory}`;
+    assert.equal(calls.length, 5, what);
+    assert.ok(!calls[4].includes('--resume'), what);
+    assert.ok(!existsSync(CLEAR_FILE(dir)), what);
+    const system = systemOf(dir, 'do');
+    assert.equal(system.includes(CLEAR_RULE), memory, what);
+    if (memory) assert.ok(system.includes('read .am/demo/solo-context.md, the context saved right before the clear'), what);
+    assert.ok(!system.includes('Before anything else'), what);
+    const said = notes(dir);
+    assert.ok(said.includes(`solo: context still 25% of the window after compaction; started a new session${memory ? ' that may read .am/demo/solo-context.md' : ''}`), what);
+    assert.ok(said.some((n) => n.startsWith(`solo: the context could not be saved before the clear (${why}`)), what);
+    assert.equal(result.solo.context, memory, what);
+    assert.equal(result.solo.fresh, 'context 25% of the window after compaction', what);
+    assert.equal(result.costUsd, 1.25 + cost, what);
+  }
+  // A save call that ends well but writes nothing.
+  const quiet = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', STILL, 'Saved.', 'Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(quiet), JSON.stringify(RECORDED));
+  await run(quiet, ['do', 'demo', '--solo']);
+  assert.ok(notes(quiet).includes('solo: the context could not be saved before the clear (.am/demo/solo-clear-context.md was not written)'));
+});
+
+// ------------------------------------------------------------------ solo memory file for a new session
+
+const CONTEXT_FILE = (dir, owner = 'demo') => path.join(dir, '.am', owner, 'solo-context.md');
+const READ_LINE = 'This stage starts in a new session';
+const SAVE_LINE = 'rewrite .am/demo/solo-context.md whole with the Write tool';
+const CONTEXT_NOTE = 'solo: the new session reads .am/demo/solo-context.md';
+const systemOf = (dir, kind, slug = 'demo') => readFileSync(path.join(dir, '.am', slug, `stage-${kind}.system.md`), 'utf8');
+
+test('solo memory: a stage with no recorded session is told to read the saved memory, only when there is one', async (t) => {
+  for (const saved of [true, false]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Done.\nAM_STAGE: DONE'] } });
+    if (saved) writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+    const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
+    assert.equal(calls.length, 1);
+    const system = systemOf(dir, 'do');
+    assert.equal(system.includes(READ_LINE), saved, `saved ${saved}`);
+    assert.ok(system.includes(SAVE_LINE));
+    assert.equal(notes(dir).includes(CONTEXT_NOTE), saved, `saved ${saved}`);
+    assert.equal(result.solo.context, saved);
+  }
+});
+
+test('solo memory: a failed compaction or a continued stage that ends with an error gives the new session the memory', async (t) => {
+  // A failed compaction: the stage starts in a new session at once.
+  const failed = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', 'Done.\nAM_STAGE: DONE'], errors: [2], sessions: ['sess-0', null, 'sess-2'] } });
+  writeFileSync(SOLO_FILE(failed), JSON.stringify(RECORDED));
+  writeFileSync(CONTEXT_FILE(failed), '# memory\n');
+  const a = await run(failed, ['do', 'demo', '--solo']);
+  assert.equal(a.calls.length, 3);
+  assert.ok(!a.calls[2].includes('--resume'));
+  assert.ok(systemOf(failed, 'do').includes(READ_LINE));
+  assert.ok(notes(failed).includes(CONTEXT_NOTE));
+  assert.equal(a.result.solo.context, true);
+  // A continued stage that ends with an error: the rules file is rewritten before the new session.
+  const errored = makeRepo(t, { plan: SMALL, fake: { replies: ['x', 'Done.\nAM_STAGE: DONE'], errors: [1], sessions: ['sess-0', 'sess-2'] } });
+  writeFileSync(SOLO_FILE(errored), JSON.stringify(ASKED('do')));
+  writeFileSync(CONTEXT_FILE(errored), '# memory\n');
+  const b = await run(errored, ['do', 'demo', '--solo']);
+  assert.equal(b.calls.length, 2);
+  assert.equal(flag(b.calls[0], '--resume'), 'sess-0');
+  assert.ok(!b.calls[1].includes('--resume'));
+  assert.ok(systemOf(errored, 'do').includes(READ_LINE));
+  assert.equal(notes(errored).filter((n) => n === CONTEXT_NOTE).length, 1);
+  assert.equal(b.result.solo.context, true);
+});
+
+test('solo memory: a continued session is not told to read it, but every stage is told to save it', async (t) => {
+  for (const rec of [RECORDED, ASKED('do')]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: rec === RECORDED ? SOLO_COMPACTING : ['Done.\nAM_STAGE: DONE'] } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify(rec));
+    writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+    const { result } = await run(dir, ['do', 'demo', '--solo']);
+    assert.equal(result.status, 'DONE');
+    const system = systemOf(dir, 'do');
+    assert.ok(!system.includes(READ_LINE) && system.includes(SAVE_LINE), rec.status);
+    assert.ok(!notes(dir).includes(CONTEXT_NOTE), rec.status);
+    assert.equal(result.solo.context, false, rec.status);
+  }
+});
+
+test('solo memory: a part reads its owner\'s file; a plan stage that saved it hands it to a later new session', async (t) => {
+  const part = makeRepo(t, { plan: SMALL, fake: { replies: ['Checked.\nAM_STAGE: NOTE'] } });
+  const partDir = path.join(part, '.am', 'demo-p1');
+  mkdirSync(partDir, { recursive: true });
+  writeFileSync(path.join(partDir, 'plan.md'), SMALL);
+  writeFileSync(CONTEXT_FILE(part), '# memory\n');
+  const p = await run(part, ['check', 'demo-p1', '--solo=demo']);
+  const system = systemOf(part, 'check', 'demo-p1');
+  assert.ok(system.includes(`${READ_LINE}: the shared session of this am:solo task could not be continued. Before anything else, read .am/demo/solo-context.md`));
+  assert.ok(!system.includes('.am/demo-p1/solo-context.md'));
+  assert.ok(notes(part, 'demo-p1').includes(CONTEXT_NOTE));
+  assert.equal(p.result.solo.context, true);
+  // The whole path: the plan stage saves the memory; with the session record gone, the do stage is told to read it.
+  const dir = makeRepo(t, { fake: { replies: ['Planned.\nAM_STAGE: READY', 'Done.\nAM_STAGE: DONE'], writes: [{ '.am/demo/plan.md': SMALL, '.am/demo/solo-context.md': '# memory\n' }] } });
+  const opts = { waitMs: 150, pollMs: 20 };
+  const planned = await run(dir, ['plan', 'demo', '--solo'], opts);
+  assert.equal(planned.result.solo.context, false);
+  assert.ok(existsSync(CONTEXT_FILE(dir)));
+  rmSync(SOLO_FILE(dir));
+  const done = await run(dir, ['do', 'demo', '--solo'], opts);
+  assert.equal(done.result.status, 'DONE');
+  assert.ok(systemOf(dir, 'do').includes(READ_LINE));
+  assert.ok(notes(dir).includes(CONTEXT_NOTE));
+  assert.equal(done.result.solo.context, true);
 });
 
 // ------------------------------------------------------------------ stage sessions on the user's values (inline call)
@@ -2440,6 +3155,21 @@ test('worker: a normal stage leaves its result line, the plan file state and the
   assert.equal(await startWorker(flagged, ['do', 'demo', '--push', '--fix']).done, 0);
   const r = workerState(flagged).result;
   assert.deepEqual([r.stage, r.push, r.fix, JSON.parse(r.line).status], ['do', true, true, 'DONE']);
+  assert.equal(r.solo, null);
+  const solo = makeRepo(t, { plan: SMALL, fake: NOTED });
+  assert.equal(await startWorker(solo, ['check', 'demo', '--solo']).done, 0);
+  assert.deepEqual([workerState(solo).result.solo, JSON.parse(workerState(solo).result.line).status], ['demo', 'NOTE']);
+});
+
+test('worker: a live worker of the same stage without solo is not this --solo call: it tries again, then stops', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL });
+  const owner = JSON.stringify({ pid: LIVE, t: 1, stage: 'check', push: false, fix: false });
+  writeFileSync(WF(dir, 'record'), owner);
+  const began = Date.now();
+  assert.equal(await startWorker(dir, ['check', 'demo', '--solo'], { alive: aliveOnly, busyMs: 300, busyPollMs: 20 }).done, 1);
+  assert.ok(Date.now() - began >= 300);
+  assert.equal(callsOf(dir), null);
+  assert.deepEqual([workerState(dir).result, workerState(dir).record], [null, owner]);
 });
 
 test('worker: a live worker of the task keeps a new one out; a dead or unchanged stale one does not', async (t) => {
@@ -2719,6 +3449,24 @@ test('follow: a stage runs in a worker of its own and prints the same line main 
   assert.ok(heartbeatOf(dir));
 });
 
+test('follow: a --solo call prints its own worker\'s result, which names the owner', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: NOTED });
+  const f = startFollow(dir, ['check', 'demo', '--solo']);
+  assert.equal(await f.done, 0);
+  const line = JSON.parse(f.text);
+  assert.deepEqual([line.status, line.solo], ['NOTE', { owner: 'demo', sessionId: 'sess-1', compacted: false, fresh: 'no recorded session', context: false }]);
+  assert.equal(JSON.parse(readOr(WF(dir, 'result'))).solo, 'demo');
+  // A part task of the task demo: its own folder, the owner demo.
+  const part = makeRepo(t, { plan: SMALL, fake: NOTED });
+  const partDir = path.join(part, '.am', 'demo-p1');
+  mkdirSync(partDir, { recursive: true });
+  writeFileSync(path.join(partDir, 'plan.md'), SMALL);
+  const g = startFollow(part, ['check', 'demo-p1', '--solo=demo']);
+  assert.equal(await g.done, 0);
+  assert.equal(JSON.parse(g.text).status, 'NOTE');
+  assert.equal(JSON.parse(readFileSync(path.join(partDir, WORKER_FILES.result), 'utf8')).solo, 'demo');
+});
+
 test('follow: a live worker of the same stage and flags is followed, and only its new result is printed', async (t) => {
   const dir = makeRepo(t, { plan: SMALL });
   writeFileSync(WF(dir, 'record'), record({ stage: 'check' }));
@@ -2728,6 +3476,8 @@ test('follow: a live worker of the same stage and flags is followed, and only it
   const first = heartbeatOf(dir);
   await until(() => heartbeatOf(dir) !== first);
   writeFileSync(WF(dir, 'result'), resultOf({ stage: 'check', fix: true, line: stageLine('check', 'demo', 'NOTE', 'other flags') }));
+  await pause(200);
+  writeFileSync(WF(dir, 'result'), resultOf({ stage: 'check', solo: 'demo', line: stageLine('check', 'demo', 'NOTE', 'other solo') }));
   await pause(200);
   assert.equal(f.text, '');
   const line = stageLine('check', 'demo', 'BLOCK', 'new');
@@ -2739,10 +3489,17 @@ test('follow: a live worker of the same stage and flags is followed, and only it
 });
 
 test('follow: another stage, or the same stage with other flags, is waited for and then WAIT; once it ends this stage runs', async (t) => {
-  for (const [held, name] of [[{ stage: 'do', fix: true }, 'do --fix'], [{ stage: 'check', fix: true }, 'check --fix']]) {
+  const cases = [
+    [{ stage: 'do', fix: true }, 'do --fix', []],
+    [{ stage: 'check', fix: true }, 'check --fix', []],
+    [{ stage: 'check' }, 'check', ['--solo']],
+    [{ stage: 'check', solo: 'demo' }, 'check --solo', []],
+    [{ stage: 'do', solo: 'main' }, 'do --solo=main', ['--solo']],
+  ];
+  for (const [held, name, flags] of cases) {
     const dir = makeRepo(t, { plan: SMALL });
     writeFileSync(WF(dir, 'record'), record(held));
-    const f = startFollow(dir, ['check', 'demo'], { workerCmd: NO_SPAWN, alive: aliveOnly, waitMs: 200 });
+    const f = startFollow(dir, ['check', 'demo', ...flags], { workerCmd: NO_SPAWN, alive: aliveOnly, waitMs: 200 });
     assert.equal(await f.done, 0);
     const line = JSON.parse(f.text);
     assert.equal(line.status, 'WAIT');
@@ -3012,11 +3769,14 @@ test('follow: a pending result of another stage, other flags, a wait or a stop i
     { stage: 'check', fix: true, line: stageLine('check', 'demo', 'NOTE', 'fixed') },
     { stage: 'check', line: stageLine('check', 'demo', 'WAIT', 'waiting') },
     { stage: 'check', line: stageLine('check', 'demo', 'failed', 'stopped by SIGTERM') },
+    // Solo: a result with no owner is not a --solo call's, and one with an owner not a call's without it.
+    { stage: 'check', line: stageLine('check', 'demo', 'NOTE', 'no solo'), flags: ['--solo'] },
+    { stage: 'check', solo: 'demo', line: stageLine('check', 'demo', 'NOTE', 'solo') },
   ];
-  for (const fields of lines) {
+  for (const { flags = [], ...fields } of lines) {
     const dir = makeRepo(t, { plan: SMALL, fake: NOTED });
     writeFileSync(WF(dir, 'result'), earlier({ ...fields, plan: planState(dir) }));
-    const f = startFollow(dir, ['check', 'demo']);
+    const f = startFollow(dir, ['check', 'demo', ...flags]);
     assert.equal(await f.done, 0);
     const out = JSON.parse(f.text);
     assert.deepEqual([out.stage, out.status], ['check', 'NOTE'], fields.line);
@@ -3338,7 +4098,7 @@ process.stdout.write(JSON.stringify(r.cleaned));
 });
 
 test('cleanup news: a note and a worker log line only when something was stopped; the result line keeps its keys', async (t) => {
-  const keys = ['stage', 'slug', 'status', 'reason', 'costUsd', 'sessionId', 'reply', 'denied', 'compacted'];
+  const keys = ['stage', 'slug', 'status', 'reason', 'costUsd', 'sessionId', 'reply', 'denied', 'compacted', 'solo'];
   const notes = (dir) => events(dir).filter((e) => e.ev === 'note' && e.text.startsWith('cleaned up')).map((e) => e.text);
   const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } });
   let logged = '';

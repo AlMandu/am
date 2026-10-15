@@ -9,7 +9,7 @@ import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, merge: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, merge: 80, sessions: 80 };
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
@@ -41,8 +41,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am:auto and am:merge are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto', 'merge']) {
+test('am:plan, am:do, am:auto, am:solo and am:merge are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto', 'solo', 'merge']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -53,7 +53,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto', 'merge'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'auto', 'solo', 'merge'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
@@ -116,6 +116,36 @@ test('am:auto drives the stage runner and handles every status it prints', async
   assert.ok(auto.includes('`NOTE` (check): commit.'));
   assert.ok(auto.includes('skip check and commit'));
   assert.ok(read('check').includes('the next step (the am:commit skill, or what to fix)'));
+});
+
+test('am:solo follows am:auto\'s file with its own differences', async () => {
+  const solo = withoutCommon(read('solo'));
+  const { PART_LINE } = await import('../plugin/scripts/stage.mjs');
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  // The plan stage writes the Parts lines in this form; in a session with no stage sessions am:solo writes them itself.
+  assert.ok(solo.includes(PART_LINE), 'PART_LINE');
+  assert.ok(!solo.includes('skills/run/SKILL.md'));
+});
+
+test('am:auto keeps the anchors am:solo refers to', () => {
+  const auto = read('auto');
+  for (const s of ['## Running without stops', '## Stage sessions (Claude Code)', '`HANDED`']) assert.ok(auto.includes(s), s);
+  const steps = auto.split('\n## Steps\n')[1];
+  assert.ok(steps, 'the Steps section');
+  const step = Object.fromEntries(('\n' + steps).split(/\n(?=\d+\. )/).filter((s) => /^\d+\. /.test(s)).map((s) => [Number(s.split('.')[0]), s]));
+  for (const n of [2, 4, 7]) assert.ok(step[n], `step ${n}`);
+  assert.ok(step[2].includes('claude plugin list --json'), 'step 2');
+  assert.ok(step[4].includes('Hand-over:'), 'step 4');
+  assert.ok(step[7].includes('After a hand-over'), 'step 7');
+});
+
+test('am:sessions runs the read-only report script once and the model may invoke it', () => {
+  const skill = read('sessions');
+  assert.ok(skill.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/sessions.mjs"`'));
+  assert.ok(existsSync(path.join(ROOT, '..', 'scripts', 'sessions.mjs')), 'plugin/scripts/sessions.mjs');
+  // No Codex manifest: the model may pick this skill on its own in both tools.
+  assert.ok(!existsSync(path.join(ROOT, 'sessions', 'agents', 'openai.yaml')));
+  assert.match(skill, /Change, remove or stop nothing/);
 });
 
 test('am:auto starts the progress command next to every stage command', async () => {

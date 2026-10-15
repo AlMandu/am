@@ -9,7 +9,7 @@
 // show a permission prompt), calls its am skill (the run skill for a hand-over) by slash command (the skill's own model
 // and effort apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
 // file gives the stage other values, and ends with one marker line that this script reads. Called by am:auto:
-//   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]
+//   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
 // Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
 // (originals kept as <name>.orig-<n>.md); `compacted` reports it. The request (request.md) is the user's own words: never
@@ -35,7 +35,30 @@
 // DISABLE_AUTOUPDATER=1. Unless the user settings file's stageMcpServers is true, every session also starts with --strict-mcp-config
 // and an empty MCP config file, .am/<slug>/stage-mcp.json, rewritten right before each session (passed as a path: cmd.exe
 // cannot pass `"`), so it starts no MCP server.
-// Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted}.
+// Prints one JSON line: {stage, slug, status, reason, costUsd, sessionId, reply, denied, compacted, solo}.
+// Solo mode: `--solo` says this task owns a shared session, `--solo=<owner>` that it is a part of the task <owner>.
+// The owner (the slug itself for `--solo`) goes into the worker record and the result file and is compared like the
+// flags, so a call with it and one without never take each other's results. `do --solo` never hands the plan to
+// am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
+// A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
+// plan only its one part when it is a part. A solo stage continues the session named in .am/<owner>/solo-session.json with
+// --resume (its rules file and permissions as usual). Unless the record is a NEEDS_DECISION end of this same stage of this
+// slug, a /context call (the stage's model, the compaction session's environment and time limit, no tool) first measures
+// how much of the context window that conversation fills. Below SOLO_CONTEXT_LIMIT (20) percent the stage continues it as
+// it is; at or above it, or when the use cannot be read, a /compact call shortens it (the compaction model, no tool) and
+// the stage continues the session ID it returns (strict form, else the one before), recorded at once. A second /context
+// call then measures it again: still at or above the limit, the session first saves .am/<owner>/solo-clear-context.md (a
+// call that may write that file only) and the stage starts in a new session (a clear) whose rules say to read that file,
+// or solo-context.md when it was not saved, if it has difficulty going on; the cleared conversation's cost is added. Every
+// measurement is a note. With no record, an unreadable one, a failed compaction, or a continued call that ends with an error other than a
+// time-out, it runs once in a new session and writes a note. When the stage has a session ID, it rewrites the record with
+// it and the end status. Every solo stage is told to rewrite .am/<owner>/solo-context.md, the shared session's memory, before
+// its final reply; a stage that starts in a new session (not a clear) while that file exists gets a rules file that tells it to read the
+// file first, and a note. The result's `solo` is {owner, sessionId, compacted, fresh, context}: `fresh` says why a new session was
+// started (null when the recorded one went on); `compacted` says the conversation was compacted before the stage;
+// `context` says the new session was told about a saved memory file.
+// A part waits for its owner only while an owner stage runs, not in the owner's gap between stages, and waits for other
+// tasks with the owner's place in line when that is earlier than its own.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
@@ -47,7 +70,7 @@
 // Called again after a WAIT at the follow limit, it follows the same worker on.
 // A result of the same stage and flags that ended with nobody following is taken once by the next call instead of a new
 // start while plan.md and check.md are unchanged (stage-delivered-<pid> mark); a changed or other stage's result is dropped.
-// Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix]` runs the same stage
+// Hidden worker mode, not in the usage line: `node stage.mjs --worker <stage> <slug> [--push] [--fix] [--solo | --solo=<owner>]` runs the same stage
 // while holding .am/<slug>/stage-worker.json (one worker per task), logs to stage-worker.log, leaves the result line in
 // stage-result.json (its delivered mark: stage-delivered-<pid>) and stops (`failed`) when the follower's stage-heartbeat
 // file stays the same for 30 minutes.
@@ -68,7 +91,7 @@ import { readUserSettings, userSettingsFile } from './user-settings.mjs';
 
 const WIN = process.platform === 'win32';
 const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix]';
+const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]';
 export const STAGES = ['plan', 'do', 'check', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
 // A caller of main that gives only some of them gets the rest from here.
@@ -202,7 +225,7 @@ export const CODEX_STAGES = ['plan'];
  * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
  * `startBranch`: the branch a hand-over merges back into, the only one it may switch to (none when it is not a plain name).
  */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', installedAm = [], startBranch = '' } = {}) {
+export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', installedAm = [], startBranch = '', soloOwner = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
   const codex = CODEX_STAGES.includes(stage) ? [...new Set([amRoot, ...installedAm].flatMap((root) => nodeScript(path.join(root, 'scripts', 'codex-opinion.mjs'))))] : [];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
@@ -218,9 +241,10 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
     case 'commit':
-      // It may write only the task's commit record, which the am:merge skill reads, and its handoff document. Restore only unstages (a plain restore would throw away
+      // It may write only the task's commit record, which the am:merge skill reads, and its handoff document (in solo mode also
+      // its owner's memory file). Restore only unstages (a plain restore would throw away
       // the user's changes in this tree); after `--` git reads only paths, so no `--worktree` slips in. Bash only: PowerShell might eat the `--`.
-      return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? ['commits.md', 'handoff.md'].flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
+      return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? ['commits.md', 'handoff.md'].flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : []), ...(soloOwner ? [`Edit(/.am/${soloOwner}/${SOLO_CONTEXT})`, `Edit(.am/${soloOwner}/${SOLO_CONTEXT})`] : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'compact':
       // Shortens task files under .am/ before a stage; nothing else. The request is denied, which wins over the allowance.
       return { mode: 'dontAsk', allow: [...read, ...edit('.am')], deny: [...noHuman, ...(slug ? [`Edit(/.am/${slug}/request.md)`, `Edit(.am/${slug}/request.md)`] : [])] };
@@ -250,20 +274,35 @@ const ONE_COMMAND = '- Run each shell command as its own call: one command per c
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
 /** The unattended rules of am:auto's "Running without stops" section, written for one stage session. */
-const unattended = (slug, stage, push) => `You are one stage of the am:auto skill, started in a fresh session by the am stage runner. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
-- Running am:auto is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
+const unattended = (slug, stage, push, solo = false) => `${solo ? 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner compacts the conversation when it fills 20 percent or more of the context window, and continues in a new session when compacting is not enough.' : 'You are one stage of the am:auto skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
+- Running ${solo ? 'am:solo' : 'am:auto'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
 - A question about what the user sees or what is in scope: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, through its second opinion; never wait for the user on them, except a choice its two reviewers still split on after their rounds.
 - A decision under Decisions that is marked as the user's answer is final; apply it.
 - Stop only when the next action would delete user data or files that existed before this run, change a saved-data format, or migrate data; when it would change anything outside this repository (other folders, external services, installed packages)${push ? ', other than the push asked for' : ''}; when the user's or the project's instructions say it needs confirmation; when the two reviewers of a technical choice still split on it after their rounds; or when ${stage === 'plan' ? 'the request cannot be planned' : 'this stage cannot finish (below)'}.
-- To stop for a question: leave the files as they are, write the decision card (as the skill's rules describe it, for someone who has seen neither this session nor the code) under Decisions in plan.md marked OPEN, record the reason there, repeat the card in your final reply, and end with AM_STAGE: NEEDS_DECISION. The user's answer comes back in plan.md and this stage starts again in a new session.
+- To stop for a question: leave the files as they are, write the decision card (as the skill's rules describe it, for someone who has seen neither this session nor the code) under Decisions in plan.md marked OPEN, record the reason there, repeat the card in your final reply, and end with AM_STAGE: NEEDS_DECISION. The user's answer comes back in plan.md and this stage ${solo ? 'continues in this same session' : 'starts again in a new session'}.
 - Keep the final reply short: what this stage did, what it decided for the user, and any deviation from the plan.`;
 
+/** The form of one line of a solo owner plan's `## Parts` section. */
+export const PART_LINE = '- Part <k>: Steps <a>-<b> — <the part\'s scope in one line>';
+
+// A solo owner plan above one implementation run is split into parts; a part plan covers one of them.
+const soloPlanRule = (slug, solo) => !solo ? '' : solo.owner === slug
+  ? `\n- If the Scale line says 2 or more implementation runs, add a section headed exactly \`## Parts\` (in English, whatever the plan's language) right after the Summary, with one line per part in this form: \`${PART_LINE}\`. The parts take consecutive Steps in order and together cover every Step, each part at most one implementation run; these lines never start with a number and never carry a done mark.`
+  : `\n- This is a part plan: plan only the one part of the parent plan that .am/${slug}/request.md names, as at most one implementation run, and with no Parts section.`;
+
+// Every solo stage saves the shared session's memory for a stage that cannot continue it (SOLO_CONTEXT); only a stage
+// that starts in a new session while that file exists is told to read it.
+const soloSaveRule = (owner) => `\n- Before your final reply, also when you stop, rewrite .am/${owner}/${SOLO_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the memory of this task's shared session that a stage starting in a new session would need: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Point to plan.md, check.md and handoff.md instead of copying them. The am stage runner gives this file to a stage that has to start in a new session.`;
+const soloReadRule = (owner) => `\n- This stage starts in a new session: the shared session of this am:solo task could not be continued. Before anything else, read .am/${owner}/${SOLO_CONTEXT}, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.`;
+// A stage started in a new session because the shared one stayed too full after compaction may read the file saved before it.
+const soloClearRule = (owner, file) => `\n- This stage starts in a new session: the runner cleared the shared session of this am:solo task because it still filled 20 percent or more of the context window after compaction. If you have difficulty continuing the work right after this (why a decision was made, what an earlier stage did or left open), read .am/${owner}/${file}, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.`;
+
 const STAGE_RULES = {
-  plan: (slug) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
+  plan: (slug, { solo } = {}) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
 - Always write .am/${slug}/plan.md, even when the change looks small: skip the step that offers to do a small change directly.
-- Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.
+- Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.${soloPlanRule(slug, solo)}
 - Do not implement, even where the skill would go on after the plan; the next stage does that.
-- What this session can do: read anything; create or change files only under .am/${slug}/ and the current-task mark .am/.active with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
+- What this session can do: read anything; create or change files only under .am/${slug}/${solo && solo.owner !== slug ? `, .am/${solo.owner}/${SOLO_CONTEXT} (below)` : ''} and the current-task mark .am/.active with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
 - ${MARK('plan')}`,
   do: (slug, { fix }) => `This is the implementation stage for .am/${slug}/plan.md, with the steps of the am:do skill.${fix ? `\n- The am:check skill blocked this task. Read .am/${slug}/check.md first and fix only the causes it reports that lie inside this task; log each fix under Change log in the plan.` : ''}
 - Another session runs the am:check skill after you finish. So run the agent runtime checks you can do here (the last step of the am:do skill), but do not use the am:check skill.
@@ -287,10 +326,10 @@ ${scratch(slug)}
 ${scratch(slug)}
 - Always write .am/${slug}/check.md.
 - ${MARK('check')}`,
-  commit: (slug, { push }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
+  commit: (slug, { push, solo }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The am:auto run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
 - To leave a staged file out of the commit, unstage it with \`git restore --staged -- <paths>\` with the Bash tool; no other restore form is allowed.
-- After each commit, record it in .am/${slug}/commits.md as the skill says, and after the last one update .am/${slug}/handoff.md as the skill says; those are the only files this session can write.
+- After each commit, record it in .am/${slug}/commits.md as the skill says, and after the last one update .am/${slug}/handoff.md as the skill says; ${solo ? `those two and .am/${solo.owner}/${SOLO_CONTEXT} (below) are` : 'those are'} the only files this session can write.
 - If the gate could not run (status \`error\`, or \`node\` missing), commit but do not push, and say why.
 - If a hook rejects the commit, do not bypass it and do not retry another way; copy what it printed into your reply.
 - Run each git command on its own from the repository root: no cd, no pipes, no chains, no heredoc; use several -m flags for several paragraphs.
@@ -310,13 +349,14 @@ export function skillCall(stage, slug, { push = false, resume = false } = {}) {
 }
 
 /** The prompt and appended system prompt of one session, with the plugin and skill it calls and that skill's arguments. */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null } = {}) {
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null, solo = null, soloRead = false, soloClear = null } = {}) {
   const { plugin, skill, args } = skillCall(stage, slug, { push, resume });
   const prompt = `/${plugin}:${skill}${args ? ` ${args}` : ''}`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && [...CODEX_STAGES, 'handover'].includes(stage) ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, resume })}\n${ONE_COMMAND}${note}${shortened}\n` };
+  const memory = solo ? `${soloSaveRule(solo.owner)}${soloRead ? soloReadRule(solo.owner) : ''}${soloClear ? soloClearRule(solo.owner, soloClear) : ''}` : '';
+  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push, Boolean(solo))}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, solo })}\n${ONE_COMMAND}${note}${shortened}${memory}\n` };
 }
 
 /**
@@ -330,7 +370,7 @@ Files to shorten (token counts are this runner's estimate: 4 ASCII characters, o
 ${list}
 - Change only these files, in place, with the Edit or Write tool. Change nothing else. The runner keeps a copy of each original and tells the next session where it is.
 - Never change .am/${slug}/request.md: it is the user's request in their own words. This session cannot edit that file, and if the runner finds it changed it puts everything back.
-- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
+- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; every line of the \`## Parts\` section (\`- Part <k>: …\`); Change log lines \`- Part <k> done: …\`; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
 - Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), (second opinion, and the word OPEN.
 - Shorten: explanations and background, long reasons (one line each), examples, Change log lines that repeat or were superseded.
 - Do not add anything, and do not change what a kept line says.
@@ -340,16 +380,27 @@ ${list}
   return { prompt: `Shorten the task files of .am/${slug}/ as your system prompt says`, system };
 }
 
-/** What the do stage becomes: `do`, `handover`, or {error} when the plan cannot tell. */
-export function doKind(planText, { orchestrator = findOrchestrator, fix = false } = {}) {
+const NO_SCALE = 'the plan has no Scale line (`Scale: N implementation runs, M commits` / `규모: 구현 N회, 커밋 M개`); add it to the Summary and run this stage again';
+
+/**
+ * What the do stage becomes: `do`, `handover`, or {error} when the plan cannot tell. With solo, the orchestrator is
+ * never looked up: a handed-over plan, a plan with no Scale line or one of 2 or more implementation runs is an error.
+ */
+export function doKind(planText, { orchestrator = findOrchestrator, fix = false, solo = false } = {}) {
   const info = readPlan(planText);
   // A done mark, or a fix after am:check, means this plan is implemented here, whatever else its Change log mentions.
   if (fix || info.started) return { kind: 'do' };
+  if (solo) {
+    if (info.handedOver) return { error: 'this plan was handed to am-orchestrator: continue it with the am:auto skill' };
+    if (!info.scale) return { error: NO_SCALE };
+    if (!withinOneRun(info.scale)) return { error: 'the plan has 2 or more implementation runs: run it part by part from its Parts section (for a part plan, change that plan to one implementation run)' };
+    return { kind: 'do' };
+  }
   if (info.handedOver) return { kind: 'handover', resume: true, orchRoot: orchestrator() || '' };
   if (withinOneRun(info.scale)) return { kind: 'do' };
   const orchRoot = orchestrator();
   if (!orchRoot) return { kind: 'do' };
-  if (!info.scale) return { error: 'the plan has no Scale line (`Scale: N implementation runs, M commits` / `규모: 구현 N회, 커밋 M개`); add it to the Summary and run this stage again' };
+  if (!info.scale) return { error: NO_SCALE };
   return { kind: 'handover', resume: false, orchRoot };
 }
 
@@ -506,14 +557,21 @@ export const RECORD_SETTLE_MS = 45000;
  * tie) or we have none. The orchestrator blocks while a live pid holds its lock, and for graceMs after a split or answer
  * end that leads to its next command, unless that run is the one this task handed over. Unless trustStale, a stage
  * whose worker record went untouched for WORKER_STALE_MS, and a lock untouched for its own `leaseMs`, do not block.
+ * A part (owner other than slug) is held by its owner only while an owner stage runs, and takes the owner's seat when
+ * that is earlier.
  */
-export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, trustStale = false } = {}) {
+export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, trustStale = false, owner = null } = {}) {
   const o = { now, alive, graceMs };
+  const part = owner && owner !== slug ? owner : null;
   // A record of a live pid whose owner stopped touching it, with no reason to wait for the owner.
   const left = (file, ms) => !trustStale && existsSync(file) && ownerState(file, { now, alive, staleMs: ms }) !== 'live';
   const am = path.join(cwd, '.am');
   const eventsOf = (name) => readFrom(path.join(am, name, 'progress.jsonl'), 0).events;
   const mine = taskState(eventsOf(slug), o);
+  if (part) {
+    const seats = [mine.seat, taskState(eventsOf(part), o).seat].filter((s) => !Number.isNaN(s));
+    mine.seat = seats.length ? Math.min(...seats) : NaN;
+  }
   const found = [];
   let names = [];
   try {
@@ -525,7 +583,7 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
     const s = taskState(eventsOf(name), o);
     if (s.live && left(path.join(am, name, WORKER_FILES.record), staleMs)) s.live = false;
     if (s.live) found.push({ name, text: `${name} (${s.stage || 'a'} stage running)` });
-    else if (s.gap && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
+    else if (s.gap && name !== part && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
   }
   const orch = path.join(cwd, '.orchestrator');
   const lock = readJson(path.join(orch, 'lock.json'));
@@ -822,7 +880,8 @@ export const inlineSkill = (text, args, amRoot) => String(text).replace(FRONTMAT
 export const inlinePrompt = (slug, kind, name) => `Follow the instructions in .am/${slug}/skill-${kind}.md exactly. They are the ${name} skill, invoked by the user with the arguments already filled in.`;
 
 /** The claude arguments of one session. No --model or --effort for a slash call: it carries the skill's own. `model` for the compaction session and an inline stage call.
- * `mcpConfig`, a path, adds --strict-mcp-config --mcp-config <path>; --mcp-config is variadic: always followed by another option. */
+ * `mcpConfig`, a path, adds --strict-mcp-config --mcp-config <path>; --mcp-config is variadic: always followed by another option.
+ * A resumed call with a systemFile gets it too (a solo stage reopens the shared session). */
 export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', model = null, mcpConfig = '' }) {
   const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', perm.mode];
   if (model) args.push('--model', model.model, '--effort', model.effort);
@@ -831,7 +890,7 @@ export function claudeArgs(perm, { prompt, systemFile, resume, pluginDir = '', m
   if (pluginDir) args.push('--plugin-dir', pluginDir);
   if (mcpConfig) args.push('--strict-mcp-config', '--mcp-config', mcpConfig);
   if (resume) args.push('--resume', resume);
-  else args.push('--append-system-prompt-file', systemFile);
+  if (systemFile) args.push('--append-system-prompt-file', systemFile);
   return args;
 }
 
@@ -870,6 +929,7 @@ const COUNTED = [
   [/\((?:second opinion|2차 의견(?! 없음))/gi, 'second opinion marks'],
   [/\bOPEN\b/g, 'OPEN marks'],
   [/^\d+\.\s/gm, 'numbered lines'],
+  [/^\s*[-*]\s+Part \d+(?: done)?:/gm, 'part lines'],
 ];
 
 /**
@@ -897,6 +957,73 @@ export function compactionProblem(name, before, after) {
 // The record of a compaction in progress, under .am/<slug>/: the texts to put back, written before the session starts and
 // removed once its outcome is settled. A stage that finds it (a stop or a forced kill during the session) puts them back first.
 export const COMPACT_PENDING = 'compact-pending.json';
+// The session a solo task's stages continue, under .am/<owner>/: {sessionId, slug, stage, status, t}, rewritten after each stage.
+export const SOLO_SESSION = 'solo-session.json';
+// The memory of a solo task's shared session, under .am/<owner>/: every solo stage rewrites it before its final reply, and
+// only a stage that starts in a new session is told to read it.
+export const SOLO_CONTEXT = 'solo-context.md';
+// Sessions may write under .am/ and a session ID becomes a --resume argument that may pass through cmd.exe; one starting
+// with `-` would be read as another claude option, so only a strict form is used.
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+// The prompt of the call that compacts a solo session before a stage it does not simply continue. No quote and no `%`,
+// so it passes through cmd.exe (cmdExeArgs).
+export const SOLO_COMPACT_PROMPT = '/compact Keep what the next stage of this am:solo task needs: the slugs, the parts and stages done and their end lines, the decisions made and why, open issues. The task files under .am/ hold the details.';
+// That call only runs /compact: no tool.
+const SOLO_COMPACT_PERM = { mode: 'dontAsk', allow: [], deny: ['AskUserQuestion'] };
+// Between stages a solo session is compacted only when it fills SOLO_CONTEXT_LIMIT percent or more of the context window,
+// read with Claude Code's /context command (a local command, no model turn), run on the stage's model so that its window counts.
+export const SOLO_CONTEXT_LIMIT = 20;
+export const SOLO_CONTEXT_PROMPT = '/context';
+// What a session still that full after compaction saves right before the stage starts in a new session (a clear), under
+// .am/<owner>/; rewritten at the next clear, never removed.
+export const SOLO_CLEAR_CONTEXT = 'solo-clear-context.md';
+
+/**
+ * The share of the context window in use (0-100), read from the result text of /context, or null when it cannot be read.
+ * Assumed form (Claude Code 2.1): a line `**Tokens:** 24.5k / 1m (2%)`. The percent in parentheses wins; without it,
+ * used / total with optional k or m suffixes. Bold marks, commas and spaces are ignored.
+ */
+export function contextPercent(text) {
+  // The suffix stays on the number's line and ends the word, so a later line never lends its first letter.
+  const num = '(\\d+(?:\\.\\d+)?)[ \\t]*([km]?)(?![a-z])';
+  const m = String(text ?? '').replace(/\*/g, '').replace(/,/g, '').match(new RegExp(`Tokens\\s*:?\\s*${num}\\s*/\\s*${num}(?:\\s*\\(\\s*(\\d+(?:\\.\\d+)?)\\s*%\\s*\\))?`, 'i'));
+  if (!m) return null;
+  if (m[5] !== undefined) return Number(m[5]);
+  const tokens = (v, unit) => Number(v) * ({ k: 1e3, m: 1e6 }[unit.toLowerCase()] ?? 1);
+  const total = tokens(m[3], m[4]);
+  return total > 0 ? (tokens(m[1], m[2]) / total) * 100 : null;
+}
+
+/** The prompt of the call that saves the clear file in the compacted session. No quote and no `%` (cmdExeArgs). */
+export const soloClearSavePrompt = (owner) => `This am:solo session is about to be cleared: it still fills 20 percent or more of the context window after compaction, so the next stage starts in a new session. Save now what that session would need: rewrite .am/${owner}/${SOLO_CLEAR_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Add one line saying that .am/${owner}/${SOLO_CONTEXT} holds the memory saved at the end of the last stage, and point to plan.md, check.md and handoff.md instead of copying them. Write no other file. Then reply with one line.`;
+/** That call may write the clear file only. */
+export const soloClearPerm = (owner) => ({ mode: 'dontAsk', allow: [`Edit(/.am/${owner}/${SOLO_CLEAR_CONTEXT})`, `Edit(.am/${owner}/${SOLO_CLEAR_CONTEXT})`], deny: ['AskUserQuestion'] });
+
+/** The owner's session record, or null when it is missing, broken or names no usable session ID. */
+export function readSoloSession(cwd, owner) {
+  const rec = readJson(path.join(cwd, '.am', owner, SOLO_SESSION));
+  if (!rec || typeof rec !== 'object' || typeof rec.sessionId !== 'string' || !SESSION_ID.test(rec.sessionId)) return null;
+  return rec;
+}
+
+/** Writes the owner's session record through a temp file in the same folder (never creates the folder): null, or the error text. */
+export function writeSoloSession(cwd, owner, record) {
+  const target = path.join(cwd, '.am', owner, SOLO_SESSION);
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(record)}\n`);
+    renameSync(tmp, target);
+    return null;
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Left behind.
+    }
+    return String(err?.message || err);
+  }
+}
+
 // Compaction sessions of this process still running; a stop puts their files back once the sessions are killed.
 const compacting = new Set();
 
@@ -1040,13 +1167,19 @@ const BAD_ARGS = `bad arguments (the slug is lowercase kebab-case)\n${USAGE}\n`;
 /** The stage, slug and flags of the command line, or null when they are not a valid call. */
 export function stageArgs(argv) {
   const [stage, slug, ...flags] = argv;
-  if (!STAGES.includes(stage) || !/^[a-z0-9][a-z0-9-]*$/.test(slug || '') || flags.some((f) => f !== '--push' && f !== '--fix')) return null;
-  return { stage, slug, push: flags.includes('--push'), fix: flags.includes('--fix') };
+  const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+  const owners = flags.filter((f) => f === '--solo' || f.startsWith('--solo=')).map((f) => (f === '--solo' ? slug : f.slice('--solo='.length)));
+  if (!STAGES.includes(stage) || !SLUG.test(slug || '') || owners.length > 1 || !owners.every((o) => SLUG.test(o))) return null;
+  if (flags.some((f) => f !== '--push' && f !== '--fix' && f !== '--solo' && !f.startsWith('--solo='))) return null;
+  return { stage, slug, push: flags.includes('--push'), fix: flags.includes('--fix'), solo: owners.length ? { owner: owners[0] } : null };
 }
+
+/** Whether a worker record or result file names this stage, these flags and this solo owner (no key: no owner). */
+const sameCall = (r, { stage, push, fix, solo }) => Boolean(r) && r.stage === stage && r.push === push && r.fix === fix && (r.solo ?? null) === (solo?.owner ?? null);
 
 /** A result line with no session behind it, in the key order of main's result. */
 export function stageLine(stage, slug, status, reason) {
-  return JSON.stringify({ stage, slug, status, reason, costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null });
+  return JSON.stringify({ stage, slug, status, reason, costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null, solo: null });
 }
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
@@ -1056,12 +1189,12 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     out.write(BAD_ARGS);
     return 1;
   }
-  const { stage, slug, push, fix } = args;
+  const { stage, slug, push, fix, solo } = args;
   // Limits the caller left out (undefined or null) are the defaults; any other value is used as given.
   const limits = Object.fromEntries(Object.keys(TIMEOUT_MIN).map((key) => [key, timeoutMin[key] ?? TIMEOUT_MIN[key]]));
   const dir = path.join(cwd, '.am', slug);
   const planFile = path.join(dir, 'plan.md');
-  const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null };
+  const result = { stage, slug, status: 'failed', reason: '', costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null, solo: null };
   let finish = null; // set once the start event is written
   const done = (fields = {}) => {
     Object.assign(result, fields);
@@ -1092,7 +1225,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   let held = null; // the lock, kept to the end when the start line could not be written
   // The do stage's kind is read once, before the wait. A hand-over (its sessions are the orchestrator's) and a do stage that
   // cannot start a session take no part in the memory check.
-  const k = stage === 'do' ? doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix }) : null;
+  const k = stage === 'do' ? doKind(readFileSync(planFile, 'utf8'), { orchestrator, fix, solo: Boolean(solo) }) : null;
   const joins = !(k && (k.error || k.kind === 'handover'));
   const recordsDir = sessionsDirOf(env);
   let record = null; // this stage's `.gate` record, held to the end once the memory check passed
@@ -1132,7 +1265,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       blocked = memoryWait(short);
     } else if (lock.busy !== undefined) blocked = repoWait(`another stage of this repository is starting (pid ${lock.busy ?? '?'})`);
     else {
-      const other = otherRuns(cwd, slug, { now, alive, graceMs, trustStale: Date.now() < settleUntil });
+      const other = otherRuns(cwd, slug, { now, alive, graceMs, trustStale: Date.now() < settleUntil, owner: solo?.owner ?? null });
       const short = !other.runs.length && joins ? memoryCheck() : null;
       if (!other.runs.length && !short) {
         if (event({ ev: 'start', text: `stage ${stage} started`, pid: process.pid, stage })) lock.release();
@@ -1177,7 +1310,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   finishers.add(finish);
 
   let kind = stage;
-  let opts = { push, fix };
+  let opts = { push, fix, solo };
   let orchRoot = '';
   if (stage === 'do') {
     if (k.error) return done({ reason: k.error });
@@ -1223,8 +1356,9 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     startBranch = handedStartBranch(readFileSync(planFile, 'utf8')) || '';
     if (!startBranch) startBranch = String(spawnSync('git', ['branch', '--show-current'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 }).stdout || '').trim();
   }
-  const perm = permissions(kind, { push, amRoot, orchRoot, slug, installedAm, startBranch });
-  const inst = instructions(kind, slug, { ...opts, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell });
+  const perm = permissions(kind, { push, amRoot, orchRoot, slug, installedAm, startBranch, soloOwner: solo?.owner ?? '' });
+  const instOpts = { ...opts, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell };
+  const inst = instructions(kind, slug, instOpts);
   let { prompt } = inst;
   if (stageModel) {
     const skillRel = `.am/${slug}/skill-${kind}.md`;
@@ -1235,6 +1369,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;
   writeFileSync(path.join(cwd, systemRel), inst.system);
   const timeoutMs = limits[kind] * 60000;
+  let dropped = 0; // the cost of a solo session cleared before the stage: the new session does not report it
 
   const call = async (args) => {
     // A hand-over's orchestrator worker is stopped before the cleanup, which leaves it and its descendants alone.
@@ -1246,7 +1381,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env, process.pid), timeoutMs, track, beforeCleanup });
     report(kind, r.cleaned);
     const parsed = parseResult(r.stdout);
-    if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + parsed.total_cost_usd; // a resumed session reports the whole conversation
+    if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + dropped + parsed.total_cost_usd; // a resumed session reports the whole conversation
     if (parsed?.session_id) result.sessionId = parsed.session_id;
     for (const d of Array.isArray(parsed?.permission_denials) ? parsed.permission_denials : []) {
       const input = (d && d.tool_input) || {};
@@ -1277,14 +1412,134 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     };
   }
   if (stageModel) event({ ev: 'note', text: `model ${stageModel.model}, effort ${stageModel.effort} from the user's setting ${userFile}` });
-  const { r, parsed } = await call(claudeArgs(perm, { prompt, systemFile: systemRel, pluginDir, model: stageModel, mcpConfig }));
-  if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
-  const problem = (x) => {
-    if (x.r.timedOut) return `no end within ${limits[kind]} minutes; the session was stopped`;
+  const problem = (x, minutes = limits[kind]) => {
+    if (x.r.timedOut) return `no end within ${minutes} minutes; the session was stopped`;
     if (!x.parsed) return `unreadable output (exit ${x.r.code}): ${(x.r.stderr || x.r.stdout).trim().slice(-TAIL_CHARS)}`;
     if (x.r.code !== 0 || x.parsed.is_error) return `claude ended with an error (${x.parsed.subtype || `exit ${x.r.code}`}): ${String(x.parsed.result || x.r.stderr).trim().slice(-TAIL_CHARS)}`;
     return null;
   };
+  const firstLine = (s) => String(s || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
+  // A solo stage continues the session its owner's record names; without a usable one it starts a new session.
+  let sessionResume = null;
+  let cleared = false; // a stage started in a new session because compaction left the shared one too full
+  if (solo) {
+    const rec = readSoloSession(cwd, solo.owner);
+    let fresh = null;
+    if (!rec) {
+      fresh = 'no recorded session';
+      event({ ev: 'note', text: 'solo: no recorded session; started a new one' });
+    }
+    result.solo = { owner: solo.owner, sessionId: null, compacted: false, fresh, context: false };
+    // Only the same stage of the same task after a question goes straight on; any other stage first measures the context use
+    // and compacts the conversation when it fills SOLO_CONTEXT_LIMIT percent or more of the window (or cannot be read).
+    if (rec && rec.slug === slug && rec.stage === kind && rec.status === 'NEEDS_DECISION') sessionResume = rec.sessionId;
+    else if (rec) {
+      // Recorded at once, so a stage that ends without a session ID never sends the next one back to an older conversation.
+      const record = (id) => {
+        const err = writeSoloSession(cwd, solo.owner, { sessionId: id, slug, stage: kind, status: 'failed', t: new Date(now()).toISOString() });
+        if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
+      };
+      // One call that continues the session `id` before the stage, with the compaction session's environment and time limit.
+      // Its cost is not added: the continued stage call reports the whole conversation.
+      const side = async (p, id, { permission = SOLO_COMPACT_PERM, model = compactModel, who = 'compact' } = {}) => {
+        writeMcpConfig(cwd, mcpConfig);
+        const r = await exec(bin, [...pre, ...claudeArgs(permission, { prompt: p, resume: id, pluginDir, model, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
+        report(who, r.cleaned);
+        const parsed = parseResult(r.stdout);
+        const failed = r.spawnError ? null : problem({ r, parsed }, limits.compact);
+        return { r, parsed, failed, id: parsed && !failed && typeof parsed.session_id === 'string' && SESSION_ID.test(parsed.session_id) ? parsed.session_id : id };
+      };
+      const unavailable = (x) => done({ status: 'unavailable', reason: `could not start ${bin}: ${x.r.spawnError}` });
+      // Measured on the stage's model, so that the window is the one the stage runs in; with no readable model, claude's default.
+      const builtin = stageModel ? null : skillDefaults(skillRoot, sc.skill);
+      const measureModel = stageModel ?? (builtin.error ? null : builtin);
+      const measure = async (id) => {
+        const x = await side(SOLO_CONTEXT_PROMPT, id, { model: measureModel, who: 'context' });
+        const percent = x.r.spawnError || x.failed ? null : contextPercent(x.parsed.result);
+        return { ...x, percent, why: x.failed ? firstLine(x.failed) : 'no token count in its output' };
+      };
+      const pct = (p) => `${Math.round(p * 10) / 10}%`;
+      const first = await measure(rec.sessionId);
+      if (first.r.spawnError) return unavailable(first);
+      if (first.percent !== null && first.percent < SOLO_CONTEXT_LIMIT) {
+        event({ ev: 'note', text: `solo: context ${pct(first.percent)} of the window; continued without compaction` });
+        sessionResume = first.id;
+        if (first.id !== rec.sessionId) record(first.id);
+      } else {
+        event({ ev: 'note', text: first.percent === null ? `solo: context use could not be read (${first.why}); compacting` : `solo: context ${pct(first.percent)} of the window; compacting` });
+        if (modelNote) event({ ev: 'note', text: modelNote });
+        const cr = await side(SOLO_COMPACT_PROMPT, first.id);
+        if (cr.r.spawnError) return unavailable(cr);
+        if (cr.failed) {
+          const cause = firstLine(`compaction: ${cr.failed}`);
+          event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
+          result.solo.fresh = cause;
+        } else {
+          sessionResume = cr.id;
+          result.solo.compacted = true;
+          event({ ev: 'note', text: `conversation compacted before the ${kind} stage of ${slug}` });
+          record(cr.id);
+          const after = await measure(cr.id);
+          if (after.r.spawnError) return unavailable(after);
+          if (after.percent === null || after.percent < SOLO_CONTEXT_LIMIT) {
+            event({ ev: 'note', text: after.percent === null ? `solo: context use after compaction could not be read (${after.why}); continued the compacted session` : `solo: context ${pct(after.percent)} of the window after compaction` });
+            if (after.id !== cr.id) {
+              sessionResume = after.id;
+              record(after.id);
+            }
+          } else {
+            // Compaction was not enough: the session saves what the next one may need, and the stage starts in a new session.
+            const clearRel = `.am/${solo.owner}/${SOLO_CLEAR_CONTEXT}`;
+            rmSync(path.join(cwd, clearRel), { force: true });
+            const sv = await side(soloClearSavePrompt(solo.owner), after.id, { permission: soloClearPerm(solo.owner) });
+            if (sv.r.spawnError) return unavailable(sv);
+            let saved = false;
+            try {
+              saved = readFileSync(path.join(cwd, clearRel), 'utf8').trim() !== '';
+            } catch {
+              // Not written.
+            }
+            const file = saved ? SOLO_CLEAR_CONTEXT : existsSync(path.join(cwd, '.am', solo.owner, SOLO_CONTEXT)) ? SOLO_CONTEXT : null;
+            // The cleared conversation's cost, as its last call reported it.
+            const cost = (x) => (x.parsed && Number.isFinite(x.parsed.total_cost_usd) ? x.parsed.total_cost_usd : null);
+            dropped = cost(sv) ?? cost(cr) ?? 0;
+            result.costUsd += dropped;
+            sessionResume = null;
+            cleared = true;
+            result.solo.fresh = `context ${pct(after.percent)} of the window after compaction`;
+            event({ ev: 'note', text: `solo: context still ${pct(after.percent)} of the window after compaction; started a new session${file ? ` that may read .am/${solo.owner}/${file}` : ''}` });
+            if (!saved) event({ ev: 'note', text: `solo: the context could not be saved before the clear (${sv.failed ? firstLine(sv.failed) : `${clearRel} was not written`})` });
+            if (file) {
+              writeFileSync(path.join(cwd, systemRel), instructions(kind, slug, { ...instOpts, soloClear: file }).system);
+              result.solo.context = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  // A solo stage that starts in a new session is told to read the memory the earlier stages saved, when there is one.
+  const giveContext = () => {
+    const rel = `.am/${solo.owner}/${SOLO_CONTEXT}`;
+    if (!existsSync(path.join(cwd, rel))) return;
+    writeFileSync(path.join(cwd, systemRel), instructions(kind, slug, { ...instOpts, soloRead: true }).system);
+    event({ ev: 'note', text: `solo: the new session reads ${rel}` });
+    result.solo.context = true;
+  };
+  if (solo && !sessionResume && !cleared) giveContext();
+  const firstArgs = (resume) => claudeArgs(perm, { prompt, systemFile: systemRel, resume, pluginDir, model: stageModel, mcpConfig });
+  let { r, parsed } = await call(firstArgs(sessionResume));
+  if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
+  // The recorded session could not be continued (not a time-out): the stage runs once more in a new session.
+  if (sessionResume && !r.timedOut && (!parsed || r.code !== 0 || parsed.is_error)) {
+    const cause = firstLine(problem({ r, parsed }));
+    event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
+    result.solo.fresh = cause;
+    result.sessionId = null;
+    giveContext();
+    ({ r, parsed } = await call(firstArgs(null)));
+    if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
+  }
   let why = problem({ r, parsed });
   const text = String(parsed?.result ?? '');
   let mark = why ? null : lastMark(text, MARKS[kind]);
@@ -1308,6 +1563,14 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (why) result.reason = why;
   else if (!mark) result.reason = 'the session ended without an AM_STAGE line';
   else result.status = mark;
+  if (solo) {
+    // A failed write only costs the next stage its continuation: it starts a new session.
+    if (result.sessionId) {
+      const err = writeSoloSession(cwd, solo.owner, { sessionId: result.sessionId, slug, stage: kind, status: result.status, t: new Date(now()).toISOString() });
+      if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
+    }
+    result.solo.sessionId = result.sessionId;
+  }
   return done();
 }
 
@@ -1359,6 +1622,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     return 1;
   }
   const { stage, slug, push, fix } = args;
+  const owner = args.solo?.owner ?? null;
   const { cwd = process.cwd(), now = Date.now, alive = pidAlive, kill = signalRun } = rest;
   const dir = path.join(cwd, '.am', slug);
   const file = (name) => path.join(dir, WORKER_FILES[name]);
@@ -1370,7 +1634,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
     }
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const lockOpts = { now, alive, fields: { stage, push, fix }, staleMs };
+  const lockOpts = { now, alive, fields: { stage, push, fix, solo: owner }, staleMs };
   let lock = takeLock(file('record'), lockOpts);
   if (lock?.suspect) {
     await sleep(confirmMs);
@@ -1378,10 +1642,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
   }
   // The worker before this one releases its record only after main returned: try again for a moment. A worker of this
   // same stage already runs it: no second try.
-  const sameStage = () => {
-    const r = readJson(file('record'));
-    return Boolean(r) && r.stage === stage && r.push === push && r.fix === fix;
-  };
+  const sameStage = () => sameCall(readJson(file('record')), args);
   const giveUp = Date.now() + busyMs;
   while (lock && lock.busy !== undefined && !sameStage() && Date.now() < giveUp) {
     await sleep(busyPollMs);
@@ -1429,7 +1690,7 @@ export async function worker(argv, { tickMs = WORKER_TICK_MS, staleMs = WORKER_S
   const writeResult = (line, delivered) => {
     const target = file('result');
     const tmp = `${target}.${process.pid}.tmp`;
-    const res = { pid: process.pid, stage, push, fix, line, t: new Date(now()).toISOString(), delivered, plan: fileState(dir, 'plan.md'), check: fileState(dir, 'check.md') };
+    const res = { pid: process.pid, stage, push, fix, solo: owner, line, t: new Date(now()).toISOString(), delivered, plan: fileState(dir, 'plan.md'), check: fileState(dir, 'check.md') };
     try {
       writeFileSync(tmp, `${JSON.stringify(res)}\n`);
       // Synchronous waits: the stop path exits right after this.
@@ -1560,7 +1821,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
     out.write(BAD_ARGS);
     return 1;
   }
-  const { stage, slug, push, fix } = args;
+  const { stage, slug } = args;
   const dir = path.join(cwd, '.am', slug);
   if (!existsSync(dir)) return main(argv, { ...rest, cwd, env, out, now, alive });
   const file = (name) => path.join(dir, WORKER_FILES[name]);
@@ -1574,7 +1835,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   // Only a result of this stage and flags written after this call began: not an older one, not another stage's.
   const accepted = () => {
     const r = readJson(file('result'));
-    if (!r || r.stage !== stage || r.push !== push || r.fix !== fix || typeof r.line !== 'string') return null;
+    if (!sameCall(r, args) || typeof r.line !== 'string') return null;
     return Date.parse(r.t) >= began ? r : null;
   };
   const markable = (pid) => Number.isInteger(pid) && pid > 0;
@@ -1594,7 +1855,7 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
   // Whether a pending result may stand for this call: same stage and flags, not a wait, not a stop, and plan.md and
   // check.md as it left them. Its age does not count.
   const deliverable = (r) => {
-    if (r.stage !== stage || r.push !== push || r.fix !== fix) return false;
+    if (!sameCall(r, args)) return false;
     let line = null;
     try {
       line = JSON.parse(r.line);
@@ -1633,11 +1894,12 @@ export async function follow(argv, { followMs = FOLLOW_MS, waitMs = WAIT_MS, sta
     }
     suspectSeen = null;
     const r = readJson(file('record'));
-    if (r && r.stage === stage && r.push === push && r.fix === fix) {
+    if (sameCall(r, args)) {
       if (typeof r.t === 'number') followedT = r.t;
       return { kind: 'same', pid: r.pid };
     }
-    const name = r && typeof r.stage === 'string' ? `${r.stage}${r.push ? ' --push' : ''}${r.fix ? ' --fix' : ''}` : 'other';
+    const soloName = r?.solo ? (r.solo === slug ? ' --solo' : ` --solo=${r.solo}`) : '';
+    const name = r && typeof r.stage === 'string' ? `${r.stage}${r.push ? ' --push' : ''}${r.fix ? ' --fix' : ''}${soloName}` : 'other';
     return { kind: 'other', pid: r?.pid ?? '?', name };
   };
   const otherReason = (seen) => `waiting for another stage of this task: the ${seen.name} stage is still running (pid ${seen.pid})`;

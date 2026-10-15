@@ -332,6 +332,51 @@ test('the lock pid the am stage runner reads is the detached worker, not the com
   assert.equal(await exited, 130, proc.out);
 });
 
+// Skipped on Windows for the same reason: SIGINT.
+test('the am sessions report puts a handed-over run and its implement session under the am:auto task that owns it', { skip: process.platform === 'win32' }, async () => {
+  const { collect, render } = await import('../plugin/scripts/sessions.mjs');
+  const r = makeRepo({ scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
+  assert.equal(r.orch('doctor').code, 0);
+  assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
+  // The am:auto task whose stage worker (this test process) handed the run over.
+  const am = path.join(r.repo, '.am', 'x');
+  mkdirSync(am, { recursive: true });
+  const t = Date.now();
+  writeFileSync(path.join(am, 'stage-worker.json'), JSON.stringify({ pid: process.pid, t, stage: 'do', push: false, fix: false }));
+  const at = new Date(t).toISOString();
+  writeFileSync(
+    path.join(am, 'progress.jsonl'),
+    [
+      { t: at, ev: 'start', text: 'stage do started', pid: process.pid, stage: 'do' },
+      { t: at, ev: 'note', text: 'handed to the am-orchestrator run skill', stage: 'handover' },
+    ]
+      .map((e) => `${JSON.stringify(e)}\n`)
+      .join(''),
+  );
+  r.orch.env = { AM_HANDOVER_OWNER: String(process.pid) };
+  const proc = r.start('run', '--only', 'T01');
+  r.orch.env = {};
+  const exited = new Promise((res) => proc.on('exit', (code) => res(code)));
+  const pidFile = path.join(r.repo, '.orchestrator', 'fake-slow.pid');
+  for (let i = 0; i < 200 && !existsSync(pidFile); i += 1) await new Promise((res) => setTimeout(res, 50));
+  assert.ok(existsSync(pidFile), proc.out);
+  const run = readFileSync(path.join(r.repo, '.orchestrator', 'current'), 'utf8').trim();
+  const title = JSON.parse(readFileSync(path.join(r.runDir(), 'tasks.json'), 'utf8')).tasks.find((x) => x.id === 'T01').title;
+  const snap = collect({ cwd: r.repo, env: { CLAUDE_CONFIG_DIR: r.home } });
+  const task = snap.trees[0].tasks.find((x) => x.slug === 'x');
+  assert.ok(task?.run, JSON.stringify(snap));
+  assert.equal(task.run.run, run);
+  const child = task.run.children.find((c) => c.id === 'T01');
+  assert.ok(child, JSON.stringify(task.run));
+  assert.equal(child.title, title);
+  assert.equal(child.role, 'implement');
+  assert.equal(child.waiting, false);
+  assert.ok(Number.isFinite(child.startedAt));
+  assert.ok(render(snap).split('\n').includes(`    └ 인계: am-orchestrator 실행 ${run}`), render(snap));
+  proc.kill('SIGINT');
+  assert.equal(await exited, 130, proc.out);
+});
+
 test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {
   const { MARKS, lastMark, checkVerdict } = await import('../plugin/scripts/stage.mjs');
   const { lastMarker, verdictFromFile } = await import('../orchestrator/scripts/orchestrator.mjs');
