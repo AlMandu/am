@@ -7,8 +7,9 @@
 // the CLI with --run --json --cwd once more after check and before commit.
 // Node only, no dependencies.
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, writeSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { constants } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -334,6 +335,25 @@ export function killTree(child) {
   }
 }
 
+// Gate commands run in their own process group, so a signal that ends this process
+// would leave them running. Signal handlers are attached only while runGate runs.
+const running = new Set(); // running gate command children
+const modes = { hook: 0, cli: 0 }; // runGate calls in progress, by mode
+const INTERRUPT_SIGNALS = process.platform === 'win32' ? ['SIGINT', 'SIGTERM'] : ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+function onInterrupt(sig) {
+  for (const child of running) killTree(child);
+  if (modes.cli > 0) {
+    try {
+      writeSync(2, `gate: interrupted by ${sig} - gate commands stopped\n`);
+    } catch {
+      /* stderr closed */
+    }
+    process.exit(128 + constants.signals[sig]);
+  }
+  process.exit(0); // hook: always exit 0 with no output
+}
+
 /** Runs one shell command (cmd.exe on Windows, /bin/sh elsewhere) with a hard timeout. Never rejects. */
 function runCommand(run, { cwd, timeoutMs }) {
   return new Promise((resolve) => {
@@ -345,6 +365,7 @@ function runCommand(run, { cwd, timeoutMs }) {
       resolve({ spawnError: err.message, exit: null, timedOut: false, output: '', durationMs: 0 });
       return;
     }
+    running.add(child); // removed on close, not exit: a grandchild may still hold the pipes
     let output = '';
     const onData = (d) => {
       output += d;
@@ -363,6 +384,7 @@ function runCommand(run, { cwd, timeoutMs }) {
     const finish = (r) => {
       if (settled) return;
       settled = true;
+      running.delete(child);
       clearTimeout(timer);
       resolve({ output, durationMs: Date.now() - started, timedOut, ...r });
     };
@@ -434,35 +456,44 @@ export async function runGate({ dir, mode = 'cli', budgetMs = HOOK_BUDGET_MS, en
 
   const started = Date.now();
   const hook = mode === 'hook';
-  for (const cmd of loaded.config.commands) {
-    if (hook && !cmd.blocking) continue;
-    const own = cmd.timeoutMs ?? loaded.config.timeoutMs;
-    const remaining = hook ? budgetMs - (Date.now() - started) : Infinity;
-    if (remaining <= 0) {
-      report.status = STATUS.FAIL;
-      report.reason = `gate time budget (${Math.round(budgetMs / 1000)}s) ran out before "${cmd.name}" - mark slow commands "blocking": false so they run only in am:check`;
-      break;
+  const key = hook ? 'hook' : 'cli';
+  const handlers = INTERRUPT_SIGNALS.map((sig) => [sig, () => onInterrupt(sig)]);
+  for (const [sig, fn] of handlers) process.on(sig, fn);
+  modes[key] += 1;
+  try {
+    for (const cmd of loaded.config.commands) {
+      if (hook && !cmd.blocking) continue;
+      const own = cmd.timeoutMs ?? loaded.config.timeoutMs;
+      const remaining = hook ? budgetMs - (Date.now() - started) : Infinity;
+      if (remaining <= 0) {
+        report.status = STATUS.FAIL;
+        report.reason = `gate time budget (${Math.round(budgetMs / 1000)}s) ran out before "${cmd.name}" - mark slow commands "blocking": false so they run only in am:check`;
+        break;
+      }
+      const limit = Math.min(own, remaining);
+      const res = programExists(cmd.run, root, env)
+        ? await runCommand(cmd.run, { cwd: root, timeoutMs: limit })
+        : { spawnError: 'program not found', exit: null, timedOut: false, output: '', durationMs: 0 };
+      const entry = { name: cmd.name, run: cmd.run, blocking: cmd.blocking, exit: res.timedOut ? null : res.exit, timedOut: res.timedOut, durationMs: res.durationMs, tail: tailOf(res.output) };
+      report.commands.push(entry);
+      if (res.spawnError || NOT_FOUND_EXITS.has(res.exit)) {
+        if (!cmd.blocking) continue;
+        report.status = STATUS.ERROR;
+        report.reason = `could not run "${cmd.name}"${res.spawnError ? ` - ${res.spawnError}` : ' - command not found'}`;
+        break;
+      }
+      if (res.timedOut || res.exit !== 0) {
+        if (!cmd.blocking) continue;
+        report.status = STATUS.FAIL;
+        report.reason = res.timedOut
+          ? `"${cmd.name}" did not finish within ${Math.round(limit / 1000)}s` + (limit < own ? ' (gate time budget) - mark slow commands "blocking": false' : '')
+          : `"${cmd.name}" exited with ${res.exit}`;
+        if (hook) break;
+      }
     }
-    const limit = Math.min(own, remaining);
-    const res = programExists(cmd.run, root, env)
-      ? await runCommand(cmd.run, { cwd: root, timeoutMs: limit })
-      : { spawnError: 'program not found', exit: null, timedOut: false, output: '', durationMs: 0 };
-    const entry = { name: cmd.name, run: cmd.run, blocking: cmd.blocking, exit: res.timedOut ? null : res.exit, timedOut: res.timedOut, durationMs: res.durationMs, tail: tailOf(res.output) };
-    report.commands.push(entry);
-    if (res.spawnError || NOT_FOUND_EXITS.has(res.exit)) {
-      if (!cmd.blocking) continue;
-      report.status = STATUS.ERROR;
-      report.reason = `could not run "${cmd.name}"${res.spawnError ? ` - ${res.spawnError}` : ' - command not found'}`;
-      break;
-    }
-    if (res.timedOut || res.exit !== 0) {
-      if (!cmd.blocking) continue;
-      report.status = STATUS.FAIL;
-      report.reason = res.timedOut
-        ? `"${cmd.name}" did not finish within ${Math.round(limit / 1000)}s` + (limit < own ? ' (gate time budget) - mark slow commands "blocking": false' : '')
-        : `"${cmd.name}" exited with ${res.exit}`;
-      if (hook) break;
-    }
+  } finally {
+    for (const [sig, fn] of handlers) process.off(sig, fn);
+    modes[key] -= 1;
   }
   report.durationMs = Date.now() - started;
   return report;

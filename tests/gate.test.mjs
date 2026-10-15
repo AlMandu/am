@@ -1,7 +1,7 @@
 // Run: node --test tests/gate.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -416,6 +416,126 @@ test('hook.mjs still runs the gate when the user files module cannot load', () =
   assert.equal(r.stdout, '');
   rmSync(temp, { recursive: true, force: true });
   rmSync(repo, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------- interrupt
+
+const GATE = fileURLToPath(new URL('../plugin/hooks/gate.mjs', import.meta.url));
+// A gate command that starts a grandchild, writes both pids, then waits.
+const PIDS_SCRIPT = [
+  "const { spawn } = require('child_process');",
+  "const fs = require('fs');",
+  "const g = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], { stdio: 'ignore' });",
+  "fs.writeFileSync('pids.tmp', JSON.stringify([process.pid, g.pid]));",
+  "fs.renameSync('pids.tmp', 'pids.json');",
+  'setTimeout(() => {}, 60000);',
+].join('\n');
+
+function makeInterruptRepo() {
+  const repo = makeRepo({ commands: [{ name: 'slow', run: 'node pids.js' }] });
+  writeFileSync(path.join(repo, 'pids.js'), PIDS_SCRIPT);
+  return repo;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A killed process whose parent is gone waits as a zombie until PID 1 reaps it, and some
+// containers reap late; kill(pid, 0) still finds a zombie, so it counts as ended here.
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    return err.code !== 'ESRCH';
+  }
+  if (!existsSync('/proc/self/stat')) return true;
+  try {
+    return readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /s, '')[0] !== 'Z';
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(check, limitMs) {
+  const end = Date.now() + limitMs;
+  while (Date.now() < end) {
+    const v = check();
+    if (v) return v;
+    await sleep(50);
+  }
+  return check();
+}
+
+/** Starts a process, waits for the gate command's pids, sends SIGTERM, returns {code, signal, stdout, stderr, pids, gone}. */
+async function interrupt(args, { env = process.env, input } = {}, repo) {
+  const child = spawn(process.execPath, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (d) => { stdout += d; });
+  child.stderr.setEncoding('utf8').on('data', (d) => { stderr += d; });
+  const closed = new Promise((r) => child.on('close', (code, signal) => r({ code, signal })));
+  if (input !== undefined) child.stdin.end(input);
+  else child.stdin.end();
+  let pids = [];
+  try {
+    const file = path.join(repo, 'pids.json');
+    assert.ok(await waitFor(() => existsSync(file), 10000), 'gate command did not start');
+    pids = JSON.parse(readFileSync(file, 'utf8'));
+    child.kill('SIGTERM');
+    const { code, signal } = await closed;
+    const gone = await waitFor(() => pids.every((p) => !alive(p)), 5000);
+    return { code, signal, stdout, stderr, pids, gone };
+  } finally {
+    for (const p of pids) if (alive(p)) try { process.kill(p, 'SIGKILL'); } catch {}
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+test('an interrupted gate CLI stops the running gate commands and exits 128 + signal', { skip: process.platform === 'win32' }, async () => {
+  const repo = makeInterruptRepo();
+  const r = await interrupt([GATE, '--run', '--json', '--cwd', repo], {}, repo);
+  assert.ok(r.gone, `left running: ${JSON.stringify(r)}`);
+  assert.equal(r.code, 143, JSON.stringify(r));
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /interrupted by SIGTERM/);
+});
+
+test('an interrupted hook stops the running gate commands and exits 0 with no output', { skip: process.platform === 'win32' }, async () => {
+  const config = mkdtempSync(path.join(tmpdir(), 'am-hook-config-'));
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: config };
+  delete env.AM_GATE;
+  const repo = makeInterruptRepo();
+  try {
+    const r = await interrupt([HOOK], { env, input: payload(repo, 'git commit -m x') }, repo);
+    assert.ok(r.gone, `left running: ${JSON.stringify(r)}`);
+    assert.equal(r.code, 0, JSON.stringify(r));
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr, '');
+  } finally {
+    rmSync(config, { recursive: true, force: true });
+  }
+});
+
+const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+test('importing gate.mjs, codex-opinion.mjs or stage.mjs attaches no signal handler', () => {
+  const urls = ['../plugin/hooks/gate.mjs', '../plugin/scripts/codex-opinion.mjs', '../plugin/scripts/stage.mjs'].map((p) => new URL(p, import.meta.url).href);
+  const code = `for (const u of ${JSON.stringify(urls)}) await import(u); console.log(JSON.stringify(${JSON.stringify(SIGNALS)}.map((s) => process.listenerCount(s))));`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 30000 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout.trim().split('\n').pop()), [0, 0, 0]);
+});
+
+test('runGate removes its signal handlers when it ends, passing or failing', async () => {
+  const count = () => SIGNALS.map((s) => process.listenerCount(s));
+  const before = count();
+  for (const run of [OK, FAIL]) {
+    const repo = makeRepo({ commands: [{ name: 'build', run }] });
+    const report = await runGate({ dir: repo, mode: 'cli' });
+    assert.equal(report.status, run === OK ? STATUS.PASS : STATUS.FAIL);
+    assert.deepEqual(count(), before);
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 // ------------------------------------------------------------- hooks.json
