@@ -193,7 +193,7 @@ test('the compaction session: its own model and markers, a prompt cmd.exe can pa
   const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
   assert.ok(!/["%]/.test(prompt), prompt);
   assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
-  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), or the user\'s answer', '(자동 결정), (second opinion, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back', '`## Parts` section', '`- Part <k> done: …`']) assert.ok(system.includes(keep), keep);
+  for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), (2차 의견…), or the user\'s answer', '(자동 결정), (second opinion, (2차 의견, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back', '`## Parts` section', '`- Part <k> done: …`']) assert.ok(system.includes(keep), keep);
 });
 
 test('instructions: slash call of the stage skill, unattended rules written out in every stage', () => {
@@ -4225,6 +4225,10 @@ test('second-opinion marks: the Korean form counts like the English one; neither
   assert.deepEqual(secondOpinionLines('# p\n- 저장: 파일 (2차 의견, Codex 동의)\n- x (2차 의견 없음)\n'), ['저장: 파일 (2차 의견, Codex 동의)']);
   // A compaction that drops a Korean second-opinion line is undone like one that drops an English line.
   assert.match(compactionProblem('plan.md', '# p\n- a (2차 의견)\n', '# p\n'), /second opinion marks 1 -> 0/);
+  // The count is built from SECOND_MARK: every mark on a line, both languages; SECOND_MARK itself stays without g.
+  assert.equal(SECOND_MARK.flags, 'i');
+  assert.match(compactionProblem('plan.md', '# p\n- a (2차 의견) b (second opinion)\n- c (2차 의견)\n', '# p\n- a (2차 의견) b (second opinion)\n'), /second opinion marks 3 -> 2/);
+  assert.equal(compactionProblem('plan.md', '# p\n- a (2차 의견 없음)\n', '# p\n'), null);
 });
 
 test('permissions: the commit stage only unstages; a hand-over switches only to its start branch and may put a stash back', () => {

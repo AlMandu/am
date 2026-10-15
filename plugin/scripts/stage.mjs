@@ -374,8 +374,8 @@ Files to shorten (token counts are this runner's estimate: 4 ASCII characters, o
 ${list}
 - Change only these files, in place, with the Edit or Write tool. Change nothing else. The runner keeps a copy of each original and tells the next session where it is.
 - Never change .am/${slug}/request.md: it is the user's request in their own words. This session cannot edit that file, and if the runner finds it changed it puts everything back.
-- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; every line of the \`## Parts\` section (\`- Part <k>: …\`); Change log lines \`- Part <k> done: …\`; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
-- Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), (second opinion, and the word OPEN.
+- Keep the file's language and its Markdown structure. Keep exactly: every heading line; the Scale line (\`Scale: N implementation runs, M commits\` or \`규모: 구현 N회, 커밋 M개\`); every line that starts with a number and a period, with its Check and its done mark ((done) or (완료)); every decision line with its mark ((auto-decided), (자동 결정), (second opinion…), (2차 의견…), or the user's answer); every decision card marked OPEN, in full; Change log lines that record a hand-over with a run ID, or a merge; every line of the \`## Parts\` section (\`- Part <k>: …\`); Change log lines \`- Part <k> done: …\`; in check.md the verdict, the gate result and the human checklist; file paths, commands, names and numbers a later step needs.
+- Keep every occurrence of these marks, also inside prose, as many times as now: (done), (완료), (auto-decided), (자동 결정), (second opinion, (2차 의견, and the word OPEN.
 - Shorten: explanations and background, long reasons (one line each), examples, Change log lines that repeat or were superseded.
 - Do not add anything, and do not change what a kept line says.
 - The runner checks the result mechanically (the marks, numbered lines and headings above, and the total size) and puts the originals back if a check fails.
@@ -930,7 +930,7 @@ const count = (text, re) => (String(text).match(re) || []).length;
 const COUNTED = [
   [/\((?:done|완료)\)/gi, 'done marks'],
   [/\((?:auto-decided|자동 결정)\)/gi, 'auto-decided marks'],
-  [/\((?:second opinion|2차 의견(?! 없음))/gi, 'second opinion marks'],
+  [new RegExp(SECOND_MARK.source, 'gi'), 'second opinion marks'],
   [/\bOPEN\b/g, 'OPEN marks'],
   [/^\d+\.\s/gm, 'numbered lines'],
   [/^\s*[-*]\s+Part \d+(?: done)?:/gm, 'part lines'],
@@ -1178,6 +1178,9 @@ export function stageArgs(argv) {
 /** Whether a worker record or result file names this stage, these flags and this solo owner (no key: no owner). */
 const sameCall = (r, { stage, push, fix, solo }) => Boolean(r) && r.stage === stage && r.push === push && r.fix === fix && (r.solo ?? null) === (solo?.owner ?? null);
 
+/** The first line of a reason or error, whitespace folded, at most 200 characters (end events and notes). */
+const firstLine = (s) => String(s || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
+
 /** A result line with no session behind it, in the key order of main's result. */
 export function stageLine(stage, slug, status, reason) {
   return JSON.stringify({ stage, slug, status, reason, costUsd: 0, sessionId: null, reply: null, denied: [], compacted: null, solo: null });
@@ -1308,8 +1311,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     if (result.stage === 'handover') stopRun();
     // A stop signal comes while the session may still be writing a line.
     stopOpinions?.(!stopped);
-    const first = String(reason || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
-    event({ ev: 'end', text: first || `${result.stage} stage ended`, stage: result.stage, status, min: Math.max(0, Math.floor((now() - startedAt) / 60000)) });
+    event({ ev: 'end', text: firstLine(reason) || `${result.stage} stage ended`, stage: result.stage, status, min: Math.max(0, Math.floor((now() - startedAt) / 60000)) });
     held?.release();
   };
   finishers.add(finish);
@@ -1425,7 +1427,6 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     if (x.r.code !== 0 || x.parsed.is_error) return `claude ended with an error (${x.parsed.subtype || `exit ${x.r.code}`}): ${String(x.parsed.result || x.r.stderr).trim().slice(-TAIL_CHARS)}`;
     return null;
   };
-  const firstLine = (s) => String(s || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
   // A solo stage continues the session its owner's record names; without a usable one it starts a new session.
   let sessionResume = null;
   let cleared = false; // a stage started in a new session because compaction left the shared one too full
