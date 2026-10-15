@@ -41,7 +41,7 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from
 
 ## Steps
 1. Restate the goal in 1-3 lines from the user's point of view. Ask first only if two reasonable readings lead to different results.
-2. Explore the code the change touches. For a wide search, use a read-only exploration subagent if one is available.
+2. Explore the code the change touches, and look for existing helpers, modules, similar features and conventions the change can reuse or should follow; name them in the plan (the Files line, or the step that uses them). For a wide search, use a read-only exploration subagent if one is available.
 3. Small change (3 files or fewer, obvious result): say so, offer to do it directly without a plan file, and stop.
 4. Folder: `.am/<slug>/` at the repository root. The slug is short kebab-case English; reuse a slug already used in this conversation and never guess from recent folders. If `.am/` does not exist yet and `git check-ignore -q .am` fails, create `.am/.gitignore` containing `*`. Unless your instructions say you are running inside am-orchestrator, write the slug as one line to `.am/.active` (overwrite it), which marks the current task.
 5. Technical choices: before drafting, list the ones this plan depends on. If there are any, settle them through the second opinion (rules above), all in one brief.
@@ -53,7 +53,7 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from
    > Implement with the am:do skill. Rules: 1) do the Steps in order 2) run each step's check and mark the step done 3) for a bug, record the reproduction result before fixing it 4) log any deviation under Change log 5) when done, use the am:check skill
    ## Summary      goal, what changes for the user, main risk (8 lines or fewer)
    ## Decisions    user decisions; "Defaults applied": choice - one-line reason (tag as in the rules above)
-   ## Files        path - what changes
+   ## Files        path - what changes (reuses: <path or symbol>, only when something is reused)
    ## Steps        numbered; each ends with "Check: ..."
    ## Checks       automated (gate, tests) / agent runtime checks / human checklist (where, what to do, what they should see) / bug reproduction (steps, result before the fix)
    ## Risks        only real ones
