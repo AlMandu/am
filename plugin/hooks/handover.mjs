@@ -6,7 +6,7 @@
 // and the plan was neither handed over (a hand-over line in its Change log) nor started. Shell commands are not checked.
 // Entry: node -e "import(...handover.mjs).then((m) => m.main())". Node only.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -159,10 +159,15 @@ export function decide(raw, { stateDir = STATE_DIR, installed = orchestratorInst
   const state = stateFile ? loadState(stateFile) : {};
   const save = () => {
     if (!stateFile) return;
-    mkdirSync(stateDir, { recursive: true });
     const tmp = `${stateFile}.${process.pid}.tmp`; // hooks of parallel tool calls run at once: never leave a half-written file
-    writeFileSync(tmp, JSON.stringify(state));
-    renameSync(tmp, stateFile);
+    // A failed save must not turn a deny into an allow: swallow it and remove the leftover tmp.
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(tmp, JSON.stringify(state));
+      renameSync(tmp, stateFile);
+    } catch {
+      try { rmSync(tmp, { force: true }); } catch {}
+    }
   };
 
   if (PLAN.test(rel)) {

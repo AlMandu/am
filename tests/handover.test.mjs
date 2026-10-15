@@ -1,7 +1,7 @@
 // Run: node --test tests/handover.test.mjs
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { countDone, decide, findAm, findOrchestrator, handedRun, installedPaths, readPlan, withinOneRun } from '../plugin/hooks/handover.mjs';
@@ -211,6 +211,25 @@ test('a plan without a scale line is denied once', () => {
   hook(env, 'Read', path.join(env.repo, '.am', 'p', 'plan.md'));
   assert.match(hook(env, 'Edit', path.join(env.repo, 'a.js')), /\.am\/p\/plan\.md \(the plan this session read\) has no Scale line/);
   assert.equal(hook(env, 'Edit', path.join(env.repo, 'a.js')), null);
+});
+
+test('a deny stays a deny when the session state cannot be saved', () => {
+  // (a) a file where the state folder should be; (b) a folder where the state file should be.
+  for (const block of [(dir) => writeFileSync(dir, ''), (dir) => mkdirSync(path.join(dir, 's1.json'), { recursive: true })]) {
+    const env = setup();
+    block(env.stateDir);
+    plan(env.repo, 'big', LARGE);
+    assert.equal(hook(env, 'Read', path.join(env.repo, '.am', 'big', 'plan.md')), null);
+    assert.match(hook(env, 'Edit', path.join(env.repo, 'src', 'a.js')), /implementation runs/);
+    assert.match(hook(env, 'Edit', path.join(env.repo, 'src', 'a.js')), /implementation runs/);
+    if (statSync(env.stateDir).isDirectory()) assert.deepEqual(readdirSync(env.stateDir), ['s1.json']);
+  }
+  // A plan without a scale line is still denied on the first edit.
+  const env = setup();
+  mkdirSync(path.join(env.stateDir, 's1.json'), { recursive: true });
+  plan(env.repo, 'p', '# t\n## 단계\n1. a\n');
+  hook(env, 'Read', path.join(env.repo, '.am', 'p', 'plan.md'));
+  assert.match(hook(env, 'Edit', path.join(env.repo, 'a.js')), /has no Scale line/);
 });
 
 test('judges the session\'s own plan, not a newer one, and ranks created over edited over read', () => {

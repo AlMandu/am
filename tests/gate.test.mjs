@@ -418,6 +418,28 @@ test('hook.mjs still runs the gate when the user files module cannot load', () =
   rmSync(repo, { recursive: true, force: true });
 });
 
+test('hook.mjs ends with the crash notice and exit 0 when gate.mjs cannot load', () => {
+  const repo = makeRepo();
+  for (const gate of [null, 'export const = ;\n']) {
+    const temp = mkdtempSync(path.join(tmpdir(), 'am-hook-copy-'));
+    const config = path.join(temp, 'config');
+    mkdirSync(config);
+    mkdirSync(path.join(temp, 'hooks'));
+    copyFileSync(HOOK, path.join(temp, 'hooks', 'hook.mjs'));
+    if (gate !== null) writeFileSync(path.join(temp, 'hooks', 'gate.mjs'), gate);
+    const r = runHook(path.join(temp, 'hooks', 'hook.mjs'), config, payload(repo, 'git commit -m x'));
+    assert.equal(r.status, 0);
+    assert.ok(r.stdout.endsWith('\n'));
+    assert.equal(r.stdout.trim().split('\n').length, 1);
+    const out = JSON.parse(r.stdout);
+    assert.ok(out.systemMessage.startsWith('am gate: hook crashed ('), out.systemMessage);
+    assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(out.hookSpecificOutput.permissionDecision, undefined);
+    rmSync(temp, { recursive: true, force: true });
+  }
+  rmSync(repo, { recursive: true, force: true });
+});
+
 // ------------------------------------------------------------- interrupt
 
 const GATE = fileURLToPath(new URL('../plugin/hooks/gate.mjs', import.meta.url));
