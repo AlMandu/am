@@ -15,7 +15,7 @@
 // `plugin list --json` 은 FAKE_PLUGIN_LIST 를 그대로 출력하고(없으면 모르는 명령으로 실패), 호출 기록에 남기지 않는다.
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -41,7 +41,10 @@ const counterFile = path.join(stateDir, 'fake-counters.json');
 const counters = existsSync(counterFile) ? JSON.parse(readFileSync(counterFile, 'utf8')) : {};
 const nth = (key) => {
   counters[key] = (counters[key] || 0) + 1;
-  writeFileSync(counterFile, JSON.stringify(counters));
+  // 함께 도는 가짜 세션이 쓰는 도중의 빈 파일을 읽지 않도록 임시 파일에 쓰고 이름을 바꾼다
+  const tmp = `${counterFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(counters));
+  renameSync(tmp, counterFile);
   return counters[key];
 };
 /** 시나리오에 적힌 결과를 호출 순서대로 꺼낸다. 다 쓰면 마지막 값을 계속 쓴다. */

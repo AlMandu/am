@@ -221,8 +221,11 @@ function gitCommit(args, dir) {
   return null;
 }
 
-/** Every `git commit` in a command line, with the directory it runs in. */
-export function findCommits(command, baseDir, depth = 0) {
+/**
+ * Every `git commit` in a command line, with the directory it runs in.
+ * `shell` is the binary name of the shell running `command`; only 'cmd' drops `/d` from cd / chdir.
+ */
+export function findCommits(command, baseDir, depth = 0, shell) {
   const found = [];
   if (typeof command !== 'string' || command.trim() === '' || depth > 3) return found;
   let dir = baseDir;
@@ -233,7 +236,8 @@ export function findCommits(command, baseDir, depth = 0) {
     const head = words[0].toLowerCase();
     const bin = binName(words[0]);
     if (CD_WORDS.has(head)) {
-      const target = cdTarget(words.slice(1));
+      const args = words.slice(1);
+      const target = cdTarget(shell === 'cmd' && (head === 'cd' || head === 'chdir') ? args.filter((a) => !/^\/d$/i.test(a)) : args);
       if (target === null) unresolved = true;
       else dir = resolveDir(dir, target);
     } else if (UNRESOLVED_DIR_WORDS.has(head)) {
@@ -241,7 +245,7 @@ export function findCommits(command, baseDir, depth = 0) {
     } else if (SHELL_BINS.has(bin)) {
       const inner = innerScript(bin, words.slice(1));
       if (inner) {
-        for (const c of findCommits(inner, dir, depth + 1)) found.push({ dir: c.dir, unresolved: unresolved || c.unresolved });
+        for (const c of findCommits(inner, dir, depth + 1, bin)) found.push({ dir: c.dir, unresolved: unresolved || c.unresolved });
       }
     } else if (bin === 'git') {
       const c = gitCommit(words.slice(1), dir);
@@ -262,6 +266,13 @@ export function commandText(toolInput) {
     if (inner) return inner;
   }
   return c.map((x) => (/\s/.test(String(x)) ? `"${x}"` : String(x))).join(' ');
+}
+
+/** Shell that runs the text commandText returns for Codex argv, or undefined. */
+function argvShell(c) {
+  if (!Array.isArray(c) || c.length === 0) return undefined;
+  const bin = binName(String(c[0]));
+  return SHELL_BINS.has(bin) && innerScript(bin, c.slice(1).map(String)) ? bin : undefined;
 }
 
 // ------------------------------------------------------------------ config
@@ -496,7 +507,7 @@ export async function decide(raw, { env = process.env, budgetMs = HOOK_BUDGET_MS
   const input = payload.tool_input || {};
   const cwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
   const base = typeof input.workdir === 'string' && input.workdir ? resolveDir(cwd, input.workdir) : cwd;
-  const commits = findCommits(commandText(input), base);
+  const commits = findCommits(commandText(input), base, 0, argvShell(input.command));
   if (commits.length === 0) return { stdout: '' };
 
   const notes = [];

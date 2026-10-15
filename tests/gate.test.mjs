@@ -117,6 +117,23 @@ test('resolves the folder the commit runs in', () => {
   assert.equal(dynamic.dir, BASE);
 });
 
+test('cmd cd /d changes to the folder after /d', () => {
+  assert.equal(findCommits('cmd /c "cd /d repo && git commit -m x"', BASE)[0].dir, path.resolve(BASE, 'repo'));
+  assert.equal(findCommits('cmd /c "CD /D repo && git commit -m x"', BASE)[0].dir, path.resolve(BASE, 'repo'));
+  assert.equal(findCommits('cmd /c "chdir /d repo && git commit -m x"', BASE)[0].dir, path.resolve(BASE, 'repo'));
+  const bare = findCommits('cmd /c "cd /d && git commit -m x"', BASE)[0];
+  assert.equal(bare.dir, BASE);
+  assert.equal(bare.unresolved, true);
+});
+
+test('cd /d keeps its meaning outside cmd', () => {
+  const slashD = process.platform === 'win32' ? path.resolve('d:/') : path.resolve(BASE, '/d');
+  for (const cmd of ['bash -c "cd /d && git commit -m x"', 'pwsh -Command "cd /d -PassThru; git commit -m x"', 'cd /d; git commit -m x']) {
+    assert.equal(findCommits(cmd, BASE)[0].dir, slashD, cmd);
+  }
+  assert.equal(commandText({ command: ['cmd', '/c', 'cd /d repo && git commit -m x'] }), 'cd /d repo && git commit -m x');
+});
+
 test('reads Codex-style argv tool input', () => {
   assert.equal(commandText({ command: ['bash', '-lc', 'git commit -m x'] }), 'git commit -m x');
   assert.equal(commandText({ command: 'git status' }), 'git status');
@@ -173,6 +190,17 @@ test('failing gate denies the commit with a bounded reason', async () => {
     assert.match(reason, /compile error CS0246/);
     assert.match(reason, /do not fix them; tell the user/);
     assert.doesNotMatch(reason, /AM_GATE/);
+  }
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('a commit after cmd cd /d is checked in that folder (argv and string)', async () => {
+  const repo = makeRepo({ commands: [{ name: 'build', run: FAIL }] });
+  const name = path.basename(repo);
+  for (const command of [['cmd', '/c', `cd /d ${name} && git commit -m x`], `cmd /c "cd /d ${name} && git commit -m x"`]) {
+    const r = await decide(payload(path.dirname(repo), command));
+    assert.notEqual(r.stdout, '', JSON.stringify(command));
+    assert.ok(denialReason(r).includes(repo), JSON.stringify(command));
   }
   rmSync(repo, { recursive: true, force: true });
 });
