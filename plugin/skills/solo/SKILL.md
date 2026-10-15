@@ -1,6 +1,6 @@
 ---
 name: solo
-description: "am:auto 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 새 세션을 띄우는 대신 한 세션을 단계 사이에 압축하며 이어 쓰고, 큰 작업도 am-orchestrator 에 넘기지 않고 부분으로 나눠 그 세션에서 차례로 돕니다. 압축은 Claude Code 에서만 합니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
+description: "am:auto 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰되 맥락 사용량이 20% 이상일 때만 단계 사이에 압축하고, 압축으로도 부족하면 임시 맥락 파일을 남기고 새 세션으로 시작하며, 큰 작업도 am-orchestrator 에 넘기지 않고 부분으로 나눠 그 세션에서 차례로 돕니다. 압축은 Claude Code 에서만 합니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 model: opus
@@ -40,7 +40,7 @@ Request: $ARGUMENTS
 Read `${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md` (if the placeholder was not replaced, `skills/auto/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it. If it cannot be read, change no file and stop. These differences override that file:
 - Never look for, read or run the am-orchestrator run skill: skip the `claude plugin list --json` part of step 2, never hand over in step 4 (if the plan's Change log already has a `Hand-over:` line, stop and tell the user to continue with the am:auto skill), and ignore `HANDED`, every rule about the run skill or its hook, and step 7's hand-over items.
 - Add `--solo` to every `stage.mjs` command of this task (`--solo=<slug>` for a part, below), next to `--push` and `--fix`, also when a stage runs again after `WAIT` or `NEEDS_DECISION` and when you resume.
-- Read "a fresh session" for each stage as: the stages continue one session, and the runner compacts it between stages (unless its result says it started a new one). "Run this skill again" means the am:solo skill.
+- Read "a fresh session" for each stage as: the stages continue one session; between stages the runner compacts it when it fills 20 percent or more of the context window, and starts the stage in a new session when compacting is not enough (its result then says why). "Run this skill again" means the am:solo skill.
 - If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
 - After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (in stage sessions: the do, check and commit stages) with Parts (below).
 

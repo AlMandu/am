@@ -15,7 +15,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 이 네 단계를 한 번에 맡기려면 `am:auto` 를 씁니다. 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 가고, 대신 정한 것은 마지막 답에서 알려 줍니다.
 
-`am:solo` 도 같은 일을 하되, Claude Code 에서 단계마다 새 세션을 띄우는 대신 한 세션을 단계 사이에 압축하며 이어 쓰고, 큰 작업도 오케스트레이터에 넘기지 않고 부분으로 나눠 차례로 돕니다.
+`am:solo` 도 같은 일을 하되, Claude Code 에서 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰며(맥락 사용량이 20% 이상일 때만 단계 사이에 압축하고, 압축으로도 부족하면 새 세션으로 시작), 큰 작업도 오케스트레이터에 넘기지 않고 부분으로 나눠 차례로 돕니다.
 
 그 밖의 명령 하나는 필요할 때만 씁니다.
 
@@ -261,7 +261,8 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 네 단계를 각각 새 `c
 `am:solo` 는 실행할 때 `am:auto` 의 규칙을 읽어 그대로 따르고, 다음만 다릅니다.
 
 - 오케스트레이터를 찾지도 쓰지도 않고, `am:auto` 의 넘김 훅도 붙지 않습니다. 이미 오케스트레이터에 넘긴 계획(계획 Change log 칸의 넘김 줄)이면 멈추고 `am:auto` 로 이어 가라고 알립니다.
-- Claude Code 에서는 단계 명령마다 `--solo` 를 붙여, 네 단계가 새 세션 대신 한 세션을 이어 씁니다. 단계 사이에는 그 세션의 대화를 압축(`/compact`)하므로 앞 단계의 맥락을 잃지 않으면서 대화가 맥락 한도를 넘지 않습니다. 이어 쓰는 세션은 `.am/<slug>/solo-session.json` 에 기록됩니다.
+- Claude Code 에서는 단계 명령마다 `--solo` 를 붙여, 네 단계가 새 세션 대신 한 세션을 이어 씁니다. 단계 사이에는 먼저 그 세션이 맥락 창의 몇 %를 쓰는지 Claude Code 의 `/context` 로 재고(단계가 돌 모델로, 모델 호출 없음), 20% 미만이면 그대로 이어 쓰고, 20% 이상이거나 읽지 못하면 대화를 압축(`/compact`)합니다. 그래서 대화가 작을 때는 압축 없이 앞 단계의 대화가 그대로 남고, 커지면 맥락 한도를 넘지 않게 줄입니다. 이어 쓰는 세션은 `.am/<slug>/solo-session.json` 에 기록됩니다.
+- 압축한 뒤에도 20% 이상이면, 그 세션이 다음 세션에 필요한 맥락을 임시 맥락 파일 `.am/<slug>/solo-clear-context.md` 에 쓰게 한 뒤 단계를 새 세션으로 시작합니다. 새 세션에는 "이어 가기 어려우면 그 파일을 참조하라"는 규칙이 붙습니다(파일을 쓰지 못했으면 아래 기억 파일을 가리킴). 이 파일은 다음에 같은 일이 생길 때 덮어쓰고, `.am/` 아래라 커밋되지 않습니다.
 - 압축은 Claude Code 에서만 합니다. Codex 와, 세션을 띄울 수 없는 PC 에서는 `am:auto` 처럼 원래 대화 한 세션으로 진행하고 압축은 없습니다.
 - 압축 호출의 모델·effort 는 아래 사용자 설정 파일의 `compact` 키를 따릅니다(값은 "모델과 effort 기본값" 표).
 - 기억 파일: 단계마다 끝 답 직전에 그 세션의 기억(결정과 이유, 남은 문제, 작업 파일에 없는 내용)을 `.am/<slug>/solo-context.md` 에 덮어씁니다. 기록된 세션이 없거나, 압축이 실패하거나, 이어 연 단계가 오류로 끝나 새 세션으로 바뀌면 그 새 세션이 이 파일을 먼저 읽고 이어 갑니다. 이 파일은 지우지 않고, `.am/` 아래라 커밋되지 않습니다.
@@ -275,8 +276,8 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 네 단계를 각각 새 `c
 
 #### 진행 소식과 마지막 답
 
-- `am:auto` 의 진행 소식에 더해 다음 줄이 나옵니다: `conversation compacted before the <단계> stage of <slug>`(단계 사이 압축), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
-- 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유와 저장된 기억을 받았는지가 나옵니다.
+- `am:auto` 의 진행 소식에 더해 다음 줄이 나옵니다: `solo: context N% of the window; continued without compaction`(사용량이 20% 미만이라 압축 없이 이어 감), `solo: context N% of the window; compacting` 또는 `solo: context use could not be read (…); compacting`(압축 시작), `conversation compacted before the <단계> stage of <slug>`(단계 사이 압축), `solo: context N% of the window after compaction`(압축 뒤 사용량), `solo: context still N% of the window after compaction; started a new session that may read .am/<slug>/solo-clear-context.md`(압축으로 부족해 새 세션으로 시작), `solo: the context could not be saved before the clear (…)`(임시 맥락 파일을 쓰지 못함), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
+- 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유(압축으로 부족했으면 `context N% of the window after compaction`)와 저장된 맥락 파일을 받았는지가 나옵니다.
 - 중간에 멈추면 원인을 고치거나 질문에 답한 뒤 `am:solo <slug>` 로 이어 갑니다.
 
 ## 왜 이렇게 만들었나

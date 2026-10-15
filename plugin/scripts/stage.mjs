@@ -43,15 +43,20 @@
 // A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
 // plan only its one part when it is a part. A solo stage continues the session named in .am/<owner>/solo-session.json with
 // --resume (its rules file and permissions as usual). Unless the record is a NEEDS_DECISION end of this same stage of this
-// slug, a /compact call first shortens that conversation (the compaction model, the compaction session's environment and
-// time limit, no tool); the stage continues the session ID it returns (strict form, else the recorded one), recorded at
-// once. With no record, an unreadable one, a failed compaction, or a continued call that ends with an error other than a
+// slug, a /context call (the stage's model, the compaction session's environment and time limit, no tool) first measures
+// how much of the context window that conversation fills. Below SOLO_CONTEXT_LIMIT (20) percent the stage continues it as
+// it is; at or above it, or when the use cannot be read, a /compact call shortens it (the compaction model, no tool) and
+// the stage continues the session ID it returns (strict form, else the one before), recorded at once. A second /context
+// call then measures it again: still at or above the limit, the session first saves .am/<owner>/solo-clear-context.md (a
+// call that may write that file only) and the stage starts in a new session (a clear) whose rules say to read that file,
+// or solo-context.md when it was not saved, if it has difficulty going on; the cleared conversation's cost is added. Every
+// measurement is a note. With no record, an unreadable one, a failed compaction, or a continued call that ends with an error other than a
 // time-out, it runs once in a new session and writes a note. When the stage has a session ID, it rewrites the record with
 // it and the end status. Every solo stage is told to rewrite .am/<owner>/solo-context.md, the shared session's memory, before
-// its final reply; a stage that starts in a new session while that file exists gets a rules file that tells it to read the
+// its final reply; a stage that starts in a new session (not a clear) while that file exists gets a rules file that tells it to read the
 // file first, and a note. The result's `solo` is {owner, sessionId, compacted, fresh, context}: `fresh` says why a new session was
 // started (null when the recorded one went on); `compacted` says the conversation was compacted before the stage;
-// `context` says the new session was told to read the saved memory.
+// `context` says the new session was told about a saved memory file.
 // A part waits for its owner only while an owner stage runs, not in the owner's gap between stages, and waits for other
 // tasks with the owner's place in line when that is earlier than its own.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
@@ -269,7 +274,7 @@ const ONE_COMMAND = '- Run each shell command as its own call: one command per c
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
 /** The unattended rules of am:auto's "Running without stops" section, written for one stage session. */
-const unattended = (slug, stage, push, solo = false) => `${solo ? 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; the runner compacts the conversation between stages.' : 'You are one stage of the am:auto skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
+const unattended = (slug, stage, push, solo = false) => `${solo ? 'You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner compacts the conversation when it fills 20 percent or more of the context window, and continues in a new session when compacting is not enough.' : 'You are one stage of the am:auto skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
 - Running ${solo ? 'am:solo' : 'am:auto'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
 - A question about what the user sees or what is in scope: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, through its second opinion; never wait for the user on them, except a choice its two reviewers still split on after their rounds.
 - A decision under Decisions that is marked as the user's answer is final; apply it.
@@ -289,6 +294,8 @@ const soloPlanRule = (slug, solo) => !solo ? '' : solo.owner === slug
 // that starts in a new session while that file exists is told to read it.
 const soloSaveRule = (owner) => `\n- Before your final reply, also when you stop, rewrite .am/${owner}/${SOLO_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the memory of this task's shared session that a stage starting in a new session would need: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Point to plan.md, check.md and handoff.md instead of copying them. The am stage runner gives this file to a stage that has to start in a new session.`;
 const soloReadRule = (owner) => `\n- This stage starts in a new session: the shared session of this am:solo task could not be continued. Before anything else, read .am/${owner}/${SOLO_CONTEXT}, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.`;
+// A stage started in a new session because the shared one stayed too full after compaction may read the file saved before it.
+const soloClearRule = (owner, file) => `\n- This stage starts in a new session: the runner cleared the shared session of this am:solo task because it still filled 20 percent or more of the context window after compaction. If you have difficulty continuing the work right after this (why a decision was made, what an earlier stage did or left open), read .am/${owner}/${file}, the context saved right before the clear. Where it differs from the task files or a recorded user answer, those win.`;
 
 const STAGE_RULES = {
   plan: (slug, { solo } = {}) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
@@ -342,13 +349,13 @@ export function skillCall(stage, slug, { push = false, resume = false } = {}) {
 }
 
 /** The prompt and appended system prompt of one session, with the plugin and skill it calls and that skill's arguments. */
-export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null, solo = null, soloRead = false } = {}) {
+export function instructions(stage, slug, { push = false, fix = false, resume = false, unquoted = false, compacted = null, solo = null, soloRead = false, soloClear = null } = {}) {
   const { plugin, skill, args } = skillCall(stage, slug, { push, resume });
   const prompt = `/${plugin}:${skill}${args ? ` ${args}` : ''}`;
   // cmd.exe cannot pass a quoted allow rule (see exec), so such a session must run node scripts with the path unquoted.
   const note = unquoted && [...CODEX_STAGES, 'handover'].includes(stage) ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
-  const memory = solo ? `${soloSaveRule(solo.owner)}${soloRead ? soloReadRule(solo.owner) : ''}` : '';
+  const memory = solo ? `${soloSaveRule(solo.owner)}${soloRead ? soloReadRule(solo.owner) : ''}${soloClear ? soloClearRule(solo.owner, soloClear) : ''}` : '';
   return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push, Boolean(solo))}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, solo })}\n${ONE_COMMAND}${note}${shortened}${memory}\n` };
 }
 
@@ -963,6 +970,34 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export const SOLO_COMPACT_PROMPT = '/compact Keep what the next stage of this am:solo task needs: the slugs, the parts and stages done and their end lines, the decisions made and why, open issues. The task files under .am/ hold the details.';
 // That call only runs /compact: no tool.
 const SOLO_COMPACT_PERM = { mode: 'dontAsk', allow: [], deny: ['AskUserQuestion'] };
+// Between stages a solo session is compacted only when it fills SOLO_CONTEXT_LIMIT percent or more of the context window,
+// read with Claude Code's /context command (a local command, no model turn), run on the stage's model so that its window counts.
+export const SOLO_CONTEXT_LIMIT = 20;
+export const SOLO_CONTEXT_PROMPT = '/context';
+// What a session still that full after compaction saves right before the stage starts in a new session (a clear), under
+// .am/<owner>/; rewritten at the next clear, never removed.
+export const SOLO_CLEAR_CONTEXT = 'solo-clear-context.md';
+
+/**
+ * The share of the context window in use (0-100), read from the result text of /context, or null when it cannot be read.
+ * Assumed form (Claude Code 2.1): a line `**Tokens:** 24.5k / 1m (2%)`. The percent in parentheses wins; without it,
+ * used / total with optional k or m suffixes. Bold marks, commas and spaces are ignored.
+ */
+export function contextPercent(text) {
+  // The suffix stays on the number's line and ends the word, so a later line never lends its first letter.
+  const num = '(\\d+(?:\\.\\d+)?)[ \\t]*([km]?)(?![a-z])';
+  const m = String(text ?? '').replace(/\*/g, '').replace(/,/g, '').match(new RegExp(`Tokens\\s*:?\\s*${num}\\s*/\\s*${num}(?:\\s*\\(\\s*(\\d+(?:\\.\\d+)?)\\s*%\\s*\\))?`, 'i'));
+  if (!m) return null;
+  if (m[5] !== undefined) return Number(m[5]);
+  const tokens = (v, unit) => Number(v) * ({ k: 1e3, m: 1e6 }[unit.toLowerCase()] ?? 1);
+  const total = tokens(m[3], m[4]);
+  return total > 0 ? (tokens(m[1], m[2]) / total) * 100 : null;
+}
+
+/** The prompt of the call that saves the clear file in the compacted session. No quote and no `%` (cmdExeArgs). */
+export const soloClearSavePrompt = (owner) => `This am:solo session is about to be cleared: it still fills 20 percent or more of the context window after compaction, so the next stage starts in a new session. Save now what that session would need: rewrite .am/${owner}/${SOLO_CLEAR_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Add one line saying that .am/${owner}/${SOLO_CONTEXT} holds the memory saved at the end of the last stage, and point to plan.md, check.md and handoff.md instead of copying them. Write no other file. Then reply with one line.`;
+/** That call may write the clear file only. */
+export const soloClearPerm = (owner) => ({ mode: 'dontAsk', allow: [`Edit(/.am/${owner}/${SOLO_CLEAR_CONTEXT})`, `Edit(.am/${owner}/${SOLO_CLEAR_CONTEXT})`], deny: ['AskUserQuestion'] });
 
 /** The owner's session record, or null when it is missing, broken or names no usable session ID. */
 export function readSoloSession(cwd, owner) {
@@ -1334,6 +1369,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const systemRel = `.am/${slug}/stage-${kind}.system.md`;
   writeFileSync(path.join(cwd, systemRel), inst.system);
   const timeoutMs = limits[kind] * 60000;
+  let dropped = 0; // the cost of a solo session cleared before the stage: the new session does not report it
 
   const call = async (args) => {
     // A hand-over's orchestrator worker is stopped before the cleanup, which leaves it and its descendants alone.
@@ -1345,7 +1381,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     const r = await exec(bin, [...pre, ...args], { cwd, env: sessionEnv(kind, env, process.pid), timeoutMs, track, beforeCleanup });
     report(kind, r.cleaned);
     const parsed = parseResult(r.stdout);
-    if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + parsed.total_cost_usd; // a resumed session reports the whole conversation
+    if (parsed && Number.isFinite(parsed.total_cost_usd)) result.costUsd = compaction.costUsd + dropped + parsed.total_cost_usd; // a resumed session reports the whole conversation
     if (parsed?.session_id) result.sessionId = parsed.session_id;
     for (const d of Array.isArray(parsed?.permission_denials) ? parsed.permission_denials : []) {
       const input = (d && d.tool_input) || {};
@@ -1385,6 +1421,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const firstLine = (s) => String(s || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 200);
   // A solo stage continues the session its owner's record names; without a usable one it starts a new session.
   let sessionResume = null;
+  let cleared = false; // a stage started in a new session because compaction left the shared one too full
   if (solo) {
     const rec = readSoloSession(cwd, solo.owner);
     let fresh = null;
@@ -1393,29 +1430,91 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       event({ ev: 'note', text: 'solo: no recorded session; started a new one' });
     }
     result.solo = { owner: solo.owner, sessionId: null, compacted: false, fresh, context: false };
-    // Only the same stage of the same task after a question goes straight on; any other stage compacts the conversation first.
+    // Only the same stage of the same task after a question goes straight on; any other stage first measures the context use
+    // and compacts the conversation when it fills SOLO_CONTEXT_LIMIT percent or more of the window (or cannot be read).
     if (rec && rec.slug === slug && rec.stage === kind && rec.status === 'NEEDS_DECISION') sessionResume = rec.sessionId;
     else if (rec) {
-      if (modelNote) event({ ev: 'note', text: modelNote });
-      writeMcpConfig(cwd, mcpConfig);
-      const cr = await exec(bin, [...pre, ...claudeArgs(SOLO_COMPACT_PERM, { prompt: SOLO_COMPACT_PROMPT, resume: rec.sessionId, pluginDir, model: compactModel, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
-      report('compact', cr.cleaned);
-      if (cr.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${cr.spawnError}` });
-      // Its cost is not added: the continued stage call reports the whole conversation.
-      const parsed = parseResult(cr.stdout);
-      const failed = problem({ r: cr, parsed }, limits.compact);
-      if (failed) {
-        const cause = firstLine(`compaction: ${failed}`);
-        event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
-        result.solo.fresh = cause;
-      } else {
-        const id = typeof parsed.session_id === 'string' && SESSION_ID.test(parsed.session_id) ? parsed.session_id : rec.sessionId;
-        sessionResume = id;
-        result.solo.compacted = true;
-        event({ ev: 'note', text: `conversation compacted before the ${kind} stage of ${slug}` });
-        // Recorded at once, so a stage that ends without a session ID never sends the next one back to the uncompacted conversation.
+      // Recorded at once, so a stage that ends without a session ID never sends the next one back to an older conversation.
+      const record = (id) => {
         const err = writeSoloSession(cwd, solo.owner, { sessionId: id, slug, stage: kind, status: 'failed', t: new Date(now()).toISOString() });
         if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
+      };
+      // One call that continues the session `id` before the stage, with the compaction session's environment and time limit.
+      // Its cost is not added: the continued stage call reports the whole conversation.
+      const side = async (p, id, { permission = SOLO_COMPACT_PERM, model = compactModel, who = 'compact' } = {}) => {
+        writeMcpConfig(cwd, mcpConfig);
+        const r = await exec(bin, [...pre, ...claudeArgs(permission, { prompt: p, resume: id, pluginDir, model, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
+        report(who, r.cleaned);
+        const parsed = parseResult(r.stdout);
+        const failed = r.spawnError ? null : problem({ r, parsed }, limits.compact);
+        return { r, parsed, failed, id: parsed && !failed && typeof parsed.session_id === 'string' && SESSION_ID.test(parsed.session_id) ? parsed.session_id : id };
+      };
+      const unavailable = (x) => done({ status: 'unavailable', reason: `could not start ${bin}: ${x.r.spawnError}` });
+      // Measured on the stage's model, so that the window is the one the stage runs in; with no readable model, claude's default.
+      const builtin = stageModel ? null : skillDefaults(skillRoot, sc.skill);
+      const measureModel = stageModel ?? (builtin.error ? null : builtin);
+      const measure = async (id) => {
+        const x = await side(SOLO_CONTEXT_PROMPT, id, { model: measureModel, who: 'context' });
+        const percent = x.r.spawnError || x.failed ? null : contextPercent(x.parsed.result);
+        return { ...x, percent, why: x.failed ? firstLine(x.failed) : 'no token count in its output' };
+      };
+      const pct = (p) => `${Math.round(p * 10) / 10}%`;
+      const first = await measure(rec.sessionId);
+      if (first.r.spawnError) return unavailable(first);
+      if (first.percent !== null && first.percent < SOLO_CONTEXT_LIMIT) {
+        event({ ev: 'note', text: `solo: context ${pct(first.percent)} of the window; continued without compaction` });
+        sessionResume = first.id;
+        if (first.id !== rec.sessionId) record(first.id);
+      } else {
+        event({ ev: 'note', text: first.percent === null ? `solo: context use could not be read (${first.why}); compacting` : `solo: context ${pct(first.percent)} of the window; compacting` });
+        if (modelNote) event({ ev: 'note', text: modelNote });
+        const cr = await side(SOLO_COMPACT_PROMPT, first.id);
+        if (cr.r.spawnError) return unavailable(cr);
+        if (cr.failed) {
+          const cause = firstLine(`compaction: ${cr.failed}`);
+          event({ ev: 'note', text: `solo: could not continue the recorded session (${cause}); started a new session` });
+          result.solo.fresh = cause;
+        } else {
+          sessionResume = cr.id;
+          result.solo.compacted = true;
+          event({ ev: 'note', text: `conversation compacted before the ${kind} stage of ${slug}` });
+          record(cr.id);
+          const after = await measure(cr.id);
+          if (after.r.spawnError) return unavailable(after);
+          if (after.percent === null || after.percent < SOLO_CONTEXT_LIMIT) {
+            event({ ev: 'note', text: after.percent === null ? `solo: context use after compaction could not be read (${after.why}); continued the compacted session` : `solo: context ${pct(after.percent)} of the window after compaction` });
+            if (after.id !== cr.id) {
+              sessionResume = after.id;
+              record(after.id);
+            }
+          } else {
+            // Compaction was not enough: the session saves what the next one may need, and the stage starts in a new session.
+            const clearRel = `.am/${solo.owner}/${SOLO_CLEAR_CONTEXT}`;
+            rmSync(path.join(cwd, clearRel), { force: true });
+            const sv = await side(soloClearSavePrompt(solo.owner), after.id, { permission: soloClearPerm(solo.owner) });
+            if (sv.r.spawnError) return unavailable(sv);
+            let saved = false;
+            try {
+              saved = readFileSync(path.join(cwd, clearRel), 'utf8').trim() !== '';
+            } catch {
+              // Not written.
+            }
+            const file = saved ? SOLO_CLEAR_CONTEXT : existsSync(path.join(cwd, '.am', solo.owner, SOLO_CONTEXT)) ? SOLO_CONTEXT : null;
+            // The cleared conversation's cost, as its last call reported it.
+            const cost = (x) => (x.parsed && Number.isFinite(x.parsed.total_cost_usd) ? x.parsed.total_cost_usd : null);
+            dropped = cost(sv) ?? cost(cr) ?? 0;
+            result.costUsd += dropped;
+            sessionResume = null;
+            cleared = true;
+            result.solo.fresh = `context ${pct(after.percent)} of the window after compaction`;
+            event({ ev: 'note', text: `solo: context still ${pct(after.percent)} of the window after compaction; started a new session${file ? ` that may read .am/${solo.owner}/${file}` : ''}` });
+            if (!saved) event({ ev: 'note', text: `solo: the context could not be saved before the clear (${sv.failed ? firstLine(sv.failed) : `${clearRel} was not written`})` });
+            if (file) {
+              writeFileSync(path.join(cwd, systemRel), instructions(kind, slug, { ...instOpts, soloClear: file }).system);
+              result.solo.context = true;
+            }
+          }
+        }
       }
     }
   }
@@ -1427,7 +1526,7 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     event({ ev: 'note', text: `solo: the new session reads ${rel}` });
     result.solo.context = true;
   };
-  if (solo && !sessionResume) giveContext();
+  if (solo && !sessionResume && !cleared) giveContext();
   const firstArgs = (resume) => claudeArgs(perm, { prompt, systemFile: systemRel, resume, pluginDir, model: stageModel, mcpConfig });
   let { r, parsed } = await call(firstArgs(sessionResume));
   if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
