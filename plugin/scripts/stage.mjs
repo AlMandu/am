@@ -434,9 +434,10 @@ export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' }
   if (stage === 'commit') swaps.push(
     ['The am:auto run asks for this commit', 'The am:lean run asks for this commit'],
     ['leave it out of the commit and name it in your reply.', `leave it out of the commit and name it in ${reply}.`],
-    ['those are the only files this session can write.', `those and ${reply} are the only files this stage can write.`],
+    ['those are the only files this session can write.', `those, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write.`],
     ['copy what it printed into your reply.', `copy what it printed into ${reply}.`],
     ['say why, and end with AM_STAGE: BLOCKED.', 'say why, and end with the status BLOCKED.'],
+    ['; use several -m flags for several paragraphs.', `; write the commit message to .am/${slug}/commit-message.txt with the Write tool and commit with \`git commit -F .am/${slug}/commit-message.txt\` (the am stage hook refuses shell characters such as parentheses in a -m message).`],
   );
   return { swaps, status };
 }

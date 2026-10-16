@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findCommits, commandText, decide, runGate, programExists, findOnPath, STATUS, MAX_REASON_CHARS } from '../plugin/hooks/gate.mjs';
+import { findCommits, commandText, decide, runGate, programExists, findOnPath, shellCommands, gitSubcommand, programName, binName, STATUS, MAX_REASON_CHARS } from '../plugin/hooks/gate.mjs';
 import { modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
 
 const BASE = path.resolve(tmpdir(), 'am-gate-base');
@@ -170,6 +170,36 @@ test('reads Codex-style argv tool input', () => {
   assert.equal(commandText({ command: ['bash', '-lc', 'git commit -m x'] }), 'git commit -m x');
   assert.equal(commandText({ command: 'git status' }), 'git status');
   assert.equal(commandText({}), '');
+});
+
+// ------------------------------------------------------------- shell walker
+
+test('shellCommands lists every simple command, nested shells read again with their rules', () => {
+  assert.deepEqual(shellCommands('env A=1 git reset --hard && npm test | tee x', undefined), { commands: [['git', 'reset', '--hard'], ['npm', 'test'], ['tee', 'x']], tooDeep: false });
+  assert.deepEqual(shellCommands('bash -c "git push origin"', undefined).commands, [['bash', '-c', 'git push origin'], ['git', 'push', 'origin']]);
+  assert.deepEqual(shellCommands('cmd.exe /c git commit -m x').commands.at(-1), ['git', 'commit', '-m', 'x']);
+  assert.deepEqual(shellCommands('g\\it push', 'bash').commands, [['git', 'push']]);
+  assert.deepEqual(shellCommands('g\\it push').commands, [['g\\it', 'push']]);
+  assert.deepEqual(shellCommands('', 'bash'), { commands: [], tooDeep: false });
+  const quote = (c) => `"${c.replace(/[\\"]/g, (m) => `\\${m}`)}"`;
+  const nest = (n) => {
+    let c = 'ls';
+    for (let i = 0; i < n; i++) c = `bash -c ${quote(c)}`;
+    return c;
+  };
+  assert.equal(shellCommands(nest(3), 'bash').tooDeep, false);
+  assert.deepEqual(shellCommands(nest(3), 'bash').commands.at(-1), ['ls']);
+  assert.equal(shellCommands(nest(4), 'bash').tooDeep, true);
+});
+
+test('gitSubcommand skips global options; programName drops Windows endings', () => {
+  assert.deepEqual(gitSubcommand(['-C', 'd', '-c', 'a=b', '--git-dir=x', '--work-tree', 'y', '--no-pager', 'checkout', 'main']), { sub: 'checkout', rest: ['main'], dynamic: false });
+  assert.deepEqual(gitSubcommand(['$SUB', 'x']), { sub: '$SUB', rest: ['x'], dynamic: true });
+  assert.deepEqual(gitSubcommand(['--version']), { sub: undefined, rest: [], dynamic: false });
+  assert.equal(programName('C:\\Tools\\Codex.exe'), 'codex');
+  assert.equal(programName('/usr/local/bin/claude.cmd'), 'claude');
+  assert.equal(programName('run.ps1'), 'run');
+  assert.equal(binName('claude.cmd'), 'claude.cmd');
 });
 
 // ------------------------------------------------------------- gate runs
@@ -555,6 +585,91 @@ test('hook.mjs ends with the crash notice and exit 0 when gate.mjs cannot load',
   rmSync(repo, { recursive: true, force: true });
 });
 
+// ------------------------------------------------------------- hook.mjs and the stage guard
+
+// A copy of hook.mjs and gate.mjs with the given stage-guard.mjs text (null: none).
+function hookCopy(guard) {
+  const temp = mkdtempSync(path.join(tmpdir(), 'am-hook-copy-'));
+  mkdirSync(path.join(temp, 'config'));
+  mkdirSync(path.join(temp, 'hooks'));
+  for (const name of ['hook.mjs', 'gate.mjs']) copyFileSync(fileURLToPath(new URL(`../plugin/hooks/${name}`, import.meta.url)), path.join(temp, 'hooks', name));
+  if (guard !== null) writeFileSync(path.join(temp, 'hooks', 'stage-guard.mjs'), guard);
+  return { temp, hook: path.join(temp, 'hooks', 'hook.mjs'), config: path.join(temp, 'config'), marker: path.join(temp, 'hooks', 'loaded') };
+}
+
+// A stage guard that only marks that it was loaded and decides nothing.
+const MARKER_GUARD = "import { writeFileSync } from 'node:fs';\nwriteFileSync(new URL('./loaded', import.meta.url), 'x');\nexport function decide() { return { stdout: '' }; }\n";
+
+function hookOut(r) {
+  assert.equal(r.status, 0);
+  return parseStdout(r.stdout);
+}
+
+test('hook.mjs: a session that is no stage agent keeps the gate output and never loads the stage guard', async () => {
+  const repo = makeRepo();
+  const failing = makeRepo({ commands: [{ name: 'build', run: FAIL }] });
+  const c = hookCopy(MARKER_GUARD);
+  const write = { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(repo, 'x.txt'), content: 'x' }, cwd: repo };
+  const stop = { hook_event_name: 'SubagentStop', stop_hook_active: false, last_assistant_message: 'text', cwd: repo };
+  const inputs = [];
+  for (const extra of [{}, { agent_type: '' }, { agent_id: 'a1' }, { agent_type: '', agent_id: 'a1' }, { agent_type: 'other:stage-plan', agent_id: 'a1' }]) {
+    inputs.push(payload(repo, 'git status'), JSON.stringify({ ...write, ...extra }), JSON.stringify({ ...stop, ...extra }));
+    inputs.push(JSON.stringify({ ...JSON.parse(payload(failing, 'git commit -m x')), ...extra }));
+  }
+  for (const input of inputs) {
+    const r = runHook(c.hook, c.config, input);
+    assert.equal(r.status, 0);
+    const expected = (await decide(input)).stdout;
+    if (expected === '') assert.equal(r.stdout, '', input);
+    else assert.equal(parseStdout(r.stdout).hookSpecificOutput.permissionDecision, parseStdout(expected).hookSpecificOutput.permissionDecision, input);
+  }
+  assert.equal(existsSync(c.marker), false);
+  // The same copy loads it for a stage agent.
+  runHook(c.hook, c.config, JSON.stringify({ ...stop, agent_type: 'am:stage-do', agent_id: 'a1' }));
+  assert.equal(existsSync(c.marker), true);
+  for (const d of [repo, failing, c.temp]) rmSync(d, { recursive: true, force: true });
+});
+
+test('hook.mjs: a stage guard that cannot load denies the tool call and blocks the stop once', () => {
+  const repo = makeRepo();
+  for (const guard of [null, 'export const = ;\n']) {
+    const c = hookCopy(guard);
+    const base = { agent_type: 'am:stage-do', agent_id: 'a1', cwd: repo };
+    let out = hookOut(runHook(c.hook, c.config, JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } })));
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+    out = hookOut(runHook(c.hook, c.config, JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(repo, 'x') } })));
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+    out = hookOut(runHook(c.hook, c.config, JSON.stringify({ ...base, hook_event_name: 'SubagentStop', stop_hook_active: false })));
+    assert.equal(out.decision, 'block');
+    assert.ok(out.reason.length > 0);
+    assert.equal(runHook(c.hook, c.config, JSON.stringify({ ...base, hook_event_name: 'SubagentStop', stop_hook_active: true })).stdout, '');
+    rmSync(c.temp, { recursive: true, force: true });
+  }
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('hook.mjs: an allowed stage commit still passes the gate, whose deny wins', () => {
+  const config = mkdtempSync(path.join(tmpdir(), 'am-hook-config-'));
+  for (const [run, expected] of [[FAIL, 'deny'], [OK, 'allow']]) {
+    const repo = makeRepo({ commands: [{ name: 'build', run }] });
+    mkdirSync(path.join(repo, '.am', 'task'), { recursive: true });
+    writeFileSync(path.join(repo, '.am', 'task', 'stage.json'), JSON.stringify({ pid: process.pid, runId: 'abc123-0a1b2c', stage: 'commit', slug: 'task', push: false, t: Date.now() }));
+    const input = JSON.stringify({ hook_event_name: 'PreToolUse', agent_type: 'am:stage-commit', agent_id: 'a1', cwd: repo, tool_name: 'Bash', tool_input: { command: 'git commit -F .am/task/commit-message.txt' } });
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_PID: String(process.pid) };
+    delete env.AM_GATE;
+    const r = spawnSync(process.execPath, [HOOK], { input, env, encoding: 'utf8', timeout: 30000 });
+    const out = hookOut(r);
+    assert.equal(out.hookSpecificOutput.permissionDecision, expected);
+    if (expected === 'deny') assert.match(out.hookSpecificOutput.permissionDecisionReason, /^am gate: commit blocked/);
+    else assert.match(out.hookSpecificOutput.additionalContext, /^am gate: pass/);
+    // A command the guard refuses never reaches the gate.
+    const refused = hookOut(spawnSync(process.execPath, [HOOK], { input: input.replace('-F .am/task/commit-message.txt', '-m \\"feat(x): y\\"'), env, encoding: 'utf8', timeout: 30000 }));
+    assert.match(refused.hookSpecificOutput.permissionDecisionReason, /^am stage hook:/);
+    rmSync(repo, { recursive: true, force: true });
+  }
+  rmSync(config, { recursive: true, force: true });
+});
+
 // ------------------------------------------------------------- interrupt
 
 const GATE = fileURLToPath(new URL('../plugin/hooks/gate.mjs', import.meta.url));
@@ -689,4 +804,15 @@ test('hooks.json handlers use only type, command and timeout', () => {
     }
   }
   assert.ok(handlers > 0);
+});
+
+test('hooks.json sends the shell tools, the file tools and SubagentStop to hook.mjs', () => {
+  const config = JSON.parse(readFileSync(new URL('../plugin/hooks/hooks.json', import.meta.url), 'utf8'));
+  const command = "node -e \"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/hook.mjs'))\"";
+  assert.deepEqual(Object.keys(config.hooks), ['PreToolUse', 'SubagentStop']);
+  assert.deepEqual(config.hooks.PreToolUse, [
+    { matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command, timeout: 900 }] },
+    { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command, timeout: 60 }] },
+  ]);
+  assert.deepEqual(config.hooks.SubagentStop, [{ hooks: [{ type: 'command', command, timeout: 60 }] }]);
 });

@@ -1,5 +1,5 @@
 {
-  "description": "am commit gate: runs the blocking commands in am-gate.json before a git commit",
+  "description": "am commit gate and am:lean stage guard: runs the blocking commands in am-gate.json before a git commit, and checks the tools and final answer of am:lean stage agents",
   "hooks": {
     "PreToolUse": [
       {
@@ -9,6 +9,27 @@
             "type": "command",
             "command": "node -e \"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/hook.mjs'))\"",
             "timeout": 900
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/hook.mjs'))\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/hook.mjs'))\"",
+            "timeout": 60
           }
         ]
       }

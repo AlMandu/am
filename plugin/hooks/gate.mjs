@@ -3,7 +3,7 @@
 // blocking gate commands from am-gate.json. Used by hook.mjs (PreToolUse, Claude
 // Code and Codex) and by the am:check skill through the CLI:
 //   node gate.mjs --run [--json] [--cwd <dir>]
-// handover.mjs imports denyOutput, findRepoRoot and readStdin. am-orchestrator runs
+// handover.mjs imports denyOutput, findRepoRoot and readStdin; stage-guard.mjs the shell walker too. am-orchestrator runs
 // the CLI with --run --json --cwd once more after check and before commit.
 // Node only, no dependencies.
 
@@ -284,6 +284,54 @@ export function findCommits(command, baseDir, depth = 0, shell) {
   }
   return found;
 }
+
+// ------------------------------------------------------------ shell walker
+// stage-guard.mjs reads every simple command of a stage agent's shell line with these; findCommits stays as it is.
+
+/** The program name of a command word: binName without a .cmd, .bat or .ps1 ending. */
+export function programName(word) {
+  return binName(word).replace(/\.(cmd|bat|ps1)$/, '');
+}
+
+/**
+ * Every simple command of a command line, prefix words dropped: {commands: string[][], tooDeep}. The script a shell
+ * binary gets through -c / -Command / /c is read again with that shell's rules; nesting deeper than 3 sets tooDeep.
+ */
+export function shellCommands(command, shell, depth = 0) {
+  const out = { commands: [], tooDeep: false };
+  if (typeof command !== 'string' || command.trim() === '') return out;
+  if (depth > 3) return { commands: [], tooDeep: true };
+  for (const raw of segments(tokenize(command, shell))) {
+    const words = stripPrefixes(raw);
+    if (words.length === 0) continue;
+    out.commands.push(words);
+    const bin = programName(words[0]);
+    if (!SHELL_BINS.has(bin)) continue;
+    const inner = innerScript(bin, words.slice(1));
+    if (!inner) continue;
+    const sub = shellCommands(inner, bin, depth + 1);
+    out.commands.push(...sub.commands);
+    if (sub.tooDeep) out.tooDeep = true;
+  }
+  return out;
+}
+
+/** git argv after the binary: {sub, rest, dynamic}, global options skipped as gitCommit does; sub is undefined when there is none. */
+export function gitSubcommand(args) {
+  let i = 0;
+  while (i < args.length) {
+    const a = args[i];
+    const eq = a.indexOf('=');
+    const flag = eq > 0 ? a.slice(0, eq) : a;
+    if (a === '-C' || (eq < 0 && GIT_OPTS_WITH_VALUE.has(a))) i += 2;
+    else if (flag === '--git-dir' || flag === '--work-tree') i += eq > 0 ? 1 : 2;
+    else if (a.startsWith('-')) i += 1;
+    else return { sub: a, rest: args.slice(i + 1), dynamic: isDynamic(a) };
+  }
+  return { sub: undefined, rest: [], dynamic: false };
+}
+
+export { binName };
 
 /** Command text from a hook payload's tool_input (Claude: string; Codex may send argv). */
 export function commandText(toolInput) {

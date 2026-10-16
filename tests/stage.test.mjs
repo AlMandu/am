@@ -414,7 +414,12 @@ test('agentRules: the stage rules for an am:lean subagent, with no session wordi
       assert.ok(!text.includes('solo-context'), name);
     }
     if (stage === 'do') assert.equal(text.includes('Read .am/demo/check.md first'), fix, name);
-    if (stage === 'commit') assert.ok(text.includes(`those and ${reply} are the only files this stage can write`), name);
+    if (stage === 'commit') {
+      // The stage hook refuses shell characters in a commit command, so the message goes through a file (stage-guard.mjs).
+      assert.ok(text.includes(`those, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write`), name);
+      assert.ok(text.includes(`write the commit message to .am/${slug}/commit-message.txt with the Write tool and commit with \`git commit -F .am/${slug}/commit-message.txt\``), name);
+      assert.ok(!text.includes('several -m flags'), name);
+    }
     // Exactly the session text with the swaps: undo every swap and drop the added lines and the base comes back byte for byte.
     const { swaps } = agentSwaps(stage, slug, { part, owner: 'demo', runId });
     let back = text.slice(0, -`${status}\n`.length);
