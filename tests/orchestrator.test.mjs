@@ -268,6 +268,19 @@ test('cmd.exe 를 거치는 claude(Windows 의 npm .cmd): 따옴표 든 허용 �
   for (const s of ['plan', 'commit']) assert.ok(!SYSTEM[s](ctx, t).includes('scratch/'), s);
 });
 
+test('분할 지시: 한도 안에서 가장 적은 작업, 테스트는 그 코드 작업에, 문서·버전은 마지막 코드 작업에', () => {
+  const ctx = { cfg: defaults() };
+  const split = SYSTEM.split(ctx, 'd.md', 'o.json');
+  assert.match(split, /use the fewest tasks that fit the limits/);
+  assert.match(split, /Tests go in the task whose code they test/);
+  assert.match(split, /changelog and version changes go in the last code task/);
+  assert.match(split, /exception to the dependsOn rule/);
+  assert.match(split, /one separate final documentation task only when/);
+  assert.ok(!split.includes('usually three tasks'), '잘게 나누라는 예전 문장은 없다');
+  assert.ok(split.includes(`about ${ctx.cfg.taskLimits.maxFiles} files or fewer`), '크기 한도는 그대로');
+  assert.match(SYSTEM.plan(ctx, { id: 'T01', slug: 't01-a' }, false), /the fewest items that fit the limits, usually 2 \(at most 5\)/);
+});
+
 test('argsKey: 명령 뒤의 인자와 옵션(--worker·--repo 제외, 옵션 순서 무시). 인자가 없으면 null', () => {
   assert.equal(argsKey(['split']), null);
   assert.equal(argsKey(['split', '--repo', '/r', '--worker']), null);
