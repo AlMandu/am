@@ -42,8 +42,9 @@
 // am-orchestrator nor implements a plan of 2 or more implementation runs whole: it ends `failed` with what to do instead.
 // A solo session gets the unattended rules written for am:solo; its plan stage gets the Parts rule when it is the owner, and the rule to
 // plan only its one part when it is a part. A solo stage continues the session named in .am/<owner>/solo-session.json with
-// --resume (its rules file and permissions as usual). Unless the record is a NEEDS_DECISION end of this same stage of this
-// slug, a /context call (the stage's model, the compaction session's environment and time limit, no tool) first measures
+// --resume (its rules file and permissions as usual). A BLOCKED or failed end of this same stage of this slug starts a new
+// session instead (a note). Unless the record is a NEEDS_DECISION end of this same stage of this slug, a /context call
+// (the stage's model, the compaction session's environment and time limit, no tool) first measures
 // how much of the context window that conversation fills. Below SOLO_CONTEXT_LIMIT (20) percent the stage continues it as
 // it is; at or above it, or when the use cannot be read, a /compact call shortens it (the compaction model, no tool) and
 // the stage continues the session ID it returns (strict form, else the one before), recorded at once. A second /context
@@ -273,6 +274,9 @@ const MARK = (stage) => `End your final reply with exactly one line: ${MARKS[sta
 // The permission rules of most stages match one plain command only, so a chained command is refused whole.
 // Kept outside unattended(): that text is a copy of am:auto's rules and changes only together with them.
 const ONE_COMMAND = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
+// Their git rules match the plain form only, and a refusal there reads as if the whole shell were off.
+export const GIT_PLAIN_STAGES = ['plan', 'commit', 'handover'];
+export const GIT_PLAIN = '- This session already runs in the repository root. Run git only in its plain form `git <subcommand> …`, with no option or repository path before the subcommand (no `-C`, `-c`, `--no-pager`).\n- A refusal by the permission rules ("Permission to use Bash has been denied …", or the same for PowerShell) means that form of the command is not allowed, not that the shell is off: run it again in the plain form. If a command you need is still refused, name it in your final reply.';
 // The do and check sessions cannot write outside the repository; the orchestrator's SCRATCH_NOTE says the same.
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
@@ -336,7 +340,7 @@ ${scratch(slug)}
 - If the gate could not run (status \`error\`, or \`node\` missing), commit but do not push, and say why.
 - If a hook rejects the commit, do not bypass it and do not retry another way; copy what it printed into your reply.
 - A commit that is blocked or fails: leave the files as they are, say why, and end with AM_STAGE: BLOCKED.
-- Run each git command on its own from the repository root: no cd, no pipes, no chains, no heredoc; use several -m flags for several paragraphs.
+- Run each git command on its own: no cd, no pipes, no chains, no heredoc; use several -m flags for several paragraphs.
 - ${MARK('commit')}`,
 };
 
@@ -360,7 +364,8 @@ export function instructions(stage, slug, { push = false, fix = false, resume = 
   const note = unquoted && [...CODEX_STAGES, 'handover'].includes(stage) ? '\n- Run node scripts with the path unquoted (node C:/path/to/script.mjs ...): the permission rules of this session allow only that form.' : '';
   const shortened = compacted?.originals ? `\n- Before this session the am stage runner shortened ${compacted.files.join(', ')} to keep this context small; the originals are ${compacted.originals.join(', ')}. Open an original only when a detail you need is missing from the shortened file.` : '';
   const memory = solo ? `${soloSaveRule(solo.owner)}${soloRead ? soloReadRule(solo.owner) : ''}${soloClear ? soloClearRule(solo.owner, soloClear) : ''}` : '';
-  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push, Boolean(solo))}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, solo })}\n${ONE_COMMAND}${note}${shortened}${memory}\n` };
+  const git = GIT_PLAIN_STAGES.includes(stage) ? `\n${GIT_PLAIN}` : '';
+  return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push, Boolean(solo))}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, solo })}\n${ONE_COMMAND}${git}${note}${shortened}${memory}\n` };
 }
 
 /**
@@ -1438,10 +1443,15 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       event({ ev: 'note', text: 'solo: no recorded session; started a new one' });
     }
     result.solo = { owner: solo.owner, sessionId: null, compacted: false, fresh, context: false };
-    // Only the same stage of the same task after a question goes straight on; any other stage first measures the context use
-    // and compacts the conversation when it fills SOLO_CONTEXT_LIMIT percent or more of the window (or cannot be read).
-    if (rec && rec.slug === slug && rec.stage === kind && rec.status === 'NEEDS_DECISION') sessionResume = rec.sessionId;
-    else if (rec) {
+    // The same stage of the same task goes straight on after a question and starts a new session after a stop, so the
+    // conclusion that stopped it is not carried on; any other stage first measures the context use and compacts the
+    // conversation when it fills SOLO_CONTEXT_LIMIT percent or more of the window (or cannot be read).
+    const same = rec && rec.slug === slug && rec.stage === kind;
+    if (same && rec.status === 'NEEDS_DECISION') sessionResume = rec.sessionId;
+    else if (same && (rec.status === 'BLOCKED' || rec.status === 'failed')) {
+      result.solo.fresh = `the last ${kind} stage ended ${rec.status}`;
+      event({ ev: 'note', text: `solo: the last ${kind} stage ended ${rec.status}; started a new session` });
+    } else if (rec) {
       // Recorded at once, so a stage that ends without a session ID never sends the next one back to an older conversation.
       const record = (id) => {
         const err = writeSoloSession(cwd, solo.owner, { sessionId: id, slug, stage: kind, status: 'failed', t: new Date(now()).toISOString() });
@@ -1578,6 +1588,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   if (why) result.reason = why;
   else if (!mark) result.reason = 'the session ended without an AM_STAGE line';
   else result.status = mark;
+  // A stop with no reason given: name what the permission rules refused, as recorded, without claiming it was the cause.
+  if (result.status === 'BLOCKED' && !result.reason && result.denied.length) result.reason = `commands refused by the permission rules: ${result.denied.slice(0, 3).join(' | ')}${result.denied.length > 3 ? ' …' : ''}`;
   if (solo) {
     // A failed write only costs the next stage its continuation: it starts a new session.
     if (result.sessionId) {

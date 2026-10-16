@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_COMPACT_PROMPT, SOLO_CONTEXT_LIMIT, SOLO_CONTEXT_PROMPT, SOLO_CLEAR_CONTEXT, contextPercent, soloClearSavePrompt, soloClearPerm } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_COMPACT_PROMPT, SOLO_CONTEXT_LIMIT, SOLO_CONTEXT_PROMPT, SOLO_CLEAR_CONTEXT, contextPercent, soloClearSavePrompt, soloClearPerm, GIT_PLAIN, GIT_PLAIN_STAGES } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -26,7 +26,7 @@ const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'
 //   "delay": ms (every call answers after that long), "errors": [1] (calls that, after their writes, answer is_error with
 //   subtype error_during_execution and exit 1), "crashes": [1] (calls that, after their writes, write "stderr" or boom to stderr and exit 3),
 //   "exits": [1] (calls that answer as usual but exit 1), "sessions": ["sess-1", "sess-2"] (the session_id of the nth call, else sess-1;
-//   null leaves session_id out) }
+//   null leaves session_id out), "denials": [["git -C . status"], []] (the Bash commands refused in the nth call; without it the 1st call refuses git push) }
 const FAKE = `import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const argv = process.argv.slice(2);
@@ -45,7 +45,7 @@ if (s.crash || (s.crashes || []).includes(n)) { process.stderr.write(s.stderr ||
 const replies = s.replies || ['done\\nAM_STAGE: READY'];
 const text = replies[Math.min(n, replies.length) - 1];
 const failed = (s.errors || []).includes(n);
-process.stdout.write(JSON.stringify({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, result: failed ? 'No conversation found' : text, session_id: (s.sessions || [])[n - 1] === null ? undefined : (s.sessions || [])[n - 1] || 'sess-1', total_cost_usd: 0.25 * n, permission_denials: n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
+process.stdout.write(JSON.stringify({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, result: failed ? 'No conversation found' : text, session_id: (s.sessions || [])[n - 1] === null ? undefined : (s.sessions || [])[n - 1] || 'sess-1', total_cost_usd: 0.25 * n, permission_denials: s.denials ? (s.denials[n - 1] || []).map((command) => ({ tool_name: 'Bash', tool_input: { command } })) : n === 1 ? [{ tool_name: 'Bash', tool_input: { command: 'git push' } }] : [] }));
 if (failed || (s.exits || []).includes(n)) process.exitCode = 1;
 }
 `;
@@ -180,6 +180,66 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
     assert.ok(!p.allow.some((r) => /\.am\/\*\*|\.am\/other\/|compact-pending\.json|request\.md/.test(r)), JSON.stringify(p.allow));
   }
   for (const p of [one, two]) assert.deepEqual(p.deny, ['AskUserQuestion', 'Edit(/.am/demo/request.md)', 'Edit(.am/demo/request.md)']);
+});
+
+/** Claude Code's prefix rule, as far as these tests need it: `Tool(x *)` allows `x` and `x …`, `Tool(x)` only `x`. */
+function allowed(rules, tool, command) {
+  return rules.some((r) => {
+    if (!r.startsWith(`${tool}(`) || !r.endsWith(')')) return false;
+    const body = r.slice(tool.length + 1, -1);
+    if (!body.endsWith(' *')) return command === body;
+    const head = body.slice(0, -2);
+    return command === head || command.startsWith(`${head} `);
+  });
+}
+
+test('permissions: git runs only in its plain form; an option before the subcommand is refused and never allowed', () => {
+  const plain = ['git status --porcelain', 'git log -5', 'git diff --stat', 'git rev-parse HEAD'];
+  const writes = ['git add a', 'git commit -m x'];
+  const options = ['git -C /c/Projects/am status --porcelain', 'git -C . log -3', 'git -c core.hooksPath=x commit -m x', 'git --no-pager log'];
+  for (const s of ['plan', 'commit', 'handover']) {
+    const p = permissions(s, { amRoot: '/am', orchRoot: '/orch', slug: 'demo' });
+    for (const c of plain) assert.ok(allowed(p.allow, 'Bash', c), `${s}: ${c}`);
+    if (s !== 'plan') for (const c of writes) assert.ok(allowed(p.allow, 'Bash', c), `${s}: ${c}`);
+    for (const c of options) assert.ok(!allowed(p.allow, 'Bash', c), `${s}: ${c} refused`);
+    assert.ok(!allowed(p.allow, 'PowerShell', 'git -C C:\\Projects\\am status'), `${s}: PowerShell -C refused`);
+    if (process.platform === 'win32') assert.ok(allowed(p.allow, 'PowerShell', 'git status --porcelain'), `${s}: PowerShell plain`);
+    // Not widened: no rule names an option before the subcommand.
+    assert.ok(!p.allow.some((r) => /\bgit (-C|-c|--no-pager)\b/.test(r)), `${s}: ${p.allow.join(', ')}`);
+  }
+  const commit = permissions('commit', { slug: 'demo' });
+  assert.ok(allowed(commit.allow, 'Bash', 'git restore --staged -- a'));
+  assert.ok(!allowed(commit.allow, 'PowerShell', 'git restore --staged -- a'), 'restore is Bash only');
+  assert.ok(!allowed(commit.allow, 'Bash', 'git restore a'));
+});
+
+test('instructions: the stages with plain-form git rules are told the form and what a refusal means, once', () => {
+  assert.deepEqual(GIT_PLAIN_STAGES, ['plan', 'commit', 'handover']);
+  for (const s of ['no `-C`, `-c`, `--no-pager`', 'not that the shell is off: run it again in the plain form', 'name it in your final reply']) assert.ok(GIT_PLAIN.includes(s), s);
+  for (const s of [...STAGES, 'handover']) for (const solo of [null, { owner: 'demo' }]) {
+    const { system } = instructions(s, 'demo', { solo });
+    assert.equal(system.split(GIT_PLAIN).length, GIT_PLAIN_STAGES.includes(s) ? 2 : 1, `${s} solo ${!!solo}`);
+    assert.equal(system.split('already runs in the repository root').length, GIT_PLAIN_STAGES.includes(s) ? 2 : 1, s);
+  }
+  // The commit stage's own git line no longer repeats where to run.
+  assert.ok(instructions('commit', 'demo').system.includes('- Run each git command on its own: no cd, no pipes, no chains, no heredoc'));
+});
+
+test('a BLOCKED end with no reason names the refused commands; another end or no refusal keeps the empty reason', async (t) => {
+  const blocked = 'Shell is off.\nAM_STAGE: BLOCKED';
+  const one = (await run(makeRepo(t, { plan: SMALL, fake: { replies: [blocked], denials: [['git -C /c/Projects/am status --porcelain']] } }), ['commit', 'demo'])).result;
+  assert.equal(one.status, 'BLOCKED');
+  assert.equal(one.reason, 'commands refused by the permission rules: Bash: git -C /c/Projects/am status --porcelain');
+  const many = (await run(makeRepo(t, { plan: SMALL, fake: { replies: [blocked], denials: [['git -C . a', 'git -C . b', 'git -C . c', 'git -C . d']] } }), ['commit', 'demo'])).result;
+  assert.equal(many.reason, 'commands refused by the permission rules: Bash: git -C . a | Bash: git -C . b | Bash: git -C . c …');
+  assert.equal(many.denied.length, 4);
+  const none = (await run(makeRepo(t, { plan: SMALL, fake: { replies: [blocked], denials: [[]] } }), ['commit', 'demo'])).result;
+  assert.equal(none.status, 'BLOCKED');
+  assert.equal(none.reason, '');
+  // Only a stop: an end that is not BLOCKED keeps its empty reason.
+  const done = (await run(makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: COMMITTED'], denials: [['git -C . status']] } }), ['commit', 'demo'])).result;
+  assert.equal(done.status, 'COMMITTED');
+  assert.equal(done.reason, '');
 });
 
 test('the compaction session: its own model and markers, a prompt cmd.exe can pass', () => {
@@ -558,6 +618,52 @@ test('solo session: a stage that stops for a decision still records its session'
   const { result } = await run(dir, ['plan', 'demo', '--solo']);
   assert.equal(result.status, 'NEEDS_DECISION');
   assert.equal(soloRecord(dir).status, 'NEEDS_DECISION');
+});
+
+test('solo session: the same stage after a stop starts a new session with no measuring; after a question it goes straight on', async (t) => {
+  for (const status of ['BLOCKED', 'failed']) for (const memory of [false, true]) {
+    const dir = makeRepo(t, { plan: SMALL, fake: { replies: ['Committed.\nAM_STAGE: COMMITTED'] } });
+    writeFileSync(SOLO_FILE(dir), JSON.stringify({ ...RECORDED, stage: 'commit', status }));
+    if (memory) writeFileSync(path.join(dir, '.am', 'demo', 'solo-context.md'), 'memory\n');
+    const { result, calls } = await run(dir, ['commit', 'demo', '--solo']);
+    const label = `${status} memory ${memory}`;
+    assert.equal(calls.length, 1, label);
+    assert.ok(!calls[0].includes('--resume'), label);
+    assert.equal(flag(calls[0], '-p'), '/am:commit', label);
+    assert.equal(result.status, 'COMMITTED', label);
+    assert.equal(result.solo.fresh, `the last commit stage ended ${status}`, label);
+    assert.ok(notes(dir).includes(`solo: the last commit stage ended ${status}; started a new session`), label);
+    assert.equal(result.solo.context, memory, label);
+    assert.equal(readFileSync(path.join(dir, '.am', 'demo', 'stage-commit.system.md'), 'utf8').includes('read .am/demo/solo-context.md'), memory, label);
+    // The new session is recorded, so the stages after it continue it.
+    assert.deepEqual([soloRecord(dir).sessionId, soloRecord(dir).status], ['sess-1', 'COMMITTED'], label);
+  }
+  const asked = makeRepo(t, { plan: SMALL, fake: { replies: ['Committed.\nAM_STAGE: COMMITTED'] } });
+  writeFileSync(SOLO_FILE(asked), JSON.stringify(ASKED('commit')));
+  const a = await run(asked, ['commit', 'demo', '--solo']);
+  assert.equal(a.calls.length, 1);
+  assert.equal(flag(a.calls[0], '--resume'), 'sess-0');
+  assert.equal(a.result.solo.fresh, null);
+  // A stop of another stage: measured first and continued as before.
+  const other = makeRepo(t, { plan: SMALL, fake: { replies: [LOW, 'Committed.\nAM_STAGE: COMMITTED'], sessions: ['sess-0', 'sess-0'] } });
+  writeFileSync(SOLO_FILE(other), JSON.stringify({ ...RECORDED, stage: 'do', status: 'BLOCKED' }));
+  const o = await run(other, ['commit', 'demo', '--solo']);
+  assert.deepEqual(o.calls.map((c) => flag(c, '-p')), [SOLO_CONTEXT_PROMPT, '/am:commit']);
+  assert.deepEqual(o.calls.map((c) => flag(c, '--resume')), ['sess-0', 'sess-0']);
+  assert.equal(o.result.solo.fresh, null);
+});
+
+test('solo session: a stage that ends without a session ID leaves its failed record, so the same stage runs again in a new session', async (t) => {
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [LOW, 'Done.\nAM_STAGE: DONE'], sessions: ['sess-m', null] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const first = await run(dir, ['do', 'demo', '--solo']);
+  assert.deepEqual(first.calls.map((c) => flag(c, '--resume')), ['sess-0', 'sess-m']);
+  assert.equal(first.result.sessionId, null);
+  assert.deepEqual([soloRecord(dir).sessionId, soloRecord(dir).stage, soloRecord(dir).status], ['sess-m', 'do', 'failed']);
+  const again = await run(dir, ['do', 'demo', '--solo']);
+  assert.equal(again.calls.length, 3);
+  assert.ok(!again.calls[2].includes('--resume'));
+  assert.equal(again.result.solo.fresh, 'the last do stage ended failed');
 });
 
 test('solo session: a record that cannot be saved leaves the result as it is and creates no folder', async (t) => {
@@ -2307,7 +2413,8 @@ test("solo compaction: the context is measured on the user file's model of the s
 });
 
 test('solo compaction: only a NEEDS_DECISION end of the same stage of the same slug goes straight on', async (t) => {
-  const cases = [[ASKED('do'), 1], [{ ...RECORDED, stage: 'do', status: 'failed' }, 4], [ASKED('plan'), 4]];
+  // A failed end of the same stage of the same slug starts a new session (tested above); of another slug it is measured.
+  const cases = [[ASKED('do'), 1], [{ ...RECORDED, slug: 'other', stage: 'do', status: 'failed' }, 4], [ASKED('plan'), 4], [{ ...ASKED('do'), slug: 'other' }, 4]];
   for (const [rec, count] of cases) {
     const dir = makeRepo(t, { plan: SMALL, fake: { replies: count === 1 ? ['Done.\nAM_STAGE: DONE'] : SOLO_COMPACTING } });
     writeFileSync(SOLO_FILE(dir), JSON.stringify(rec));
