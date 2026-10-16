@@ -24,6 +24,8 @@ const ENTRIES = {
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs keeps a copy).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
+// am:lean stage agents (plugin/agents/<agent>.md) take the values of the am skill they run.
+export const STAGE_AGENTS = { 'stage-plan': 'plan', 'stage-do': 'do', 'stage-check': 'check', 'stage-commit': 'commit', 'stage-commit-push': 'commit' };
 // BUILTIN_MODELS of plugin/scripts/user-files.mjs: the user models file's keys (without default) in its order, with their group.
 const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
 
@@ -90,6 +92,7 @@ export function targets() {
   return [
     ...['plan', 'do', 'check', 'commit', 'auto', 'solo', 'land', 'sessions'].map(amSkill),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
+    ...Object.entries(STAGE_AGENTS).map(([agent, skill]) => frontmatter(`plugin/agents/${agent}.md`, (m) => m.am[skill])),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),
     ...['split', ...Object.keys(STAGE_SKILLS)].map((stage) => ({
       file: 'orchestrator/scripts/orchestrator.mjs',

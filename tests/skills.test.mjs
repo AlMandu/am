@@ -1,7 +1,7 @@
 // Run: node --test tests/skills.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
@@ -205,6 +205,40 @@ test('the second-opinion agent stays pinned and read-only, and the common rules 
   assert.equal(fm.tools, 'Read, Grep, Glob');
   assert.match(fm.description, /^"[^"]{40,}"$/);
   assert.match(common(read('plan')), /am:second-opinion subagent/);
+});
+
+// am:lean stage agents; their values are models.json's through STAGE_AGENTS of scripts/models.mjs (tests/models.test.mjs).
+const STAGE_AGENT_NAMES = ['stage-plan', 'stage-do', 'stage-check', 'stage-commit', 'stage-commit-push'];
+const AGENTS_DIR = path.dirname(AGENT);
+
+test('am:lean stage agents stay pinned', () => {
+  const rest = [];
+  for (const name of STAGE_AGENT_NAMES) {
+    const text = readFileSync(path.join(AGENTS_DIR, `${name}.md`), 'utf8');
+    const fm = frontmatter(text);
+    // Claude Code ignores a misspelled key without an error, and plugin agents ignore hooks and permissionMode.
+    assert.deepEqual(Object.keys(fm).sort(), ['description', 'effort', 'model', 'name', 'tools'], name);
+    assert.equal(fm.name, name);
+    assert.match(fm.model, ALIAS, name);
+    assert.ok(USER_EFFORTS.includes(fm.effort), `${name}: ${fm.effort}`);
+    assert.equal(fm.tools, name === 'stage-check' ? 'Read, Grep, Glob, Write, Edit, Bash, Agent' : 'Read, Grep, Glob, Write, Edit, Bash', name);
+    assert.match(fm.description, /^"[^"]{40,}"$/, name);
+    assert.ok(fm.description.includes('am 스킬이 부를 때만'), name);
+    const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
+    assert.doesNotMatch(body, /[가-힣]/, `${name}: English body`);
+    for (const s of ['rules file', 'SKILL.md', '`.am/<slug>/reply-<stage>.md`', '`AM_STAGE: <status> <runId>`', '`AM_STAGE: BLOCKED <runId>`', 'MISSING_RUN_ID']) assert.ok(body.includes(s), `${name}: ${s}`);
+    const lines = body.split('\n');
+    assert.ok(lines.includes(`# am:${name}`), `${name}: title`);
+    const stageLine = lines.find((l) => l.startsWith('You run the '));
+    assert.ok(stageLine?.includes(name === 'stage-commit-push' ? 'push' : name.slice('stage-'.length)), `${name}: ${stageLine}`);
+    rest.push(lines.filter((l) => l !== `# am:${name}` && l !== stageLine).join('\n'));
+  }
+  // One shared body: what differs per stage lives in the rules file, the SKILL.md, tools and the hooks.
+  for (const r of rest.slice(1)) assert.equal(r, rest[0]);
+});
+
+test('plugin/agents holds only the reviewer and the stage agents', () => {
+  assert.deepEqual(readdirSync(AGENTS_DIR).sort(), ['second-opinion.md', ...STAGE_AGENT_NAMES.map((n) => `${n}.md`)].sort());
 });
 
 test('with Codex installed, the common rules have Codex answer the same brief and send a lasting split to the user', () => {

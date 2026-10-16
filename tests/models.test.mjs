@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { REPO, STAGE_SKILLS, apply, check, load, targets, validate } from '../scripts/models.mjs';
+import { REPO, STAGE_AGENTS, STAGE_SKILLS, apply, check, load, targets, validate } from '../scripts/models.mjs';
 
 const bases = [];
 after(() => {
@@ -35,6 +35,8 @@ test('every file carries the values of models.json', () => {
 test('the orchestrator stage-to-skill mapping is complete', () => {
   // tests/orchestrator-skill.test.mjs keeps a copy of this literal; change both together.
   assert.deepEqual(STAGE_SKILLS, { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' });
+  // am:lean stage agents run the am skill of their stage; both commit agents run am:commit.
+  assert.deepEqual(STAGE_AGENTS, { 'stage-plan': 'plan', 'stage-do': 'do', 'stage-check': 'check', 'stage-commit': 'commit', 'stage-commit-push': 'commit' });
 });
 
 test('values that would be silently ignored or unsafe are refused', () => {
@@ -57,6 +59,8 @@ test('apply writes a changed value into every place that carries it, and check i
   const other = (now, pool) => pool.find((v) => v !== now);
   const models = edit((m) => {
     m.am.commit.effort = other(m.am.commit.effort, ['low', 'medium']);
+    m.am.do.effort = other(m.am.do.effort, ['low', 'high']);
+    m.am.check.model = other(m.am.check.model, ['sonnet', 'haiku']);
     m.orchestrator.split.model = other(m.orchestrator.split.model, ['sonnet', 'haiku']);
     m.orchestrator.run.effort = other(m.orchestrator.run.effort, ['max', 'low']);
     m.am['second-opinion'].model = other(m.am['second-opinion'].model, ['sonnet', 'haiku']);
@@ -73,6 +77,9 @@ test('apply writes a changed value into every place that carries it, and check i
   const fm = (v) => `\nmodel: ${v.model}\neffort: ${v.effort}\n---\n`;
   assert.ok(read(base, 'plugin/skills/commit/SKILL.md').includes(fm(commit)));
   assert.ok(read(base, 'plugin/agents/second-opinion.md').includes(fm(agent)));
+  for (const [name, skill] of Object.entries(STAGE_AGENTS)) assert.ok(read(base, `plugin/agents/${name}.md`).includes(fm(models.am[skill])), name);
+  for (const name of ['stage-do', 'stage-check', 'stage-commit', 'stage-commit-push']) assert.ok(changed.includes(`plugin/agents/${name}.md`), name);
+  assert.ok(!changed.includes('plugin/agents/stage-plan.md'), 'an agent whose values did not change is not written');
   assert.ok(read(base, 'orchestrator/skills/run/SKILL.md').includes(fm(run)));
   const script = read(base, 'orchestrator/scripts/orchestrator.mjs');
   assert.ok(script.includes(`\n  split: { model: '${split.model}', effort: '${split.effort}' },`));
