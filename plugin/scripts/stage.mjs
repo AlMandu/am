@@ -59,6 +59,9 @@
 // told about a saved memory file.
 // A part waits for its owner only while an owner stage runs, not in the owner's gap between stages, and waits for other
 // tasks with the owner's place in line when that is earlier than its own.
+// The subagent stages of am:lean (agent-stage.mjs) hold .am/<slug>/stage.json instead of a worker record; another task's
+// live stage goes stale by the record whose pid is its start's pid (AGENT_STALE_MS for stage.json). agentRules() writes
+// the unattended rules of this file for such a subagent: the same sentences, exactly swapped where a session is meant.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am:auto starts the
@@ -364,6 +367,91 @@ export function instructions(stage, slug, { push = false, fix = false, resume = 
   return { prompt, plugin, skill, args, system:`${unattended(slug, stage, push, Boolean(solo))}\n\n${STAGE_RULES[stage](slug, { push, fix, resume, solo })}\n${ONE_COMMAND}${git}${note}${shortened}${memory}\n` };
 }
 
+// ------------------------------------------------------------------ subagent rules (am:lean)
+
+/** The stages an am:lean subagent runs (no hand-over). */
+export const AGENT_STAGES = ['plan', 'do', 'check', 'commit'];
+
+/** Applies [from, to] swaps in order; each `from` must occur exactly once in the text as it is then, else it throws. */
+export function applySwaps(text, swaps) {
+  let out = text;
+  for (const [from, to] of swaps) {
+    const n = out.split(from).length - 1;
+    if (n !== 1) throw new Error(`agent rules: expected one "${from}", found ${n}`);
+    out = out.replace(from, () => to);
+  }
+  return out;
+}
+
+/**
+ * The session rules agentRules starts from: the unattended rules and the stage rules a stage session gets, with no solo
+ * memory, no compaction and no cmd.exe line; the plan stage gets the Parts rule (a part, `part` with `owner`: the one-part rule).
+ */
+export function agentBase(stage, slug, { push = false, fix = false, part = false, owner = '' } = {}) {
+  if (!AGENT_STAGES.includes(stage)) throw new Error(`unknown stage: ${stage}`);
+  const solo = stage === 'plan' ? { owner: part ? owner : slug } : null;
+  const git = GIT_PLAIN_STAGES.includes(stage) ? `\n${GIT_PLAIN}` : '';
+  return `${unattended(slug, stage, push)}\n\n${STAGE_RULES[stage](slug, { push, fix, solo })}\n${ONE_COMMAND}${git}\n`;
+}
+
+/** The exact swaps that turn agentBase's text into a subagent's rules, in order. */
+export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' } = {}) {
+  if (!AGENT_STAGES.includes(stage)) throw new Error(`unknown stage: ${stage}`);
+  const reply = `.am/${slug}/reply-${stage}.md`;
+  const status = `- Your final reply is exactly one line and nothing else: AM_STAGE: <status> ${runId}, where <status> is one of ${MARKS[stage].join(', ')}.`;
+  const swaps = [
+    ['You are one stage of the am:auto skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:lean skill, a subagent the am:lean driver started for this stage only.'],
+    ['No human is present in this session and nobody', 'No human watches this stage and nobody'],
+    ['- Running am:auto is the user\'s request', '- Running am:lean is the user\'s request'],
+    ['for someone who has seen neither this session nor the code) under Decisions in plan.md marked OPEN, record the reason there, repeat the card in your final reply, and end with AM_STAGE: NEEDS_DECISION. The user\'s answer comes back in plan.md and this stage starts again in a new session.',
+      `for someone who has seen neither this run nor the code) under Decisions in plan.md marked OPEN, with the line \`<!-- am:card OPEN -->\` right before each card and the line \`<!-- am:card end -->\` right after it, each on a line of its own; record the reason there, repeat the card in ${reply}, and end with the status NEEDS_DECISION. The user's answer comes back in plan.md and this stage runs again as a new subagent.`],
+    ['- Keep the final reply short: what this stage did, what it decided for the user, and any deviation from the plan.', `- Before you end, write ${reply} whole with the Write tool: what this stage did, what it decided for the user, any deviation from the plan, and everything the skill says to give the user at its end.`],
+    [`\n- ${MARK(stage)}\n${ONE_COMMAND}`, `\n${ONE_COMMAND}`],
+  ];
+  if (GIT_PLAIN_STAGES.includes(stage)) swaps.push(
+    ['- This session already runs in the repository root.', '- You already run in the repository root.'],
+    ['- A refusal by the permission rules ("Permission', '- A refusal by the permission rules or the am stage hook ("Permission'],
+    ['If a command you need is still refused, name it in your final reply.', `If a command you need is still refused, name it in ${reply}.`],
+  );
+  if (stage === 'do' || stage === 'check') swaps.push(['writing outside the repository is refused in this session.', 'writing outside the repository is refused in this stage.']);
+  if (stage === 'plan') {
+    swaps.push(
+      ['an earlier plan session stopped with a question', 'an earlier plan stage stopped with a question'],
+      ['one am:do run that a fresh session can finish and verify', 'one am:do run that one fresh stage can finish and verify'],
+      ['- What this session can do:', '- What this stage can do:'],
+      ['run read-only git commands and the Codex second-opinion command of the skill\'s rules.', 'run read-only git commands, the Codex second-opinion command of the skill\'s rules and the Claude reviewer command below.'],
+    );
+    if (part) swaps.push([`, .am/${owner}/${SOLO_CONTEXT} (below) and the current-task mark`, ' and the current-task mark']);
+  }
+  if (stage === 'do') swaps.push(
+    ['- Another session runs the am:check skill', '- Another stage runs the am:check skill'],
+    ['and end with AM_STAGE: BLOCKED.', 'and end with the status BLOCKED.'],
+  );
+  if (stage === 'check') swaps.push(
+    ['in check.md and in your reply.', `in check.md and in ${reply}.`],
+    ['What the implementing session recorded', 'What the implementing stage recorded'],
+  );
+  if (stage === 'commit') swaps.push(
+    ['The am:auto run asks for this commit', 'The am:lean run asks for this commit'],
+    ['leave it out of the commit and name it in your reply.', `leave it out of the commit and name it in ${reply}.`],
+    ['those are the only files this session can write.', `those and ${reply} are the only files this stage can write.`],
+    ['copy what it printed into your reply.', `copy what it printed into ${reply}.`],
+    ['say why, and end with AM_STAGE: BLOCKED.', 'say why, and end with the status BLOCKED.'],
+  );
+  return { swaps, status };
+}
+
+/**
+ * The rules file of one am:lean subagent stage: agentBase's text with agentSwaps applied (it throws when a swap does not
+ * match exactly once), then, for plan, the Claude reviewer line, and last the status line with this run's runId.
+ */
+export function agentRules(stage, slug, { push = false, fix = false, part = false, owner = '', runId = '', amRoot = AM_ROOT } = {}) {
+  const { swaps, status } = agentSwaps(stage, slug, { part, owner, runId });
+  const text = applySwaps(agentBase(stage, slug, { push, fix, part, owner }), swaps);
+  const opinion = stage === 'plan' ? `- Claude reviewer: this stage has no Agent tool, so instead of the am:second-opinion subagent run \`node "${amRoot.split(path.sep).join('/')}/scripts/claude-opinion.mjs" <brief file>\` from the repository root with a 10-minute timeout; it prints the answer under \`Claude's answer:\`. When the Codex command ends with exit code 2 (Codex is not installed), run it twice instead, with \`--as 1\` as Claude 1 and with \`--as 2\` as Claude 2. Exit code 2 of this command means no Claude reviewer can run.\n` : '';
+  return `${text}${opinion}${status}\n`;
+}
+
 /**
  * The prompt and system prompt of the compaction session. `files`: [{file, size, goal}], paths from the repository root.
  * The prompt holds no quotes or `%`: through cmd.exe it could not be passed.
@@ -540,7 +628,25 @@ export function taskState(events, { now = Date.now, alive = pidAlive, graceMs = 
   const seat = timeOf(own.slice(lastFinal + 1).find((e) => e.ev === 'start' || isWait(e)));
   const recent = (e) => Boolean(e) && now() - timeOf(e) <= graceMs;
   const gap = (lastEnd >= 0 && goesOn(GOES_ON, own[lastEnd]) && recent(own[lastEnd])) || recent(own.slice(lastEnd + 1).findLast(isWait));
-  return { live: Boolean(live), stage: live ? live.start.stage : null, gap, seat };
+  return { live: Boolean(live), stage: live ? live.start.stage : null, pid: live ? live.start.pid : null, gap, seat };
+}
+
+// The record an am:lean subagent stage holds under .am/<slug>/ (agent-stage.mjs): {pid, runId, stage, slug, push, fix,
+// part, t}, plus status and ended once it ends. Its modification time is its heartbeat.
+export const AGENT_RECORD = 'stage.json';
+// A stage.json untouched this long no longer holds anything: longer than one tool call (10 minutes) plus a reviewer.
+export const AGENT_STALE_MS = 20 * 60000;
+
+/**
+ * The record that times out a task's live stage whose start names `pid`: the first of stage-worker.json (staleMs) and
+ * stage.json (agentStaleMs) whose JSON `pid` is that pid, as {file, ms}; null when none matches (then the pid alone decides).
+ */
+export function leaseOf(dir, pid, { staleMs = WORKER_STALE_MS, agentStaleMs = AGENT_STALE_MS } = {}) {
+  for (const [name, ms] of [[WORKER_FILES.record, staleMs], [AGENT_RECORD, agentStaleMs]]) {
+    const file = path.join(dir, name);
+    if (Number.isInteger(pid) && readJson(file)?.pid === pid) return { file, ms };
+  }
+  return null;
 }
 
 function readJson(file) {
@@ -562,10 +668,11 @@ export const RECORD_SETTLE_MS = 45000;
  * tie) or we have none. The orchestrator blocks while a live pid holds its lock, and for graceMs after a split or answer
  * end that leads to its next command, unless that run is the one this task handed over. Unless trustStale, a stage
  * whose worker record went untouched for WORKER_STALE_MS, and a lock untouched for its own `leaseMs`, do not block.
+ * The record is the one leaseOf picks by the start's pid (an am:lean stage.json: agentStaleMs); with none, the pid alone.
  * A part (owner other than slug) is held by its owner only while an owner stage runs, and takes the owner's seat when
  * that is earlier.
  */
-export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, trustStale = false, owner = null } = {}) {
+export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs = GRACE_MS, staleMs = WORKER_STALE_MS, agentStaleMs = AGENT_STALE_MS, trustStale = false, owner = null } = {}) {
   const o = { now, alive, graceMs };
   const part = owner && owner !== slug ? owner : null;
   // A record of a live pid whose owner stopped touching it, with no reason to wait for the owner.
@@ -586,7 +693,8 @@ export function otherRuns(cwd, slug, { now = Date.now, alive = pidAlive, graceMs
   }
   for (const name of names) {
     const s = taskState(eventsOf(name), o);
-    if (s.live && left(path.join(am, name, WORKER_FILES.record), staleMs)) s.live = false;
+    const lease = s.live ? leaseOf(path.join(am, name), s.pid, { staleMs, agentStaleMs }) : null;
+    if (lease && left(lease.file, lease.ms)) s.live = false;
     if (s.live) found.push({ name, text: `${name} (${s.stage || 'a'} stage running)` });
     else if (s.gap && name !== part && (Number.isNaN(mine.seat) || s.seat < mine.seat || (s.seat === mine.seat && name < slug))) found.push({ name, text: `${name} (between stages)` });
   }
@@ -919,7 +1027,7 @@ export function pluginDirFor(amRoot, env) {
 }
 
 /** am:plan only adds .am/.gitignore when it creates .am/, which the am:auto session has already done. */
-function ensureIgnored(cwd) {
+export function ensureIgnored(cwd) {
   if (existsSync(path.join(cwd, '.am', '.gitignore'))) return;
   const r = spawnSync('git', ['check-ignore', '-q', '.am'], { cwd, windowsHide: true });
   if (r.status !== 0) writeFileSync(path.join(cwd, '.am', '.gitignore'), '*\n');

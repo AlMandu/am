@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -375,6 +375,68 @@ test('instructions: solo changes three sentences of the unattended rules (four i
   assert.ok(!instructions('plan', 'demo', { solo: { owner: 'demo' } }).system.includes('(below) and the current-task mark'));
   // soloRead without solo changes nothing.
   assert.equal(instructions('do', 'demo', { soloRead: true }).system, instructions('do', 'demo').system);
+});
+
+// The flag combinations of the subagent rules: push everywhere, fix in do, part in plan.
+const agentCombos = () => AGENT_STAGES.flatMap((stage) => [false, true].flatMap((push) => (stage === 'do' ? [false, true] : [false]).flatMap((fix) => (stage === 'plan' ? [false, true] : [false]).map((part) => ({ stage, push, fix, part, slug: part ? 'demo-p1' : 'demo' })))));
+
+test('agentRules: the stage rules for an am:lean subagent, with no session wording, the report in the reply file and the runId in the status line', () => {
+  assert.deepEqual(AGENT_STAGES, STAGES);
+  const runId = 'mgs1x2y3-a1b2c3';
+  const amRoot = path.join(REPO, 'plugin');
+  const stops = ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds'];
+  const pushOk = '(the push keyword is that confirmation for the push)';
+  for (const { stage, push, fix, part, slug } of agentCombos()) {
+    const name = `${stage} push ${push} fix ${fix} part ${part}`;
+    const text = agentRules(stage, slug, { push, fix, part, owner: 'demo', runId, amRoot });
+    const reply = `.am/${slug}/reply-${stage}.md`;
+    assert.doesNotMatch(text, /session/i, name);
+    const lines = text.split('\n');
+    const status = `- Your final reply is exactly one line and nothing else: AM_STAGE: <status> ${runId}, where <status> is one of ${MARKS[stage].join(', ')}.`;
+    assert.deepEqual(lines.filter((l) => /reply/i.test(l.split(reply).join(''))), [status], `${name}: "reply" only in the status line`);
+    assert.ok(text.endsWith(`\n${status}\n`), `${name}: the status line is last`);
+    assert.deepEqual([...text.matchAll(/AM_STAGE:/g)].length, 1, `${name}: one AM_STAGE`);
+    assert.ok(text.includes(`- Before you end, write ${reply} whole with the Write tool:`), `${name}: the report rule`);
+    assert.ok(text.includes(`repeat the card in ${reply}, and end with the status NEEDS_DECISION`), name);
+    assert.ok(text.includes('with the line `<!-- am:card OPEN -->` right before each card and the line `<!-- am:card end -->` right after it'), `${name}: card marks`);
+    assert.ok(text.includes('this stage runs again as a new subagent'), name);
+    assert.ok(text.startsWith('You are one stage of the am:lean skill, a subagent the am:lean driver started for this stage only. No human watches this stage'), name);
+    assert.ok(text.includes('- Running am:lean is the user\'s request') && !text.includes('am:auto'), name);
+    // The same mark and stop list as the stage sessions and am:auto (both pinned in the instructions test above).
+    assert.match(text, /the mark \(auto-decided\), translated into the plan's language \(\(자동 결정\) in a Korean plan\)/, name);
+    for (const stop of stops) assert.ok(text.includes(stop), `${name}: ${stop}`);
+    assert.equal(text.split(pushOk).length, push ? 2 : 1, `${name}: push confirmation`);
+    assert.equal(text.includes('claude-opinion.mjs'), stage === 'plan', name);
+    if (stage === 'plan') {
+      assert.ok(text.includes(`\`node "${amRoot.split(path.sep).join('/')}/scripts/claude-opinion.mjs" <brief file>\``) && text.includes('`--as 1`') && text.includes('`--as 2`'), name);
+      assert.equal(text.includes('## Parts'), !part, name);
+      assert.equal(text.includes('This is a part plan'), part, name);
+      assert.ok(!text.includes('solo-context'), name);
+    }
+    if (stage === 'do') assert.equal(text.includes('Read .am/demo/check.md first'), fix, name);
+    if (stage === 'commit') assert.ok(text.includes(`those and ${reply} are the only files this stage can write`), name);
+    // Exactly the session text with the swaps: undo every swap and drop the added lines and the base comes back byte for byte.
+    const { swaps } = agentSwaps(stage, slug, { part, owner: 'demo', runId });
+    let back = text.slice(0, -`${status}\n`.length);
+    if (stage === 'plan') back = back.replace(/- Claude reviewer: [^\n]*\n$/, '');
+    for (const [from, to] of [...swaps].reverse()) {
+      assert.equal(back.split(to).length, 2, `${name}: ${to} once`);
+      back = back.replace(to, () => from);
+    }
+    const base = agentBase(stage, slug, { push, fix, part, owner: 'demo' });
+    assert.equal(back, base, name);
+    // The base is the stage session's own text; for plan, plus the Parts rule (the session rules of am:solo's plan stage).
+    if (stage !== 'plan') assert.equal(base, instructions(stage, slug, { push, fix }).system, name);
+    else assert.equal(base.replace(/\n- (If the Scale line says 2 or more|This is a part plan)[^\n]*/, '').replace(', .am/demo/solo-context.md (below)', ''), instructions('plan', slug, { push }).system, name);
+  }
+  assert.throws(() => agentRules('handover', 'demo', { runId }), /unknown stage/);
+  assert.throws(() => agentRules('compact', 'demo', { runId }), /unknown stage/);
+  // A swap that does not match exactly once stops the rules: a changed sentence, or one that is there twice.
+  assert.throws(() => applySwaps('a b c', [['x', 'y']]), /expected one "x", found 0/);
+  assert.throws(() => applySwaps('a b a', [['a', 'y']]), /expected one "a", found 2/);
+  assert.equal(applySwaps('a $& c', [['a', '$&'], ['c', 'd']]), '$& $& d');
+  const changed = agentBase('do', 'demo').replace('- Another session runs the am:check skill', '- Another session will run the am:check skill');
+  assert.throws(() => applySwaps(changed, agentSwaps('do', 'demo', { runId }).swaps), /Another session runs/);
 });
 
 test('contextTokens: reads the used token count of /context, ignoring the total and the percent; null when it is not there', () => {
@@ -4362,6 +4424,45 @@ test('otherRuns: a worker record or an orchestrator lease left untouched by a li
   writeFileSync(lock, JSON.stringify({ pid: LIVE, command: 'run' }));
   utimesSync(lock, old, old);
   assert.deepEqual(look(), ['am-orchestrator'], 'a lock of an older orchestrator, which is never touched, keeps the pid rule');
+});
+
+test('otherRuns: an am:lean stage.json times out a live stage by its start pid, after AGENT_STALE_MS', (t) => {
+  assert.equal(AGENT_RECORD, 'stage.json');
+  assert.equal(AGENT_STALE_MS, 20 * 60000);
+  assert.ok(AGENT_STALE_MS > 600000, 'longer than one tool call');
+  const dir = makeRepo(t, { plan: SMALL });
+  const now = Date.now();
+  const at = (fields) => `${JSON.stringify({ t: new Date(now).toISOString(), ...fields })}\n`;
+  taskEvents(dir, 'a', [at({ ev: 'start', text: 's', pid: LIVE, stage: 'plan' })]);
+  const look = (o = {}) => otherRuns(dir, 'demo', { alive: aliveOnly, ...o }).runs;
+  const aDir = path.join(dir, '.am', 'a');
+  const agent = path.join(aDir, AGENT_RECORD);
+  const worker = path.join(aDir, WORKER_FILES.record);
+  writeFileSync(agent, JSON.stringify({ pid: LIVE, runId: 'r-000000', stage: 'plan', slug: 'a', t: now }));
+  assert.deepEqual(leaseOf(aDir, LIVE), { file: agent, ms: AGENT_STALE_MS });
+  assert.deepEqual(look(), ['a'], 'a touched stage.json blocks');
+  const past = (ms) => new Date(now - ms);
+  utimesSync(agent, past(WORKER_STALE_MS + 60000), past(WORKER_STALE_MS + 60000));
+  assert.deepEqual(look(), ['a'], 'past the worker stale time but within AGENT_STALE_MS it still blocks');
+  utimesSync(agent, past(AGENT_STALE_MS + 60000), past(AGENT_STALE_MS + 60000));
+  assert.deepEqual(look(), [], 'untouched past AGENT_STALE_MS');
+  assert.deepEqual(look({ trustStale: true }), ['a'], 'trusted for now');
+  assert.deepEqual(look({ agentStaleMs: AGENT_STALE_MS * 2 }), ['a'], 'the stale time is an option');
+  // An old worker record of a dead worker beside a fresh stage.json: stage.json is the start's record.
+  writeFileSync(agent, JSON.stringify({ pid: LIVE, runId: 'r-000000', stage: 'plan', slug: 'a', t: now }));
+  writeFileSync(worker, JSON.stringify({ pid: DEAD, t: 0, stage: 'do' }));
+  utimesSync(worker, past(WORKER_STALE_MS * 10), past(WORKER_STALE_MS * 10));
+  assert.deepEqual(leaseOf(aDir, LIVE), { file: agent, ms: AGENT_STALE_MS });
+  assert.deepEqual(look(), ['a'], 'judged by stage.json');
+  // Only records of another pid: the pid alone decides, however old they are.
+  writeFileSync(agent, JSON.stringify({ pid: DEAD, runId: 'r-000000', stage: 'plan', slug: 'a', t: 0 }));
+  utimesSync(agent, past(AGENT_STALE_MS * 2), past(AGENT_STALE_MS * 2));
+  assert.equal(leaseOf(aDir, LIVE), null);
+  assert.deepEqual(look(), ['a'], 'no record of the start pid: the pid decides');
+  // A worker record of the start pid comes first, with its own stale time.
+  writeFileSync(worker, JSON.stringify({ pid: LIVE, t: now, stage: 'do' }));
+  assert.deepEqual(leaseOf(aDir, LIVE, { staleMs: 7 }), { file: worker, ms: 7 });
+  assert.equal(leaseOf(aDir, null), null);
 });
 
 test('wait: a stage worker record left untouched by a live pid holds a new stage only for the settle time', async (t) => {
