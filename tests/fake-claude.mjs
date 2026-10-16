@@ -12,6 +12,8 @@
 // 그 단계를 시작하기 전에 다른 작업의 표시를 기다린다(함께 돌지 않으면 기다리다 실패한다).
 // 별도 작업 공간(git worktree)에서 불려도 카운터·호출 기록·표시는 원래 저장소의 .orchestrator 에 둔다.
 // 원래 저장소 경로는 FAKE_MAIN_REPO(테스트의 makeRepo 가 넣는다)로 받고, 없을 때만 git rev-parse --git-common-dir 로 찾는다.
+// FAKE_CLAUDE_OPINION(ok|fail|empty|hang|orphan)이 있으면 claude-opinion.mjs 용 2차 의견 세션처럼 군다: stdin 을 읽고
+// FAKE_CLAUDE_OPINION_LOG 에 { argv, stdin, mcp, env } 한 줄을 남기고, ok 는 FAKE_CLAUDE_ANSWER 를 출력하고, hang·orphan 은 FAKE_CLAUDE_PID 에 pid 를 쓰고 기다린다.
 // `plugin list --json` 은 FAKE_PLUGIN_LIST 를 그대로 출력하고(없으면 모르는 명령으로 실패), 호출 기록에 남기지 않는다.
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +25,7 @@ if (argv.includes('--version')) {
   process.stdout.write('2.1.290 (fake)\n');
   process.exit(0);
 }
+if (process.env.FAKE_CLAUDE_OPINION) await opinion(process.env.FAKE_CLAUDE_OPINION);
 if (argv[0] === 'plugin' && argv[1] === 'list') {
   if (process.env.FAKE_PLUGIN_LIST === undefined) {
     process.stderr.write('error: unknown command \'plugin\'\n');
@@ -253,3 +256,36 @@ if (phase && (scenario.leaveChild || []).includes(phase)) {
   writeFileSync(path.join(stateDir, `fake-left-${phase}.pid`), String(child.pid));
 }
 process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: session, total_cost_usd: 0.01, num_turns: 3, permission_denials: denials })}\n`);
+
+/** claude-opinion.mjs 용 2차 의견 세션. 끝나거나 영원히 기다리며, 아래의 단계 세션 처리로는 돌아가지 않는다. */
+async function opinion(mode) {
+  let stdin = '';
+  process.stdin.setEncoding('utf8');
+  for await (const d of process.stdin) stdin += d;
+  const at = argv.indexOf('--mcp-config');
+  const mcp = at >= 0 && existsSync(argv[at + 1]) ? readFileSync(argv[at + 1], 'utf8') : null;
+  const { DISABLE_AUTOUPDATER = null, FORCE_PROMPT_CACHING_5M = null, AM_HANDOVER_OWNER = null } = process.env;
+  if (process.env.FAKE_CLAUDE_OPINION_LOG) {
+    appendFileSync(process.env.FAKE_CLAUDE_OPINION_LOG, `${JSON.stringify({ argv, stdin, mcp, env: { DISABLE_AUTOUPDATER, FORCE_PROMPT_CACHING_5M, AM_HANDOVER_OWNER } })}\n`);
+  }
+  process.stderr.write('[fake] reading files...\n');
+  if (mode === 'fail') {
+    process.stderr.write('error: not logged in\n');
+    process.exit(1);
+  }
+  if (mode === 'empty') process.exit(0);
+  if (mode === 'hang' || mode === 'orphan') {
+    let pid = process.pid;
+    if (mode === 'orphan') {
+      // 표준 출력·오류를 물려받은 손자를 다른 프로세스 그룹에 띄워, 그룹째 끄는 killTree 가 놓치게 한다.
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });
+      child.unref();
+      pid = child.pid;
+    }
+    if (process.env.FAKE_CLAUDE_PID) writeFileSync(process.env.FAKE_CLAUDE_PID, String(pid));
+    setInterval(() => {}, 1000);
+    await new Promise(() => {});
+  }
+  process.stdout.write(`${process.env.FAKE_CLAUDE_ANSWER || 'Choice 1: A\nWhy: fake.\nRisk: none'}\n`);
+  process.exit(0);
+}
