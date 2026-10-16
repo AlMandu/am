@@ -9,7 +9,7 @@ import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, merge: 80, sessions: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, sessions: 80 };
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
@@ -41,8 +41,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am:auto, am:solo and am:merge are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto', 'solo', 'merge']) {
+test('am:plan, am:do, am:auto and am:solo are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto', 'solo']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -53,7 +53,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto', 'solo', 'merge'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'auto', 'solo'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
@@ -61,13 +61,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   }
 });
 
-test('am:merge moves the commits am:commit records and never pushes', () => {
-  const skill = read('merge');
-  for (const s of ['.am/<slug>/commits.md', '.orchestrator/runs/<run>/state.json', 'git merge --no-ff', '--include-untracked', 'git cherry-pick -x', '.am/<slug>/merge.md', 'node "${CLAUDE_PLUGIN_ROOT}/hooks/gate.mjs" --run --json', '.orchestrator/lock.json', '## Parts', '- Part <k>:', '.am/<slug>-p<k>/request.md', '.am/<slug>-p<k>/commits.md', '`.am/<slug>-p<n>/` folder (n a number)']) assert.ok(skill.includes(s), s);
-  // am:solo writes a part's request first line and am:merge reads it to find the part's commits.md.
-  for (const name of ['solo', 'merge']) assert.ok(read(name).includes('`Part <k> of <N> of .am/<slug>/plan.md:`'), name);
-  assert.match(skill, /Never push/);
-  assert.match(skill, /that nothing was pushed/);
+test('am:commit records its commits outside am-orchestrator', () => {
   // am:commit writes the record, except in a session am-orchestrator started (the words every orchestrator session gets).
   assert.match(read('commit'), /your instructions do not say you are running inside am-orchestrator, append `<full hash> <subject>` as one line to `\.am\/<slug>\/commits\.md`/);
   const orch = readFileSync(path.resolve(ROOT, '..', '..', 'orchestrator', 'scripts', 'orchestrator.mjs'), 'utf8');
@@ -82,11 +76,9 @@ test('the workflow skills keep a handoff document, also in am-orchestrator, and 
     // Sessions am-orchestrator started keep the document too.
     assert.ok(!read(name).includes('Handoff: unless'), name);
   }
-  // The merge skill only touches its status and next action, and only when it exists.
-  assert.match(read('merge'), /If `\.am\/<slug>\/handoff\.md` exists, change only its status and next action/i, 'merge');
   // The mark is written by plan and do, and only listed first as current, never followed on its own.
   for (const name of ['plan', 'do']) assert.match(read(name), /unless your instructions say you are running inside am-orchestrator, write the slug as one line to `\.am\/\.active`/i, name);
-  for (const name of ['do', 'commit', 'merge']) assert.ok(read(name).includes('the one named on the first line of `.am/.active` first and marked as current (only when that folder exists)'), name);
+  for (const name of ['do', 'commit']) assert.ok(read(name).includes('the one named on the first line of `.am/.active` first and marked as current (only when that folder exists)'), name);
   // am:do still ends by handing over to am:check (the orchestrator relies on it).
   assert.match(read('do').trim().split('\n').at(-1), /use the am:check skill/);
 });
@@ -124,6 +116,8 @@ test('am:solo follows am:auto\'s file with its own differences', async () => {
   const solo = withoutCommon(read('solo'));
   const { PART_LINE } = await import('../plugin/scripts/stage.mjs');
   for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  // A part request's first line: a later run reads part folders written earlier and stops when it does not match.
+  for (const s of ['`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(solo.includes(s), s);
   // The plan stage writes the Parts lines in this form; in a session with no stage sessions am:solo writes them itself.
   assert.ok(solo.includes(PART_LINE), 'PART_LINE');
   assert.ok(!solo.includes('skills/run/SKILL.md'));

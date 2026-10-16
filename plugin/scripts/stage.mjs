@@ -243,7 +243,7 @@ export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = 
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
     case 'commit':
-      // It may write only the task's commit record, which the am:merge skill reads, and its handoff document (in solo mode also
+      // It may write only the task's commit record and its handoff document (in solo mode also
       // its owner's memory file). Restore only unstages (a plain restore would throw away
       // the user's changes in this tree); after `--` git reads only paths, so no `--worktree` slips in. Bash only: PowerShell might eat the `--`.
       return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? ['commits.md', 'handoff.md'].flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : []), ...(soloOwner ? [`Edit(/.am/${soloOwner}/${SOLO_CONTEXT})`, `Edit(.am/${soloOwner}/${SOLO_CONTEXT})`] : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
