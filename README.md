@@ -17,8 +17,9 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 `am:solo` 도 같은 일을 하되, Claude Code 에서 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰며(맥락 사용량이 20% 이상일 때만 단계 사이에 압축하고, 압축으로도 부족하면 새 세션으로 시작), 큰 작업도 오케스트레이터에 넘기지 않고 부분으로 나눠 차례로 돕니다.
 
-그 밖의 명령 하나는 필요할 때만 씁니다.
+그 밖의 명령 둘은 필요할 때만 씁니다.
 
+- `am:land`: 지금 브랜치를 대상 브랜치(생략하면 원격 기본 브랜치)에 합쳐 원격에 push 합니다. 지금 작업 폴더와 커밋하지 않은 변경은 그대로 두고, 강제 push 는 하지 않습니다.
 - `am:sessions`: 이 PC 에서 `am:auto` 와 오케스트레이터가 띄운 세션이 작업 폴더별로 지금 무엇을 하는지 한 번 보여 줍니다. 아무것도 바꾸거나 멈추지 않습니다.
 
 명령과 함께 두 가지 장치가 돕니다.
@@ -117,6 +118,7 @@ Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 �
 | 멈춘 자동 진행 이어 가기 | `/am:auto <slug>` | `$am:auto <slug>` |
 | 요청 하나로 한 세션에서 계획부터 커밋까지 | `/am:solo 0으로 나누면 오류 문구를 보여 줘` | `$am:solo ...` |
 | 멈춘 한 세션 진행 이어 가기 | `/am:solo <slug>` | `$am:solo <slug>` |
+| 지금 브랜치를 기본 브랜치에 합쳐 push | `/am:land [브랜치]` | `$am:land [브랜치]` |
 | 돌고 있는 세션 보기 | `/am:sessions` | `$am:sessions` |
 
 ## 명령별 설명
@@ -262,6 +264,17 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 네 단계를 각각 새 `c
 - `am:auto` 의 진행 소식에 더해 다음 줄이 나옵니다: `solo: context N% of the window; continued without compaction`(사용량이 20% 미만이라 압축 없이 이어 감), `solo: context N% of the window; compacting` 또는 `solo: context use could not be read (…); compacting`(압축 시작), `conversation compacted before the <단계> stage of <slug>`(단계 사이 압축), `solo: context N% of the window after compaction`(압축 뒤 사용량), `solo: context still N% of the window after compaction; started a new session that may read .am/<slug>/solo-clear-context.md`(압축으로 부족해 새 세션으로 시작), `solo: the context could not be saved before the clear (…)`(임시 맥락 파일을 쓰지 못함), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
 - 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유(압축으로 부족했으면 `context N% of the window after compaction`)와 저장된 맥락 파일을 받았는지가 나옵니다.
 - 중간에 멈추면 원인을 고치거나 질문에 답한 뒤 `am:solo <slug>` 로 이어 갑니다.
+
+### `am:land`: 지금 브랜치를 대상 브랜치에 합쳐 push
+
+`am:land [브랜치]` 는 지금 브랜치의 커밋을 대상 브랜치에 합쳐 `origin` 에 push 합니다. 브랜치를 생략하면 원격의 기본 브랜치(예: `main`)에 합칩니다. 지금 작업 폴더는 처음부터 끝까지 건드리지 않으므로, 커밋하지 않은 변경(스테이징 여부, 새 파일 포함)은 그대로 남고 push 에도 들어가지 않습니다.
+
+- 대상 브랜치가 지금 브랜치 바로 뒤에 있으면 그대로 앞으로 당겨 push 합니다(fast-forward).
+- 갈라져 있으면 `.am/land-<시각>/` 에 잠깐 만든 임시 작업 폴더에서 병합 커밋을 만들어 push 하고, 그 폴더는 끝나거나 멈출 때 지웁니다. 지금 브랜치에는 병합 커밋이 생기지 않습니다.
+- 충돌은 임시 작업 폴더 안에서 양쪽 의도를 살려 풉니다. 확신이 없으면 병합을 되돌리고 멈춥니다. push 전에 테스트나 게이트는 돌리지 않습니다.
+- 강제 push 는 하지 않습니다. 원격에 새 커밋이 생겨 거절되면 pull·rebase 없이 멈추고 알립니다.
+- 로컬 대상 브랜치는 원격에 맞춥니다. 원격과 다르면 시작할 때 원격 위치로 옮기므로 로컬 대상 브랜치에만 있던 커밋은 그 브랜치에서 빠지고, 답에 옮기기 전 위치와 빠진 커밋 목록을 보여 줘 되찾을 수 있게 합니다. 로컬에 없으면 push 한 커밋에 원격을 따라가는 브랜치로 만듭니다. 다른 작업 폴더에 체크아웃돼 있어 옮길 수 없으면 알리기만 합니다.
+- push 를 하므로 사용자가 부를 때만 돕니다. 예전 `am:merge` 의 기록(`merge.md`, `feature/<slug>` 브랜치, `commits.md`)은 읽지 않습니다.
 
 ### `am:sessions`: 돌고 있는 세션 보기
 
@@ -420,6 +433,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:commit` | `sonnet` | `medium` |
 | `am:auto` | `opus` | `medium` |
 | `am:solo` | `opus` | `medium` |
+| `am:land` | `opus` | `high` |
 | `am:sessions` | `sonnet` | `low` |
 | 단계 사이 맥락 압축 세션(`am:auto`·`am:solo`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
@@ -538,7 +552,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 
 ## 개발
 
-플러그인은 스킬 7개, 2차 의견 서브에이전트 1개, 커밋 게이트 훅 1개(`hook.mjs`·`gate.mjs`), `am:auto` 의 오케스트레이터 넘김 훅 1개(`handover.mjs`), `am:auto` 가 단계마다 새 세션을 띄우는 단계 세션 스크립트 1개(`stage.mjs`), 그 단계의 진행 소식을 기다렸다가 알려 주는 스크립트 1개(`progress.mjs`), Codex 2차 의견 스크립트 1개(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)을 읽는 스크립트 1개(`user-models.mjs`), PC 전체 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트 1개(`user-settings.mjs`), 두 사용자 설정 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트 1개(`user-files.mjs`), 남은 메모리를 확인하고 실행 기록을 남기는 스크립트 1개(`memory-guard.mjs`), 세션이 남긴 프로세스를 정리하는 스크립트 1개(`proc-tree.mjs`)와 PC 에서 돌고 있는 am 세션을 보여 주는 스크립트 1개(`sessions.mjs`)로 되어 있습니다.
+플러그인은 스킬 8개, 2차 의견 서브에이전트 1개, 커밋 게이트 훅 1개(`hook.mjs`·`gate.mjs`), `am:auto` 의 오케스트레이터 넘김 훅 1개(`handover.mjs`), `am:auto` 가 단계마다 새 세션을 띄우는 단계 세션 스크립트 1개(`stage.mjs`), 그 단계의 진행 소식을 기다렸다가 알려 주는 스크립트 1개(`progress.mjs`), Codex 2차 의견 스크립트 1개(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)을 읽는 스크립트 1개(`user-models.mjs`), PC 전체 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트 1개(`user-settings.mjs`), 두 사용자 설정 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트 1개(`user-files.mjs`), 남은 메모리를 확인하고 실행 기록을 남기는 스크립트 1개(`memory-guard.mjs`), 세션이 남긴 프로세스를 정리하는 스크립트 1개(`proc-tree.mjs`)와 PC 에서 돌고 있는 am 세션을 보여 주는 스크립트 1개(`sessions.mjs`)로 되어 있습니다.
 
 플러그인을 고치는 사람은 저장소 주소 대신 로컬 경로(예: `C:\Projects\am`)로 설치하면, 커밋하지 않은 수정도 바로 시험할 수 있습니다.
 

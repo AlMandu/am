@@ -9,7 +9,7 @@ import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, sessions: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, land: 80, sessions: 80 };
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
@@ -41,8 +41,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am:auto and am:solo are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto', 'solo']) {
+test('am:plan, am:do, am:auto, am:solo and am:land are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto', 'solo', 'land']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -53,12 +53,21 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto', 'solo'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'auto', 'solo', 'land'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
     assert.ok(USER_EFFORTS.includes(fm.effort), `${name}: ${fm.effort}`);
   }
+});
+
+test('am:land lands from a temporary worktree, never force pushes and never touches the working tree', () => {
+  const skill = withoutCommon(read('land'));
+  for (const s of ['git worktree add --detach', 'git merge --no-ff', 'merge --continue', 'merge --abort', 'git worktree remove', 'git fetch . ', 'git ls-remote --symref origin HEAD', 'git branch -f <target> origin/<target>', '--set-upstream-to=origin/<target>', 'Never force push', "Never touch this folder's working tree"]) assert.ok(skill.includes(s), s);
+  // Nothing that moves this folder's checkout, a commit the gate would check in the bare temp folder, or a ref move that skips the worktree check.
+  assert.doesNotMatch(skill, /git (switch|checkout|stash|reset|restore|rebase|pull)\b/);
+  for (const s of ['git commit', 'git update-ref', 'merge.md', 'commits.md', 'feature/<slug>']) assert.ok(!skill.includes(s), s);
+  for (const line of skill.split('\n').filter((l) => l.includes('git push'))) assert.doesNotMatch(line, /--force|-f |\+/, line);
 });
 
 test('am:commit records its commits outside am-orchestrator', () => {
