@@ -19,11 +19,14 @@ const CONFIG_FILE = 'am-gate.json';
 const HOOK_BUDGET_MS = 840000;
 export const MAX_REASON_CHARS = 8000;
 const DEFAULT_TIMEOUT_MS = 300000;
+const CLOSE_GRACE_MS = 1500; // wait for close after exit; fits in the 60 s between HOOK_BUDGET_MS and the hook timeout
 const TAIL_LINES = 40;
 const TAIL_BYTES = 4000;
 const OUTPUT_CAP_BYTES = 1024 * 1024;
 const NOT_FOUND_EXITS = new Set([127, 9009]); // sh / cmd.exe: command not found
-const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+// Shell that runs a hook payload's plain-string command, by tool name.
+const TOOL_SHELLS = { Bash: 'bash', PowerShell: 'pwsh' };
+const SHELL_TOOLS = new Set(Object.keys(TOOL_SHELLS));
 
 // ---------------------------------------------------------------- detection
 
@@ -31,8 +34,12 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
  * Splits a command line into words and separators. Backslash is not an escape (Windows
  * paths), except before a newline outside single quotes: a line continuation, removed
  * as a shell does. An unquoted `#` that starts a word comments out the rest of its line.
+ * `shell` 'bash' (or another POSIX shell) adds POSIX backslash escapes; 'pwsh' makes the backtick its escape
+ * (a line-end backtick joins the lines) in place of the backslash line continuation.
  */
-function tokenize(command) {
+function tokenize(command, shell) {
+  const posix = POSIX_SHELLS.has(shell);
+  const pwsh = shell === 'pwsh' || shell === 'powershell';
   const tokens = [];
   let buf = '';
   let quote = null;
@@ -44,12 +51,23 @@ function tokenize(command) {
   };
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i];
-    if (ch === '\\' && quote !== "'") {
+    if (ch === '\\' && quote !== "'" && !pwsh) {
       const nl = command[i + 1] === '\n' ? 1 : command.slice(i + 1, i + 3) === '\r\n' ? 2 : 0;
       if (nl > 0) {
         i += nl;
         continue;
       }
+      if (posix && i + 1 < command.length && (quote === null || '"\\`$'.includes(command[i + 1]))) {
+        buf += command[i + 1];
+        i += 1;
+        continue;
+      }
+    }
+    if (pwsh && ch === '`' && quote !== "'" && i + 1 < command.length) {
+      const nl = command.slice(i + 1, i + 3) === '\r\n' ? 2 : 1;
+      if (command[i + 1] !== '\n' && nl === 1) buf += command[i + 1];
+      i += nl;
+      continue;
     }
     if (quote) {
       if (ch === quote) quote = null;
@@ -114,8 +132,11 @@ const PREFIX_OPTS_WITH_VALUE = {
 const CD_WORDS = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-location']);
 const UNRESOLVED_DIR_WORDS = new Set(['popd', 'pop-location']);
 const SHELL_BINS = new Set(['bash', 'sh', 'zsh', 'dash', 'pwsh', 'powershell', 'cmd']);
+const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash']);
 const GIT_OPTS_WITH_VALUE = new Set(['-c', '--namespace', '--super-prefix', '--config-env', '--exec-path']);
 const NOT_A_COMMIT = new Set(['--help', '-h', '--dry-run']);
+// git commit options whose next word is their value, so `-m --dry-run` is still a commit.
+const COMMIT_OPTS_WITH_VALUE = new Set(['-m', '-F', '-C', '-c', '-t', '--message', '--file', '--reuse-message', '--reedit-message', '--template', '--author', '--date', '--fixup', '--squash', '--cleanup', '--trailer', '--pathspec-from-file']);
 
 function binName(word) {
   return path.basename(word.replace(/\\/g, '/')).toLowerCase().replace(/\.exe$/, '');
@@ -123,6 +144,11 @@ function binName(word) {
 
 function isDynamic(word) {
   return /[$%`~]/.test(word);
+}
+
+/** `C:dir` resolves against a per-drive cwd the hook cannot know; bash reads `C:\dir` that way. */
+function driveRelative(word) {
+  return /^[a-zA-Z]:(?![\\/])/.test(word);
 }
 
 /** Resolves a directory argument; Git Bash style /c/x becomes C:/x on Windows. */
@@ -188,7 +214,7 @@ function gitCommit(args, dir) {
     if (a === '-C') {
       const v = args[i + 1];
       if (v === undefined) return null;
-      if (isDynamic(v)) unresolved = true;
+      if (isDynamic(v) || driveRelative(v)) unresolved = true;
       else d = resolveDir(d, v);
       i += 2;
       continue;
@@ -211,10 +237,13 @@ function gitCommit(args, dir) {
       continue;
     }
     if (a !== 'commit') return null;
-    if (args.slice(i + 1).some((r) => NOT_A_COMMIT.has(r))) return null;
+    for (let j = i + 1; j < args.length; j += 1) {
+      if (COMMIT_OPTS_WITH_VALUE.has(args[j])) j += 1;
+      else if (NOT_A_COMMIT.has(args[j])) return null;
+    }
     const location = workTree ?? gitDir;
     if (location !== null && location !== undefined) {
-      if (isDynamic(location)) unresolved = true;
+      if (isDynamic(location) || driveRelative(location)) unresolved = true;
       else d = workTree ? resolveDir(d, workTree) : path.dirname(resolveDir(d, gitDir));
     }
     return { dir: d, unresolved };
@@ -224,14 +253,14 @@ function gitCommit(args, dir) {
 
 /**
  * Every `git commit` in a command line, with the directory it runs in.
- * `shell` is the binary name of the shell running `command`; only 'cmd' drops `/d` from cd / chdir.
+ * `shell` is the binary name of the shell running `command`: it picks the tokenize rules, and 'cmd' drops `/d` from cd / chdir.
  */
 export function findCommits(command, baseDir, depth = 0, shell) {
   const found = [];
   if (typeof command !== 'string' || command.trim() === '' || depth > 3) return found;
   let dir = baseDir;
   let unresolved = false;
-  for (const raw of segments(tokenize(command))) {
+  for (const raw of segments(tokenize(command, shell))) {
     const words = stripPrefixes(raw);
     if (words.length === 0) continue;
     const head = words[0].toLowerCase();
@@ -239,7 +268,7 @@ export function findCommits(command, baseDir, depth = 0, shell) {
     if (CD_WORDS.has(head)) {
       const args = words.slice(1);
       const target = cdTarget(shell === 'cmd' && (head === 'cd' || head === 'chdir') ? args.filter((a) => !/^\/d$/i.test(a)) : args);
-      if (target === null) unresolved = true;
+      if (target === null || driveRelative(target)) unresolved = true;
       else dir = resolveDir(dir, target);
     } else if (UNRESOLVED_DIR_WORDS.has(head)) {
       unresolved = true;
@@ -365,7 +394,7 @@ function runCommand(run, { cwd, timeoutMs }) {
       resolve({ spawnError: err.message, exit: null, timedOut: false, output: '', durationMs: 0 });
       return;
     }
-    running.add(child); // removed on close, not exit: a grandchild may still hold the pipes
+    running.add(child); // removed in finish: on close, or a grace after exit while a grandchild holds the pipes
     let output = '';
     const onData = (d) => {
       output += d;
@@ -377,18 +406,38 @@ function runCommand(run, { cwd, timeoutMs }) {
     child.stderr.on('data', onData);
     let timedOut = false;
     let settled = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(child);
-    }, Math.max(1, timeoutMs));
+    let exitCode = null; // set on exit
+    let grace = null;
     const finish = (r) => {
       if (settled) return;
       settled = true;
       running.delete(child);
       clearTimeout(timer);
+      clearTimeout(grace);
       resolve({ output, durationMs: Date.now() - started, timedOut, ...r });
     };
+    // No close within the grace: stop waiting for the pipes. After exit only POSIX kills the group, whose id
+    // stays reserved while it has members (a leftover holder); a Windows pid may already be reused.
+    const abandon = () => {
+      if (settled) return;
+      if (exitCode === null) child.unref();
+      else if (process.platform !== 'win32') killTree(child);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish({ spawnError: null, exit: exitCode ?? 1 });
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+      grace = setTimeout(abandon, CLOSE_GRACE_MS);
+    }, Math.max(1, timeoutMs));
     child.on('error', (err) => finish({ spawnError: err.message, exit: null }));
+    child.on('exit', (code) => {
+      exitCode = code === null ? 1 : code;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      grace = setTimeout(abandon, CLOSE_GRACE_MS);
+    });
     child.on('close', (code) => finish({ spawnError: null, exit: code === null ? 1 : code }));
   });
 }
@@ -538,13 +587,23 @@ export async function decide(raw, { env = process.env, budgetMs = HOOK_BUDGET_MS
   const input = payload.tool_input || {};
   const cwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
   const base = typeof input.workdir === 'string' && input.workdir ? resolveDir(cwd, input.workdir) : cwd;
-  const commits = findCommits(commandText(input), base, 0, argvShell(input.command));
+  // A plain string is read with today's rules and its tool's shell rules (Codex on Windows is not measured);
+  // a commit either reading finds is checked, today's folders first.
+  const text = commandText(input);
+  const shells = Array.isArray(input.command) ? [argvShell(input.command)] : [undefined, TOOL_SHELLS[payload.tool_name]];
+  const commits = shells.flatMap((shell) => findCommits(text, base, 0, shell));
   if (commits.length === 0) return { stdout: '' };
 
+  const targets = new Map(); // one gate run per repository root
+  for (const c of commits) {
+    const root = findRepoRoot(c.dir);
+    const prev = targets.get(root);
+    targets.set(root, prev ? { dir: prev.dir, unresolved: prev.unresolved || c.unresolved } : c);
+  }
   const notes = [];
   const passed = [];
   const started = Date.now();
-  for (const target of new Map(commits.map((c) => [c.dir, c])).values()) {
+  for (const target of targets.values()) {
     if (target.unresolved) notes.push(`could not tell which folder the commit runs in; checked ${target.dir}`);
     const report = await runGate({ dir: target.dir, mode: 'hook', budgetMs: budgetMs - (Date.now() - started), env });
     if (report.status === STATUS.FAIL) {

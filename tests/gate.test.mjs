@@ -134,6 +134,38 @@ test('cd /d keeps its meaning outside cmd', () => {
   assert.equal(commandText({ command: ['cmd', '/c', 'cd /d repo && git commit -m x'] }), 'cd /d repo && git commit -m x');
 });
 
+test('reads a command with the rules of the shell that runs it', () => {
+  const has = (cmd, shell) => findCommits(cmd, BASE, 0, shell).length > 0;
+  // bash: a backslash outside quotes makes the next character plain, so the quote opens nothing.
+  assert.ok(has("echo don\\'t; git commit -m x", 'bash'));
+  assert.equal(has("echo don\\'t; git commit -m x"), false);
+  assert.equal(has('echo \\; git commit -m x', 'bash'), false);
+  assert.ok(has("echo 'it\\'; git commit -m x", 'bash')); // no escape inside single quotes
+  // pwsh: a line-end backtick joins the lines.
+  assert.ok(has('git `\ncommit -m x', 'pwsh'));
+  assert.ok(has('git `\r\ncommit -m x', 'powershell'));
+  assert.equal(has('git `\ncommit -m x', 'bash'), false);
+  // pwsh: a backtick escapes the next character, and a line-end backslash joins nothing.
+  assert.ok(has("echo don`'t; git commit -m x", 'pwsh'));
+  assert.ok(has('echo "it`"s"; git commit -m x', 'pwsh'));
+  assert.ok(has('Set-Location C:\\repo\\\ngit commit -m x', 'pwsh'));
+  for (const cmd of ['sed -i "s/\\"old\\"/\\"new\\"/" f.txt && git commit -am x', 'echo "a \\"b\\"" ; git commit -m x', 'node -e "console.log(\\"hi\\")"; git commit -m x']) {
+    for (const shell of [undefined, 'bash', 'pwsh']) assert.ok(has(cmd, shell), `${shell}: ${cmd}`);
+  }
+  // A drive-relative folder (bash reads C:\dir as C:dir) is not resolved.
+  const c = findCommits('cd C:\\dir && git commit -m x', BASE, 0, 'bash')[0];
+  assert.deepEqual(c, { dir: BASE, unresolved: true });
+});
+
+test('values of commit options are not read as --dry-run or --help', () => {
+  for (const cmd of ['git commit -m --dry-run', 'git commit -F --help', 'git commit --message --dry-run', 'git commit -C HEAD --amend']) {
+    assert.ok(isCommit(cmd), cmd);
+  }
+  for (const cmd of ['git commit --dry-run -m x', 'git commit -m x --dry-run', 'git commit -am x -h']) {
+    assert.equal(isCommit(cmd), false, cmd);
+  }
+});
+
 test('reads Codex-style argv tool input', () => {
   assert.equal(commandText({ command: ['bash', '-lc', 'git commit -m x'] }), 'git commit -m x');
   assert.equal(commandText({ command: 'git status' }), 'git status');
@@ -224,9 +256,63 @@ test('a command that hangs past its timeout blocks, and the process tree is kill
   const t0 = Date.now();
   const reason = denialReason(await decide(payload(repo, 'git commit -m x')));
   assert.match(reason, /did not finish within/);
-  // runCommand settles on close, which waits for the grandchild that holds the pipes, so returning within 10 s shows the tree was killed
   assert.ok(Date.now() - t0 < 10000);
   rmSync(repo, { recursive: true, force: true });
+});
+
+// Starts a grandchild that holds the gate's pipes for argv[2] ms (argv[3] 'detached': out of the tree kill), writes its pid and exits.
+const HOLDER_SCRIPT = [
+  "const { spawn } = require('child_process');",
+  "const g = spawn(process.execPath, ['-e', 'setTimeout(()=>{},' + process.argv[2] + ')'], { stdio: 'inherit', detached: process.argv[3] === 'detached', windowsHide: true });",
+  "require('fs').writeFileSync('holder.pid', String(g.pid));",
+  'g.unref();',
+].join('\n');
+
+/** Runs one gate command in a repo holding HOLDER_SCRIPT; returns {report, ms, holderAlive}, and always stops the holder. */
+async function runHeld(run, timeoutMs) {
+  const repo = makeRepo({ commands: [{ name: 'held', run, timeoutMs }] });
+  writeFileSync(path.join(repo, 'holder.js'), HOLDER_SCRIPT);
+  let pid = null;
+  try {
+    const t0 = Date.now();
+    const report = await runGate({ dir: repo, mode: 'hook' });
+    const ms = Date.now() - t0;
+    pid = Number(readFileSync(path.join(repo, 'holder.pid'), 'utf8'));
+    return { report, ms, holderAlive: !(await waitFor(() => !alive(pid), 2000)) };
+  } finally {
+    if (pid && alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
+    await sleep(200);
+    rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
+test('a grandchild that keeps the pipes open does not hold up a finished command', async () => {
+  const { report, ms } = await runHeld('node holder.js 15000 detached', 10000);
+  assert.equal(report.status, STATUS.PASS, JSON.stringify(report));
+  assert.ok(ms < 8000, `${ms} ms`);
+});
+
+test('a finished command keeps its own exit code while a grandchild holds the pipes', async () => {
+  const and = process.platform === 'win32' ? '&' : ';';
+  const { report, ms } = await runHeld(`node holder.js 15000 detached ${and} exit 3`, 10000);
+  assert.equal(report.status, STATUS.FAIL, JSON.stringify(report));
+  assert.match(report.reason, /exited with 3/);
+  assert.ok(ms < 8000, `${ms} ms`);
+});
+
+test('after the shell ends, a grandchild in its process group is stopped', { skip: process.platform === 'win32' }, async () => {
+  const { report, ms, holderAlive } = await runHeld('node holder.js 15000', 10000);
+  assert.equal(report.status, STATUS.PASS, JSON.stringify(report));
+  assert.ok(ms < 8000, `${ms} ms`);
+  assert.equal(holderAlive, false);
+});
+
+test('a timeout ends on time even when a grandchild outside the tree keeps the pipes', async () => {
+  const and = process.platform === 'win32' ? '&' : ';';
+  const { report, ms } = await runHeld(`node holder.js 30000 detached ${and} ${SLEEP}`, 2000);
+  assert.equal(report.status, STATUS.FAIL);
+  assert.match(report.reason, /did not finish within/);
+  assert.ok(ms < 8000, `${ms} ms`);
 });
 
 test('running out of the shared time budget blocks with advice', async () => {
@@ -327,6 +413,35 @@ test('Codex workdir is honored', async () => {
   const repo = makeRepo({ commands: [{ name: 'build', run: FAIL }] });
   const raw = JSON.stringify({ tool_name: 'Bash', tool_input: { command: ['bash', '-lc', 'git commit -m x'], workdir: repo }, cwd: tmpdir() });
   denialReason(await decide(raw));
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('a plain-string commit is checked when the tool shell reading or the plain reading finds it', async () => {
+  const repo = makeRepo({ commands: [{ name: 'build', run: FAIL }] });
+  for (const tool of ['Bash', 'PowerShell']) {
+    for (const cmd of [
+      'git commit -m --dry-run',
+      'sed -i "s/\\"old\\"/\\"new\\"/" f.txt && git commit -am x',
+      'echo "a \\"b\\"" ; git commit -m x',
+      'node -e "console.log(\\"hi\\")"; git commit -m x',
+      'echo "C:\\dir\\" ; git commit -m x',
+      `cd ${repo} && git commit -m x`,
+    ]) {
+      assert.match(denialReason(await decide(payload(repo, cmd, tool))), /compile error/, `${tool}: ${cmd}`);
+    }
+    assert.deepEqual(await decide(payload(repo, 'echo "git commit"', tool)), { stdout: '' });
+  }
+  denialReason(await decide(payload(repo, "echo don\\'t; git commit -m x", 'Bash')));
+  denialReason(await decide(payload(repo, 'git `\ncommit -m x', 'PowerShell')));
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('a repository runs its gate once when the readings give different folders in it', async () => {
+  const repo = makeRepo({ commands: [{ name: 'count', run: 'node -e "require(\'fs\').appendFileSync(\'runs.txt\',\'x\')"' }] });
+  // plain reading: sub\dir, bash reading: subdir; both walk up to the same repository
+  const out = parseStdout((await decide(payload(repo, 'cd sub\\dir && git commit -m x', 'Bash'))).stdout);
+  assert.match(out.hookSpecificOutput.additionalContext, /^am gate: pass \(1 command, /);
+  assert.equal(readFileSync(path.join(repo, 'runs.txt'), 'utf8'), 'x');
   rmSync(repo, { recursive: true, force: true });
 });
 
