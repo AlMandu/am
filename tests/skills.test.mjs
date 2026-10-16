@@ -92,6 +92,16 @@ test('the workflow skills keep a handoff document, also in am-orchestrator, and 
   assert.match(read('do').trim().split('\n').at(-1), /use the am:check skill/);
 });
 
+test('am:do writes a do result that am:check reads for aim only and am:commit uses for its file list', () => {
+  const doSkill = read('do');
+  assert.ok(doSkill.includes('Do result: rewrite `.am/<slug>/do-result.md` whole'));
+  // The first line stays English in a plan of any language, so every reader parses it the same way.
+  assert.ok(doSkill.includes('`Status: done` or `Status: stopped - <reason>`'));
+  const check = read('check');
+  for (const s of ['`.am/<slug>/do-result.md`', 'never as evidence']) assert.ok(check.includes(s), s);
+  assert.ok(read('commit').includes('do-result.md'));
+});
+
 test('am:auto declares the hand-over hook, and only am:auto', () => {
   // Claude Code only (measured on 2.1: a plugin skill's frontmatter hook registers when the skill is invoked and
   // stays for the session, with CLAUDE_PLUGIN_ROOT set). One line, so the frontmatter stays one key per line.
