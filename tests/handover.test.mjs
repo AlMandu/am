@@ -153,6 +153,8 @@ test('denies an edit while this session\'s large plan is neither handed over nor
   const reason = hook(env, 'Edit', path.join(env.repo, 'src', 'a.js'));
   assert.match(reason, /\.am\/big\/plan\.md \(the plan this session created\) says 2 implementation runs and 3 commits/);
   assert.match(reason, /hand this plan over to the run skill/);
+  assert.match(reason, /^am:auto-multi hand-over check: /);
+  assert.match(reason, /Follow am:auto-multi step 4/);
   assert.ok(hook(env, 'Write', path.join(env.repo, 'b.txt')));
   assert.ok(hook(env, 'MultiEdit', path.join(env.repo, 'c.txt')));
   assert.ok(existsSync(path.join(env.stateDir, 's1.json')));
@@ -209,7 +211,9 @@ test('a plan without a scale line is denied once', () => {
   const env = setup();
   plan(env.repo, 'p', '# t\n## 단계\n1. a\n');
   hook(env, 'Read', path.join(env.repo, '.am', 'p', 'plan.md'));
-  assert.match(hook(env, 'Edit', path.join(env.repo, 'a.js')), /\.am\/p\/plan\.md \(the plan this session read\) has no Scale line/);
+  const reason = hook(env, 'Edit', path.join(env.repo, 'a.js'));
+  assert.match(reason, /\.am\/p\/plan\.md \(the plan this session read\) has no Scale line/);
+  assert.match(reason, /^am:auto-multi hand-over check: /);
   assert.equal(hook(env, 'Edit', path.join(env.repo, 'a.js')), null);
 });
 

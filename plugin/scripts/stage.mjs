@@ -282,8 +282,8 @@ export const GIT_PLAIN = '- This session already runs in the repository root. Ru
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
 /** The unattended rules of am:auto's "Running without stops" section, written for one stage session. */
-const unattended = (slug, stage, push, solo = false) => `${solo ? `You are one stage of the am:solo skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model or the conversation holds ${SOLO_CONTEXT_TOKEN_LIMIT} tokens or more; then the stage starts in a new session.` : 'You are one stage of the am:auto skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
-- Running ${solo ? 'am:solo' : 'am:auto'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
+const unattended = (slug, stage, push, solo = false) => `${solo ? `You are one stage of the am:auto-one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model or the conversation holds ${SOLO_CONTEXT_TOKEN_LIMIT} tokens or more; then the stage starts in a new session.` : 'You are one stage of the am:auto-multi skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
+- Running ${solo ? 'am:auto-one' : 'am:auto-multi'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
 - A question about what the user sees or what is in scope: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, through its second opinion; never wait for the user on them, except a choice its two reviewers still split on after their rounds.
 - A decision under Decisions that is marked as the user's answer is final; apply it.
 - Stop only when the next action would delete user data or files that existed before this run, change a saved-data format, or migrate data; when it would change anything outside this repository (other folders, external services, installed packages)${push ? ', other than the push asked for' : ''}; when the user's or the project's instructions say it needs confirmation${push ? ' (the push keyword is that confirmation for the push)' : ''}; ${stage === 'check' ? 'or when the two reviewers of a technical choice still split on it after their rounds' : `when the two reviewers of a technical choice still split on it after their rounds; or when ${stage === 'plan' ? 'the request cannot be planned' : 'this stage cannot finish (below)'}`}.
@@ -301,7 +301,7 @@ const soloPlanRule = (slug, solo) => !solo ? '' : solo.owner === slug
 // Every solo stage saves the shared session's memory for a stage that cannot continue it (SOLO_CONTEXT); only a stage
 // that starts in a new session while that file exists is told to read it.
 const soloSaveRule = (owner) => `\n- Before your final reply, also when you stop, rewrite .am/${owner}/${SOLO_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the memory of this task's shared session that a stage starting in a new session would need: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Point to plan.md, check.md and handoff.md instead of copying them. The am stage runner gives this file to a stage that has to start in a new session.`;
-const soloReadRule = (owner) => `\n- This stage starts in a new session: the shared session of this am:solo task could not be continued. Before anything else, read .am/${owner}/${SOLO_CONTEXT}, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.`;
+const soloReadRule = (owner) => `\n- This stage starts in a new session: the shared session of this am:auto-one task could not be continued. Before anything else, read .am/${owner}/${SOLO_CONTEXT}, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.`;
 
 const STAGE_RULES = {
   plan: (slug, { solo } = {}) => `This is the plan stage. Use exactly the slug ${slug}; its folder already exists. If .am/${slug}/plan.md already exists, an earlier plan session stopped with a question: continue that plan with the answers recorded under its Decisions and finish it, rather than starting over.
@@ -318,7 +318,7 @@ ${scratch(slug)}
 - If the plan turns out wrong in a way that changes what the user sees or the scope, decide it as above. Otherwise make the smallest fix and log it under Change log.
 - This stage cannot finish when a step's Check fails and you cannot fix it: leave the files as they are, record what failed in plan.md, and end with AM_STAGE: BLOCKED.
 - ${MARK('do')}`,
-  handover: (slug, { push, resume }) => `This is the implementation stage for .am/${slug}/plan.md, handed to the am-orchestrator run skill because the plan is larger than one implementation run. You were started with the run skill. Drive it to the end by its Steps, with these additions from am:auto:
+  handover: (slug, { push, resume }) => `This is the implementation stage for .am/${slug}/plan.md, handed to the am-orchestrator run skill because the plan is larger than one implementation run. You were started with the run skill. Drive it to the end by its Steps, with these additions from am:auto-multi:
 - ${resume ? 'The Change log of the plan already records the hand-over with a run ID. Check that `status --json` shows the same `run.id` (if not, end with AM_STAGE: BLOCKED and say why). If the log also records the merge, skip the merge: only the push below and each `Stash:` line not yet logged as put back (the stash rule below) are left.' : 'Before `split`, note `run.id` from `status --json` (none if `run` is null). If `split` ends with exit code 4, it is still running: run `split` again with no argument until it ends with another code, before you read `run.id`. Once `split` has made the run (`run.id` present and not the noted one; otherwise end with AM_STAGE: BLOCKED and say why), log exactly this one line in the Change log of the plan, in English whatever the plan\'s language, with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run.id>, start branch <branch>`.'} No other line you log (a stop reason before AM_STAGE: BLOCKED, for example) starts with \`Hand-over:\`.
 - Its \`decide\` questions are scope or screen questions: decide them as above and pass each answer with \`decide\`. Its \`answer\` and \`blocked\` questions, and any question of its Prepare step, are stops: write the card into plan.md as above. When plan.md holds the user's answer to such a card, pass it to the run skill (\`answer\`, \`decide\`), or carry out exactly the action the answer names (for example write am-gate.json and commit it, or commit or stash the changes it names) and nothing more. To stash, use \`git stash push\` (with \`-u\` when the answer names untracked files), then log right after it this one line in the Change log: \`- Stash: <oid>, base <commit>\`, with \`git rev-parse stash@{0}\` and \`git rev-parse HEAD\`.
 - Its rule never to merge or push covers its own flow only. When \`next\` is \`done\`: unless \`run.branch\` is the start branch, switch to the start branch with \`git switch <branch>\` and run \`git merge --ff-only <run.branch>\` and \`git branch -d <run.branch>\`, and log the merge under Change log. ${push ? 'Then push the start branch by the push rules of the am:commit skill (its step 6): never force, never skip hooks, and if the push is rejected report it.' : 'Do not push.'} A fast-forward that fails is a stop (end with AM_STAGE: BLOCKED and say which branch holds which commits). Then, for each \`Stash:\` line in the Change log not yet logged as put back: when \`git stash show --include-untracked --name-only <oid>\` and \`git diff --name-only <base> HEAD\` share no file, run \`git stash apply <oid>\` and log it; otherwise leave it and name the oid and \`git stash apply <oid>\` in your final reply. Never drop a stash.
@@ -332,7 +332,7 @@ ${scratch(slug)}
 ${scratch(slug)}
 - Always write .am/${slug}/check.md.
 - ${MARK('check')}`,
-  commit: (slug, { push, solo }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The ${solo ? 'am:solo' : 'am:auto'} run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
+  commit: (slug, { push, solo }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The ${solo ? 'am:auto-one' : 'am:auto-multi'} run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
 - To leave a staged file out of the commit, unstage it with \`git restore --staged -- <paths>\` with the Bash tool; no other restore form is allowed.
 - After each commit, record it in .am/${slug}/commits.md as the skill says, and after the last one update .am/${slug}/handoff.md as the skill says; ${solo ? `those two and .am/${solo.owner}/${SOLO_CONTEXT} (below) are` : 'those are'} the only files this session can write.
@@ -400,9 +400,9 @@ export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' }
   const reply = `.am/${slug}/reply-${stage}.md`;
   const status = `- Your final reply is exactly one line and nothing else: AM_STAGE: <status> ${runId}, where <status> is one of ${MARKS[stage].join(', ')}.`;
   const swaps = [
-    ['You are one stage of the am:auto skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:lean skill, a subagent the am:lean driver started for this stage only.'],
+    ['You are one stage of the am:auto-multi skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:auto-agent skill, a subagent the am:auto-agent driver started for this stage only.'],
     ['No human is present in this session and nobody', 'No human watches this stage and nobody'],
-    ['- Running am:auto is the user\'s request', '- Running am:lean is the user\'s request'],
+    ['- Running am:auto-multi is the user\'s request', '- Running am:auto-agent is the user\'s request'],
     ['for someone who has seen neither this session nor the code) under Decisions in plan.md marked OPEN, record the reason there, repeat the card in your final reply, and end with AM_STAGE: NEEDS_DECISION. The user\'s answer comes back in plan.md and this stage starts again in a new session.',
       `for someone who has seen neither this run nor the code) under Decisions in plan.md marked OPEN, with the line \`<!-- am:card OPEN -->\` right before each card and the line \`<!-- am:card end -->\` right after it, each on a line of its own; record the reason there, repeat the card in ${reply}, and end with the status NEEDS_DECISION. The user's answer comes back in plan.md and this stage runs again as a new subagent.`],
     ['- Keep the final reply short: what this stage did, what it decided for the user, and any deviation from the plan.', `- Before you end, write ${reply} whole with the Write tool: what this stage did, what it decided for the user, any deviation from the plan, and everything the skill says to give the user at its end.`],
@@ -432,7 +432,7 @@ export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' }
     ['What the implementing session recorded', 'What the implementing stage recorded'],
   );
   if (stage === 'commit') swaps.push(
-    ['The am:auto run asks for this commit', 'The am:lean run asks for this commit'],
+    ['The am:auto-multi run asks for this commit', 'The am:auto-agent run asks for this commit'],
     ['leave it out of the commit and name it in your reply.', `leave it out of the commit and name it in ${reply}.`],
     ['those are the only files this session can write.', `those, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write.`],
     ['copy what it printed into your reply.', `copy what it printed into ${reply}.`],
@@ -459,7 +459,7 @@ export function agentRules(stage, slug, { push = false, fix = false, part = fals
  */
 export function compactInstructions(slug, files) {
   const list = files.map((f) => `- ${f.file}: about ${f.size} tokens now; bring it to about ${f.goal} tokens.`).join('\n');
-  const system = `You shorten the task files of an am:auto run before its next stage starts in a fresh session; that session reads these files instead of any conversation. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool.
+  const system = `You shorten the task files of an am:auto-multi or am:auto-one run before its next stage starts in a fresh session; that session reads these files instead of any conversation. No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool.
 Files to shorten (token counts are this runner's estimate: 4 ASCII characters, or 1 other character, per token):
 ${list}
 - Change only these files, in place, with the Edit or Write tool. Change nothing else. The runner keeps a copy of each original and tells the next session where it is.
@@ -485,7 +485,7 @@ export function doKind(planText, { orchestrator = findOrchestrator, fix = false,
   // A done mark, or a fix after am:check, means this plan is implemented here, whatever else its Change log mentions.
   if (fix || info.started) return { kind: 'do' };
   if (solo) {
-    if (info.handedOver) return { error: 'this plan was handed to am-orchestrator: continue it with the am:auto skill' };
+    if (info.handedOver) return { error: 'this plan was handed to am-orchestrator: continue it with the am:auto-multi skill' };
     if (!info.scale) return { error: NO_SCALE };
     if (!withinOneRun(info.scale)) return { error: 'the plan has 2 or more implementation runs: run it part by part from its Parts section (for a part plan, change that plan to one implementation run)' };
     return { kind: 'do' };
@@ -1453,7 +1453,8 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const installedAm = CODEX_STAGES.includes(kind) && !pluginDirFor(amRoot, env) ? am().map((p) => path.resolve(p)) : [];
   const same = (a, b) => (WIN ? a.toLowerCase() === b.toLowerCase() : a === b);
   if (installedAm.length && !installedAm.some((p) => same(p, path.resolve(amRoot)))) {
-    event({ ev: 'note', text: `this am:auto session runs am from ${amRoot}, but stage sessions load the installed am from ${installedAm.join(', ')}; the Codex second opinion is allowed for both. Restart the session that runs am:auto to use one version.` });
+    const runner = solo ? 'am:auto-one' : 'am:auto-multi';
+    event({ ev: 'note', text: `this ${runner} session runs am from ${amRoot}, but stage sessions load the installed am from ${installedAm.join(', ')}; the Codex second opinion is allowed for both. Restart the session that runs ${runner} to use one version.` });
   }
   // A hand-over merges back into the branch its Change log names, or into the branch checked out now.
   let startBranch = '';

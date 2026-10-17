@@ -210,9 +210,9 @@ export function decide(raw, { stateDir = STATE_DIR, installed = orchestratorInst
     if (warned.includes(plan)) return ALLOW;
     state.missingScale = [...warned, plan];
     save();
-    return deny(`am:auto hand-over check: ${which} has no Scale line. Add it to the plan's Summary as am:auto step 3 says (\`Scale: N implementation runs, M commits\`, \`규모: 구현 N회, 커밋 M개\` in a Korean plan), then apply am:auto step 4: above 1 implementation run, hand the plan to the am-orchestrator run skill instead of editing files here.`);
+    return deny(`am:auto-multi hand-over check: ${which} has no Scale line. Add it to the plan's Summary as am:auto-multi step 3 says (\`Scale: N implementation runs, M commits\`, \`규모: 구현 N회, 커밋 M개\` in a Korean plan), then apply am:auto-multi step 4: above 1 implementation run, hand the plan to the am-orchestrator run skill instead of editing files here.`);
   }
-  return deny(`am:auto hand-over check: ${which} says ${info.scale[0]} implementation runs and ${info.scale[1]} commits, the am-orchestrator run skill is installed, and no step is marked done or hand-over logged. Follow am:auto step 4: hand this plan over to the run skill instead of implementing it in this session. Do not lower the Scale line to get past this check; change it only if it is wrong, and say so in the final reply.`);
+  return deny(`am:auto-multi hand-over check: ${which} says ${info.scale[0]} implementation runs and ${info.scale[1]} commits, the am-orchestrator run skill is installed, and no step is marked done or hand-over logged. Follow am:auto-multi step 4: hand this plan over to the run skill instead of implementing it in this session. Do not lower the Scale line to get past this check; change it only if it is wrong, and say so in the final reply.`);
 }
 
 export async function main() {

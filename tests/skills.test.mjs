@@ -309,8 +309,8 @@ test('am:sessions runs the read-only report script once and the model may invoke
   // No Codex manifest: the model may pick this skill on its own in both tools.
   assert.ok(!existsSync(path.join(ROOT, 'sessions', 'agents', 'openai.yaml')));
   assert.match(skill, /Change, remove or stop nothing/);
-  // The report shows solo tasks as am:auto tasks, so both ways to resume are named.
-  assert.ok(skill.includes('`am:solo <slug>`'));
+  // The report names the skill of each task, so both ways to resume are named.
+  assert.ok(skill.includes('`am:auto-multi <slug>`') && skill.includes('`am:auto-one <slug>`'));
 });
 
 test('am:auto-multi starts the progress command next to every stage command', async () => {
@@ -367,6 +367,8 @@ test('am:auto-agent stage agents stay pinned', () => {
     assert.equal(fm.tools, name === 'stage-check' ? 'Read, Grep, Glob, Write, Edit, Bash, Agent' : 'Read, Grep, Glob, Write, Edit, Bash', name);
     assert.match(fm.description, /^"[^"]{40,}"$/, name);
     assert.ok(fm.description.includes('am 스킬이 부를 때만'), name);
+    assert.ok(fm.description.includes('am:auto-agent 의 '), name);
+    assert.ok(!text.includes('am:lean'), name);
     const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
     assert.doesNotMatch(body, /[가-힣]/, `${name}: English body`);
     for (const s of ['rules file', 'SKILL.md', '`.am/<slug>/reply-<stage>.md`', '`AM_STAGE: <status> <runId>`', '`AM_STAGE: BLOCKED <runId>`', 'MISSING_RUN_ID']) assert.ok(body.includes(s), `${name}: ${s}`);
@@ -374,6 +376,7 @@ test('am:auto-agent stage agents stay pinned', () => {
     assert.ok(lines.includes(`# am:${name}`), `${name}: title`);
     const stageLine = lines.find((l) => l.startsWith('You run the '));
     assert.ok(stageLine?.includes(name === 'stage-commit-push' ? 'push' : name.slice('stage-'.length)), `${name}: ${stageLine}`);
+    assert.ok(stageLine.includes('of an am:auto-agent task'), `${name}: ${stageLine}`);
     rest.push(lines.filter((l) => l !== `# am:${name}` && l !== stageLine).join('\n'));
   }
   // One shared body: what differs per stage lives in the rules file, the SKILL.md, tools and the hooks.

@@ -7,7 +7,7 @@
 //   live, the name rule and the host are memory-guard.mjs's own (liveRecords, RECORD_NAME, recordHeld, hostName), and
 //   only records named by this host are read; an am:auto `.gate` record (`phase`, `repo`, `where`, `startedAt`) with no
 //   worker gives a line of its own, the other records only add their working tree;
-// - per task folder .am/<slug>/ of each working tree: stage-worker.json (`pid`, `t`, `stage`, `fix`; live while its pid
+// - per task folder .am/<slug>/ of each working tree: stage-worker.json (`pid`, `t`, `stage`, `fix`, `solo`; live while its pid
 //   is alive and it was touched within WORKER_STALE_MS), progress.jsonl (the last `start` since the record's `t`, a
 //   `stage: "handover"` note, the last event as the latest news), compact-pending.json and the done marks of plan.md.
 // - per working tree, the am-orchestrator files under .orchestrator/: lock.json (`pid`, `leaseMs`, `run`, `command`, its
@@ -115,8 +115,14 @@ function workerTask(tree, slug, { now, alive }) {
   else if (rec.fix === true) role = 'fix';
   const startedAt = waiting ? began : Date.parse(events[at].t);
   const done = rec.stage === 'do' && !handover && !waiting ? doneOf(tree, slug, 'do') : null;
-  return { slug, pid: rec.pid, role, waiting, startedAt, done, news: newsOf(lastEvent(events)) };
+  return { slug, pid: rec.pid, role, waiting, startedAt, done, news: newsOf(lastEvent(events)), solo: typeof rec.solo === 'string' && rec.solo !== '' };
 }
+
+// Whether the task's stage-worker.json, live or not, names a solo owner: the task runs under am:auto-one.
+const soloOf = (tree, slug) => {
+  const solo = readJson(path.join(tree, '.am', slug, WORKER_FILES.record))?.solo;
+  return typeof solo === 'string' && solo !== '';
+};
 
 // One folder name: no separator and no `..`.
 const oneName = (s) => (typeof s === 'string' && s && !/[\\/]/.test(s) && !s.includes('..') ? s : null);
@@ -207,7 +213,7 @@ function taskFolders(tree) {
 }
 
 /**
- * The snapshot of this PC: { trees: [{ path, current, tasks: [{ slug, pid, role, waiting, startedAt, done, news, run }],
+ * The snapshot of this PC: { trees: [{ path, current, tasks: [{ slug, pid, role, waiting, startedAt, done, news, solo, run }],
  * runs: [run] }] }, this working tree first; a run is { run, command, children }. Never throws on a read error.
  */
 export function collect({ cwd = process.cwd(), env = {}, now = Date.now, alive = pidAlive, host = hostName, worktrees = gitWorktrees, dir = sessionsDirOf(env) } = {}) {
@@ -255,7 +261,7 @@ export function collect({ cwd = process.cwd(), env = {}, now = Date.now, alive =
     const slug = path.basename(r.data.where);
     if (!tree || !slug || tree.tasks.some((t) => t.slug === slug)) continue;
     const { events } = readFrom(path.join(tree.path, '.am', slug, 'progress.jsonl'), 0);
-    tree.tasks.push({ slug, role: m[1], waiting: false, startedAt: Date.parse(r.data.startedAt), done: doneOf(tree.path, slug, m[1]), news: newsOf(lastEvent(events)) });
+    tree.tasks.push({ slug, role: m[1], waiting: false, startedAt: Date.parse(r.data.startedAt), done: doneOf(tree.path, slug, m[1]), news: newsOf(lastEvent(events)), solo: soloOf(tree.path, slug) });
   }
   // A live orchestrator run goes under the am:auto task whose stage worker handed it over, else under its working tree.
   const runs = [];
@@ -314,7 +320,7 @@ export function render(snapshot, { now = Date.now } = {}) {
     lines.push(`${tree.path}${tree.current ? ' (현재 작업 트리)' : ''}`);
     for (const task of tree.tasks) {
       const role = ROLE_NAMES[task.role] || task.role;
-      let line = `  am:auto 작업 ${task.slug} — ${role} ${task.waiting ? '단계 대기 중' : '단계 세션'}, ${minutes(task.startedAt, t)}분째`;
+      let line = `  ${task.solo ? 'am:auto-one' : 'am:auto-multi'} 작업 ${task.slug} — ${role} ${task.waiting ? '단계 대기 중' : '단계 세션'}, ${minutes(task.startedAt, t)}분째`;
       if (task.role === 'do' && Number.isInteger(task.done)) line += ` · ${task.done}단계 완료`;
       lines.push(line + newsText(task.news, t));
       if (task.run) lines.push(`    └ 인계: ${runHead(task.run)}`, ...runLines(task.run, '      ', t));
