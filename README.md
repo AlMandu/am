@@ -17,6 +17,8 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 `am:solo` 도 같은 일을 하되, Claude Code 에서 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰며(다음 단계의 모델이 바뀌거나 대화가 10만 토큰 이상이면 그 단계는 새 세션으로 시작), 큰 작업도 오케스트레이터에 넘기지 않고 부분으로 나눠 차례로 돕니다.
 
+`am:lean` 도 같은 일을 하되, Claude Code 에서 단계마다 별도 `claude` 세션 대신 지금 세션의 서브에이전트(단계 에이전트)를 띄우고, 단계가 끝날 때마다 채팅에 한 줄(단계와 상태)만 남깁니다. 큰 작업은 `am:solo` 처럼 부분으로 나눠 돕니다.
+
 그 밖의 명령 둘은 필요할 때만 씁니다.
 
 - `am:land`: 지금 브랜치를 대상 브랜치(생략하면 원격 기본 브랜치)에 합쳐 원격에 push 합니다. 지금 작업 폴더와 커밋하지 않은 변경은 그대로 두고, 강제 push 는 하지 않습니다.
@@ -44,6 +46,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 - 서브에이전트·2차 의견: 서브에이전트는 작업 세션이 따로 띄우는 보조 AI 실행입니다. am 의 2차 의견은 대화를 보지 못한 서브에이전트가 기술 선택을 따로 고르는 장치입니다.
 - effort: 모델이 답하기 전에 얼마나 깊이 생각할지 정하는 값(`medium`, `high` 등).
 - 단계 세션: Claude Code 에서 `am:auto` 가 계획·구현·점검 같은 단계마다 새로 띄우는 별도 `claude` 세션.
+- 단계 에이전트: Claude Code 에서 `am:lean` 이 단계마다 지금 세션 안에 띄우는 서브에이전트(`am:stage-plan`·`am:stage-do`·`am:stage-check`·`am:stage-commit`·`am:stage-commit-push`). `/agents` 목록에 보입니다.
 
 ## 준비물
 
@@ -119,6 +122,8 @@ Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 �
 | 멈춘 자동 진행 이어 가기 | `/am:auto <slug>` | `$am:auto <slug>` |
 | 요청 하나로 한 세션에서 계획부터 커밋까지 | `/am:solo 0으로 나누면 오류 문구를 보여 줘` | `$am:solo ...` |
 | 멈춘 한 세션 진행 이어 가기 | `/am:solo <slug>` | `$am:solo <slug>` |
+| 요청 하나로 단계 에이전트가 계획부터 커밋까지 | `/am:lean 0으로 나누면 오류 문구를 보여 줘` | `$am:lean ...` |
+| 멈춘 단계 에이전트 진행 이어 가기 | `/am:lean <slug>` | `$am:lean <slug>` |
 | 지금 브랜치를 기본 브랜치에 합쳐 push | `/am:land [브랜치]` | `$am:land [브랜치]` |
 | 돌고 있는 세션 보기 | `/am:sessions` | `$am:sessions` |
 
@@ -269,6 +274,21 @@ Claude Code 에서는 `am:auto` 가 진행만 맡고 네 단계를 각각 새 `c
 - `am:auto` 의 진행 소식에 더해 다음 줄이 나옵니다: `solo: context N tokens; continued the session`(10만 토큰 미만이라 이어 감), `solo: model change (a -> b); started a new session`(모델이 바뀌어 새 세션), `solo: context N tokens; started a new session`(10만 토큰 이상이라 새 세션), `solo: context use could not be read (…); started a new session`(사용량을 읽지 못해 새 세션), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
 - 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유(`model change (opus -> sonnet)`, `context N tokens` 등)와 저장된 기억 파일을 받았는지가 나옵니다.
 - 중간에 멈추면 원인을 고치거나 질문에 답한 뒤 `am:solo <slug>` 로 이어 갑니다.
+
+### `am:lean`: 단계 에이전트로 계획부터 커밋까지
+
+`am:lean` 은 실행할 때 `am:auto` 의 규칙을 읽어 그대로 따르고, 다음만 다릅니다.
+
+- Claude Code 에서는 단계마다 별도 `claude` 세션 대신 지금 세션 안에 단계 에이전트(서브에이전트)를 띄웁니다. 지금 세션은 진행만 맡아, 단계가 끝날 때마다 채팅에 한 줄(단계와 상태)을 남기고 다음 단계를 고릅니다. 마지막 단계가 끝나기 전에는 단계가 쓴 문서(계획 문서, 점검 결과, 단계 보고)를 읽지 않으므로 지금 세션의 대화가 짧게 유지됩니다. 끝에는 `am:auto` 와 같은 마지막 답을 줍니다.
+- 단계 에이전트는 지금 세션 안에서 돌기 때문에 터미널을 닫으면 함께 멈춥니다. 같은 명령에 slug 를 주면(`am:lean <slug>`) 마지막으로 끝난 단계 다음부터 이어 갑니다.
+- 단계 에이전트가 실행하는 명령과 파일 쓰기는 am 의 훅이 단계별 허용 목록으로 확인합니다. 목록 안의 것은 확인 창 없이 실행되고, 밖의 것은 거부됩니다(예: 구현 단계의 `git commit`, 계획 단계의 `.am/` 밖 쓰기). 사용자 설정의 거부(deny) 규칙은 이 허용보다 우선합니다. 진행 담당인 지금 세션의 명령은 자동으로 승인하지 않으므로, 부분 완료를 기록하는 명령 등에서 확인 창이 뜰 수 있습니다.
+- 단계 에이전트가 최종 답을 상태 줄 한 줄로 끝내지 않으면 훅이 한 번 막고 다시 쓰게 합니다.
+- `am:lean` 의 단계가 도는 동안 같은 폴더에서 시작한 `am:auto` 단계는 기다리고(`WAIT`), 반대도 같습니다.
+- `am:auto` 의 단계 세션과 달리 남은 메모리 기다리기, 단계 전 작업 파일 압축, 진행 소식 명령이 없습니다. 오케스트레이터도 쓰지 않으며, 이미 오케스트레이터에 넘긴 작업이면 멈추고 `am:auto` 로 이어 가라고 알립니다.
+- 계획 단계의 2차 의견은 서브에이전트 대신 읽기 전용 별도 `claude -p` 세션과(설치돼 있으면) Codex 가 줍니다.
+- 큰 작업(구현 2회 이상)은 `am:solo` 처럼 `.am/<slug>-p<k>/` 부분으로 나눠 차례로 돌고, 부분마다 커밋합니다.
+- 사용자 모델 파일의 `plan`·`do`·`check`·`commit` 키가 단계 에이전트에도 적용됩니다.
+- Codex, 그리고 서브에이전트나 셸 도구를 쓸 수 없는 환경에서는 `am:auto` 처럼 한 세션으로 진행합니다.
 
 ### `am:land`: 지금 브랜치를 대상 브랜치에 합쳐 push
 
@@ -438,10 +458,15 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:commit` | `sonnet` | `medium` |
 | `am:auto` | `opus` | `medium` |
 | `am:solo` | `opus` | `medium` |
+| `am:lean` | `opus` | `medium` |
 | `am:land` | `opus` | `high` |
 | `am:sessions` | `sonnet` | `low` |
 | 단계 사이 맥락 압축 세션(`am:auto`·`am:solo`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
+| `am:lean` 계획 단계 에이전트(`am:stage-plan`) | `opus` | `high` |
+| `am:lean` 구현 단계 에이전트(`am:stage-do`) | `opus` | `medium` |
+| `am:lean` 점검 단계 에이전트(`am:stage-check`) | `opus` | `high` |
+| `am:lean` 커밋 단계 에이전트(`am:stage-commit`·`am:stage-commit-push`) | `sonnet` | `medium` |
 | Codex 2차 의견 | `gpt-6.1-sol` | `high` |
 
 <!-- am:models:end -->

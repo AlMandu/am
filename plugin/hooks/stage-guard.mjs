@@ -70,6 +70,7 @@ const allow = (reason) => ({ allow: true, reason });
  * and push, a live pid (and the hook's CLAUDE_PID when it is a positive integer). User decision C1: the one started last,
  * unless two or more were touched within `staleMs`.
  */
+// push is a mode of the whole run (agent-stage.mjs takes --push on every stage) but picks an agent only for commit.
 export function findRecord(root, stage, push, { now = Date.now, alive = pidAlive, staleMs = AGENT_STALE_MS, pid = null } = {}) {
   let names = [];
   try {
@@ -82,7 +83,7 @@ export function findRecord(root, stage, push, { now = Date.now, alive = pidAlive
     if (!SLUG.test(name)) continue;
     const file = path.join(root, '.am', name, AGENT_RECORD);
     const rec = readJson(file);
-    if (!rec || typeof rec !== 'object' || rec.ended || rec.stage !== stage || Boolean(rec.push) !== push) continue;
+    if (!rec || typeof rec !== 'object' || rec.ended || rec.stage !== stage || (stage === 'commit' && Boolean(rec.push) !== push)) continue;
     if (!Number.isInteger(rec.pid) || rec.pid <= 0 || !alive(rec.pid)) continue;
     if (pid !== null && rec.pid !== pid) continue;
     let mtime = 0;

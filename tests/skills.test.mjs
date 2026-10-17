@@ -1,7 +1,9 @@
 // Run: node --test tests/skills.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
@@ -9,7 +11,7 @@ import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, land: 80, sessions: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, auto: 80, solo: 80, lean: 80, land: 80, sessions: 80 };
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
@@ -41,8 +43,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am:auto, am:solo and am:land are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto', 'solo', 'land']) {
+test('am:plan, am:do, am:auto, am:solo, am:lean and am:land are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'auto', 'solo', 'lean', 'land']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -53,7 +55,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto', 'solo', 'land'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'auto', 'solo', 'lean', 'land'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'auto' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
@@ -105,6 +107,7 @@ test('am:do writes a do result that am:check reads for aim only and am:commit us
 test('am:auto declares the hand-over hook, and only am:auto', () => {
   // Claude Code only (measured on 2.1: a plugin skill's frontmatter hook registers when the skill is invoked and
   // stays for the session, with CLAUDE_PLUGIN_ROOT set). One line, so the frontmatter stays one key per line.
+  // am:lean has no hook: a skill's frontmatter hook does not run in its subagents (.am/subagent-stages/facts.md (a)).
   const line = `hooks: { PreToolUse: [ { matcher: "Read|Edit|Write|MultiEdit|NotebookEdit", hooks: [ { type: command, command: "node -e \\"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/handover.mjs')).then((m) => m.main()).catch(() => {})\\"", timeout: 60 } ] } ] }`;
   assert.ok(read('auto').includes(`\n${line}\nmodel: `));
   assert.ok(existsSync(path.join(ROOT, '..', 'hooks', 'handover.mjs')));
@@ -147,7 +150,52 @@ test('am:solo follows am:auto\'s file with its own differences', async () => {
   assert.ok(!parts.find((l) => l.includes('In Codex, or after')).includes(push), 'push not on the Codex line');
 });
 
-test('am:auto keeps the anchors am:solo refers to', () => {
+test('am:lean follows am:auto\'s file and replaces its stage sessions with stage agents', async () => {
+  const lean = withoutCommon(read('lean'));
+  const { MARKS, PART_LINE } = await import('../plugin/scripts/stage.mjs');
+  const cmd = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs"';
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md', '`## Stage sessions (Claude Code)`', '\n## Stage agents (Claude Code)\n', '`HANDED`', 'step 2', 'step 4', 'step 7']) assert.ok(lean.includes(s), s);
+  // The four commands of agent-stage.mjs, the keys of start's JSON line and the fixed prompt of the stage agent.
+  for (const s of [`${cmd} start <stage> <slug>`, `${cmd} end <slug> <runId> failed`, `${cmd} end <slug> <runId> <status>`, `${cmd} card <slug>`, `${cmd} answer <slug> <that file>`]) assert.ok(lean.includes(`\`${s}\``), s);
+  for (const k of ['agent', 'rules', 'skill', 'runId', 'model', 'effort', 'wait', 'note', 'error']) assert.ok(lean.includes(`\`${k}\``), k);
+  assert.ok(lean.includes('exactly this prompt: `slug <slug>; stage <stage>; runId <runId>; rules file <rules>; SKILL.md <skill>`'));
+  assert.ok(lean.includes('`AM_STAGE: <status> <runId>`'));
+  for (const status of [...new Set([...Object.values(MARKS).flat(), 'BLOCKED', 'failed'])]) assert.ok(lean.includes(`\`${status}\``), `status ${status}`);
+  for (const f of ['--push', '--fix', '--part']) assert.ok(lean.includes(`\`${f}\``), f);
+  // The driver stays independent of the stages' files; the user decisions allow only these Grep patterns and writes.
+  assert.ok(lean.includes('until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.'));
+  for (const s of ['`^(- )?(Scale: [0-9]+ implementation run|규모: 구현 [0-9]+회)`', '`^- Part [0-9]+: Steps`', '`^- Part [0-9]+ done: `', '`.am/<slug>.answer-<n>.md`', 'Continue the existing plan in .am/<slug>/plan.md.']) assert.ok(lean.includes(s), s);
+  for (const s of ['`"ev":"end"`', 'stage: "handover"']) assert.ok(lean.includes(s), s);
+  assert.ok(lean.includes(PART_LINE), 'PART_LINE');
+  for (const s of ['- Part <k> done:', '`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(lean.includes(s), s);
+  // It copies the Parts rules instead of reading am:solo, and runs neither the orchestrator nor stage sessions.
+  for (const s of ['skills/solo/SKILL.md', 'skills/run/SKILL.md', 'scripts/stage.mjs', 'progress.mjs', '--solo']) assert.ok(!lean.includes(s), s);
+  // The fixed command that logs a part as done, run as written on copies of a parent plan.
+  const m = /`node -e '([^']*)' \.am\/<slug>\/plan\.md '- Part <k> done: <slug>-p<k>'`/.exec(lean);
+  assert.ok(m, 'the Part done command');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'am-lean-'));
+  try {
+    const line = '- Part 2 done: big-p2';
+    const run = (text) => {
+      const f = path.join(dir, 'plan.md');
+      writeFileSync(f, text);
+      const r = spawnSync('bash', ['-c', `node -e '${m[1]}' "$1" "$2"`, '_', f, line], { encoding: 'utf8' });
+      return { code: r.status, out: r.stdout + r.stderr, text: readFileSync(f, 'utf8') };
+    };
+    const cases = [
+      ['# P\n\n## Change log\n- a\n\n## 다음\nx\n', 0, `# P\n\n## Change log\n- a\n${line}\n\n## 다음\nx\n`],
+      ['# P\n\n## Change log\n- a\n', 0, `# P\n\n## Change log\n- a\n${line}\n`],
+      ['# P\r\n\r\n## Change log\r\n- a\r\n\r\n## 다음\r\n', 0, `# P\r\n\r\n## Change log\r\n- a\r\n${line}\r\n\r\n## 다음\r\n`],
+      [`## Change log\n${line}\n\n## 다음\n`, 0, `## Change log\n${line}\n\n## 다음\n`],
+      ['# P\n\n## 다음\n', 1, '# P\n\n## 다음\n'],
+    ];
+    for (const [text, code, want] of cases) assert.deepEqual(run(text), { code, out: '', text: want }, JSON.stringify(text));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('am:auto keeps the anchors am:solo and am:lean refer to', () => {
   const auto = read('auto');
   for (const s of ['## Running without stops', '## Stage sessions (Claude Code)', '`HANDED`']) assert.ok(auto.includes(s), s);
   const steps = auto.split('\n## Steps\n')[1];

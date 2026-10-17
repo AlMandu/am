@@ -236,6 +236,22 @@ test('the record: none, the user decision C1, CLAUDE_PID, ended and dead pids', 
   rmSync(root, { recursive: true, force: true });
 });
 
+test('the record: push is compared only for the commit stage', () => {
+  const root = makeRepo();
+  // In push mode am:lean passes --push to every start; am:stage-plan, -do and -check still find their record.
+  for (const stage of ['plan', 'do', 'check']) {
+    writeRecord(root, stage, { stage, push: true });
+    assert.equal(findRecord(root, stage, false, { now, alive }).slug, stage, stage);
+  }
+  writeRecord(root, 'commit', { stage: 'commit', push: true });
+  assert.match(findRecord(root, 'commit', false, { now, alive }).error, /no open commit stage record/);
+  assert.equal(findRecord(root, 'commit', true, { now, alive }).slug, 'commit');
+  writeRecord(root, 'commit', { stage: 'commit', push: false });
+  assert.match(findRecord(root, 'commit', true, { now, alive }).error, /no open commit stage record/);
+  assert.equal(findRecord(root, 'commit', false, { now, alive }).slug, 'commit');
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('the heartbeat touches the record, and the record is bound to the first agent', () => {
   const s = setup('plan');
   utimesSync(s.record, (NOW - 60000) / 1000, (NOW - 60000) / 1000);
