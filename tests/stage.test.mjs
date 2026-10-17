@@ -18,7 +18,7 @@ import { BUILTIN_MODELS, ensureUserFiles, modelsTemplate, settingsTemplate } fro
 import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../plugin/scripts/memory-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto', 'SKILL.md'), 'utf8');
+const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto-multi', 'SKILL.md'), 'utf8');
 
 // A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },

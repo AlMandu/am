@@ -100,7 +100,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(amSkill('do').trim().split('\n').at(-1), /use the am:check skill/);
   assert.match(SCRIPT, /do not use the am:check skill/);
   // The mark for choices made on the user's behalf, which the report collects.
-  assert.match(amSkill('auto'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
+  assert.match(amSkill('auto-multi'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
   assert.match(SCRIPT, /auto-decided\|자동 결정/);
   // The second-opinion marks of the common rules, which progress news reads.
   for (const mark of ['(second opinion)', '(second opinion, Codex agreed)', '(second opinion, Claude reviewers agreed)', '(no second opinion)']) assert.ok(amSkill('plan').includes(mark), mark);
@@ -132,7 +132,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
 });
 
 test('am:auto hands a large task to the run skill only through what is pinned here', () => {
-  const auto = amSkill('auto');
+  const auto = amSkill('auto-multi');
   // Finding the run skill: the plugin id in `claude plugin list --json` and the skill's path under its installPath.
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
   assert.equal(market.plugins.find((p) => p.source === './orchestrator')?.name, 'am-orchestrator');

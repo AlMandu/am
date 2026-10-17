@@ -18,19 +18,19 @@ export const BLOCKS = {
     source: 'shared/common.md',
     start: '<!-- am:common:start -->',
     end: '<!-- am:common:end -->',
-    targets: [...['plan', 'do', 'check', 'commit', 'auto', 'solo', 'lean', 'land', 'sessions'].map(am), 'orchestrator/skills/run/SKILL.md'],
+    targets: [...['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'land', 'sessions'].map(am), 'orchestrator/skills/run/SKILL.md'],
   },
   'sibling-runs': {
     source: 'shared/sibling-runs.md',
     start: '<!-- am:shared:sibling-runs:start -->',
     end: '<!-- am:shared:sibling-runs:end -->',
-    targets: [am('solo'), am('lean')],
+    targets: [am('auto-one'), am('auto-agent')],
   },
   'sibling-parts': {
     source: 'shared/sibling-parts.md',
     start: '<!-- am:shared:sibling-parts:start -->',
     end: '<!-- am:shared:sibling-parts:end -->',
-    targets: [am('solo'), am('lean')],
+    targets: [am('auto-one'), am('auto-agent')],
   },
 };
 // Every SKILL.md under these folders is scanned for markers, targets or not.

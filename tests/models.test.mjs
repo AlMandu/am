@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { REPO, STAGE_AGENTS, STAGE_SKILLS, apply, check, load, targets, validate } from '../scripts/models.mjs';
+import { RENAMED, REPO, STAGE_AGENTS, STAGE_SKILLS, apply, check, load, targets, validate } from '../scripts/models.mjs';
 
 const bases = [];
 after(() => {
@@ -35,8 +35,10 @@ test('every file carries the values of models.json', () => {
 test('the orchestrator stage-to-skill mapping is complete', () => {
   // tests/orchestrator-skill.test.mjs keeps a copy of this literal; change both together.
   assert.deepEqual(STAGE_SKILLS, { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' });
-  // am:lean stage agents run the am skill of their stage; both commit agents run am:commit.
+  // am:auto-agent stage agents run the am skill of their stage; both commit agents run am:commit.
   assert.deepEqual(STAGE_AGENTS, { 'stage-plan': 'plan', 'stage-do': 'do', 'stage-check': 'check', 'stage-commit': 'commit', 'stage-commit-push': 'commit' });
+  // The notice skills under the old names take the values of the skill they point to.
+  assert.deepEqual(RENAMED, { auto: 'auto-multi', solo: 'auto-one', lean: 'auto-agent' });
 });
 
 test('values that would be silently ignored or unsafe are refused', () => {
@@ -60,6 +62,7 @@ test('apply writes a changed value into every place that carries it, and check i
   const models = edit((m) => {
     m.am.commit.effort = other(m.am.commit.effort, ['low', 'medium']);
     m.am.do.effort = other(m.am.do.effort, ['low', 'high']);
+    m.am['auto-multi'].effort = other(m.am['auto-multi'].effort, ['low', 'high']);
     m.am.check.model = other(m.am.check.model, ['sonnet', 'haiku']);
     m.orchestrator.split.model = other(m.orchestrator.split.model, ['sonnet', 'haiku']);
     m.orchestrator.run.effort = other(m.orchestrator.run.effort, ['max', 'low']);
@@ -67,7 +70,7 @@ test('apply writes a changed value into every place that carries it, and check i
     const codex = m.am['codex-opinion'];
     m.am['codex-opinion'] = { model: other(codex.model, ['gpt-5.1-codex', 'o4-mini']), effort: other(codex.effort, ['medium', 'low']) };
   });
-  const { commit, 'second-opinion': agent, 'codex-opinion': codex } = models.am;
+  const { commit, 'auto-multi': multi, 'second-opinion': agent, 'codex-opinion': codex } = models.am;
   const { run, split } = models.orchestrator;
   assert.equal(check(base, models).length > 0, true, 'drift is reported before apply');
   const { problems, changed } = apply(base, models);
@@ -76,6 +79,8 @@ test('apply writes a changed value into every place that carries it, and check i
   assert.ok(changed.includes('plugin/skills/commit/SKILL.md') && !changed.includes('plugin/skills/plan/SKILL.md'), changed.join(', '));
   const fm = (v) => `\nmodel: ${v.model}\neffort: ${v.effort}\n---\n`;
   assert.ok(read(base, 'plugin/skills/commit/SKILL.md').includes(fm(commit)));
+  // The notice skill under the old name follows the skill it points to.
+  for (const file of ['plugin/skills/auto-multi/SKILL.md', 'plugin/skills/auto/SKILL.md']) assert.ok(changed.includes(file) && read(base, file).includes(fm(multi)), file);
   assert.ok(read(base, 'plugin/agents/second-opinion.md').includes(fm(agent)));
   for (const [name, skill] of Object.entries(STAGE_AGENTS)) assert.ok(read(base, `plugin/agents/${name}.md`).includes(fm(models.am[skill])), name);
   for (const name of ['stage-do', 'stage-check', 'stage-commit', 'stage-commit-push']) assert.ok(changed.includes(`plugin/agents/${name}.md`), name);

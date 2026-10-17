@@ -19,13 +19,16 @@ const MODEL = {
   codex: [/^([A-Za-z0-9._:-]+)?$/, '빈 문자열(사용자의 codex 설정) 또는 따옴표 없이 쓰는 모델 이름'],
 };
 const ENTRIES = {
-  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', auto: 'alias', solo: 'alias', lean: 'alias', land: 'alias', sessions: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
+  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', 'auto-multi': 'alias', 'auto-one': 'alias', 'auto-agent': 'alias', land: 'alias', sessions: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs keeps a copy).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // am:lean stage agents (plugin/agents/<agent>.md) take the values of the am skill they run.
 export const STAGE_AGENTS = { 'stage-plan': 'plan', 'stage-do': 'do', 'stage-check': 'check', 'stage-commit': 'commit', 'stage-commit-push': 'commit' };
+// Notice skills under the old names (plugin/skills/<old>/SKILL.md) take the values of the skill they now point to.
+// Remove them, with their folders, in the version after 0.1.65.
+export const RENAMED = { auto: 'auto-multi', solo: 'auto-one', lean: 'auto-agent' };
 // BUILTIN_MODELS of plugin/scripts/user-files.mjs: the user models file's keys (without default) in its order, with their group.
 const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
 
@@ -90,7 +93,8 @@ function generated(file, render) {
 export function targets() {
   const amSkill = (name) => frontmatter(`plugin/skills/${name}/SKILL.md`, (m) => m.am[name]);
   return [
-    ...['plan', 'do', 'check', 'commit', 'auto', 'solo', 'lean', 'land', 'sessions'].map(amSkill),
+    ...['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'land', 'sessions'].map(amSkill),
+    ...Object.entries(RENAMED).map(([old, now]) => frontmatter(`plugin/skills/${old}/SKILL.md`, (m) => m.am[now])),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
     ...Object.entries(STAGE_AGENTS).map(([agent, skill]) => frontmatter(`plugin/agents/${agent}.md`, (m) => m.am[skill])),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),
@@ -126,13 +130,13 @@ export function targets() {
     },
     generated('README.md', (m) =>
       table('대상', [
-        ...['plan', 'do', 'check', 'commit', 'auto', 'solo', 'lean', 'land', 'sessions'].map((n) => [code(`am:${n}`), m.am[n]]),
-        ['단계 사이 맥락 압축 세션(`am:auto`·`am:solo`, Claude Code)', m.am.compact],
+        ...['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'land', 'sessions'].map((n) => [code(`am:${n}`), m.am[n]]),
+        ['단계 사이 맥락 압축 세션(`am:auto-multi`·`am:auto-one`, Claude Code)', m.am.compact],
         ['2차 의견 서브에이전트(`am:second-opinion`)', m.am['second-opinion']],
-        ['`am:lean` 계획 단계 에이전트(`am:stage-plan`)', m.am.plan],
-        ['`am:lean` 구현 단계 에이전트(`am:stage-do`)', m.am.do],
-        ['`am:lean` 점검 단계 에이전트(`am:stage-check`)', m.am.check],
-        ['`am:lean` 커밋 단계 에이전트(`am:stage-commit`·`am:stage-commit-push`)', m.am.commit],
+        ['`am:auto-agent` 계획 단계 에이전트(`am:stage-plan`)', m.am.plan],
+        ['`am:auto-agent` 구현 단계 에이전트(`am:stage-do`)', m.am.do],
+        ['`am:auto-agent` 점검 단계 에이전트(`am:stage-check`)', m.am.check],
+        ['`am:auto-agent` 커밋 단계 에이전트(`am:stage-commit`·`am:stage-commit-push`)', m.am.commit],
         ['Codex 2차 의견', m.am['codex-opinion'], m.am['codex-opinion'].model ? undefined : '사용자의 codex 설정'],
       ]),
     ),
