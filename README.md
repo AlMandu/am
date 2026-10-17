@@ -586,6 +586,8 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 
 플러그인을 고치는 사람은 저장소 주소 대신 로컬 경로(예: `C:\Projects\am`)로 설치하면, 커밋하지 않은 수정도 바로 시험할 수 있습니다.
 
+여러 SKILL.md 가 함께 쓰는 문구(공통 규칙 블록, `am:solo`·`am:lean` 의 공유 블록)는 저장소 루트 `shared/` 의 원본만 고치고 `node scripts/skills.mjs` 로 반영합니다(`node scripts/skills.mjs --check` 는 어긋난 파일만 알려 줍니다).
+
 커밋 전 확인 명령(테스트·`claude plugin validate`)은 [CLAUDE.md](CLAUDE.md) 의 "Before committing" 에 있습니다.
 
 ```

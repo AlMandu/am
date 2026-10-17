@@ -36,12 +36,15 @@ Request: $ARGUMENTS
 - Refer to other am skills by name, e.g. "the am:check skill"; the slash or $ prefix differs per tool.
 <!-- am:common:end -->
 
+<!-- am:shared:sibling-runs:start -->
 ## How this skill runs
 Read `${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md` (if the placeholder was not replaced, `skills/auto/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it. If it cannot be read, change no file and stop. These differences override that file:
-- Never look for, read or run the am-orchestrator run skill: skip the `claude plugin list --json` part of step 2, never hand over in step 4, and ignore `HANDED`, every rule about the run skill or its hook, and step 7's hand-over items. If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am:auto skill.
-- Its section `## Stage sessions (Claude Code)` is replaced whole by `## Stage agents (Claude Code)` below. Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am:lean skill.
+- Never look for, read or run the am-orchestrator run skill: skip the `claude plugin list --json` part of step 2, never hand over in step 4, and ignore `HANDED`, every rule about the run skill or its hook, and step 7's hand-over items.
 - If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
-- After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (with stage agents: the do, check and commit stages) with Parts (below).
+- After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (the do, check and commit stages) with Parts (below).
+<!-- am:shared:sibling-runs:end -->
+- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am:auto skill.
+- Its section `## Stage sessions (Claude Code)` is replaced whole by `## Stage agents (Claude Code)` below. Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am:lean skill.
 
 ## Stage agents (Claude Code)
 In Claude Code with the Agent and Bash tools, when `${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs` exists, steps 3 to 6 each run as a stage agent, a subagent of this session, and step 2 is skipped; otherwise (Codex, no such tool or file) follow that file's single-session flow, with Parts in this session. This session only drives: until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.
@@ -57,9 +60,12 @@ In Claude Code with the Agent and Bash tools, when `${CLAUDE_PLUGIN_ROOT}/script
   - `BLOCKED` or `failed` (any stage): stop with the stage and its status.
 - Step 7: only now read plan.md, check.md and `.am/<slug>/reply-*.md`, and reply by that file's step 7.
 
+<!-- am:shared:sibling-parts:start -->
 ## Parts
 A plan of 2 or more implementation runs is never implemented whole; each part runs as a task of its own.
-- The plan holds a section headed exactly `## Parts` right after the Summary, with one line per part in exactly this form: `- Part <k>: Steps <a>-<b> — <the part's scope in one line>`. The parts take consecutive Steps in order and together cover every Step, each at most one implementation run; the lines never start with a number and never carry a done mark. The plan stage writes it; in the single-session flow write it yourself.
+- The plan holds a section headed exactly `## Parts` right after the Summary, with one line per part in exactly this form: `- Part <k>: Steps <a>-<b> — <the part's scope in one line>`. The parts take consecutive Steps in order and together cover every Step, each at most one implementation run; the lines never start with a number and never carry a done mark.
+<!-- am:shared:sibling-parts:end -->
+- The plan stage writes the `## Parts` section; in the single-session flow write it yourself.
 - From the first Part line with no `- Part <k> done:` line in the parent's Change log (Grep `^- Part [0-9]+ done: `), in order:
   1. Tell the user in one plain line `Part <k>/<N>: <slug>-p<k>` and the part's scope.
   2. If `.am/<slug>-p<k>/request.md` is missing, write exactly `Part <k> of <N> of .am/<slug>/plan.md: <that Part line>. Plan only this part; the parent plan holds the whole design and its decisions.` as a new file; if the folder's request.md does not start with `Part <k> of <N> of .am/<slug>/plan.md:`, stop.

@@ -1,13 +1,14 @@
 // Run: node --test tests/skills.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
+import { BLOCKS, REPO as SKILLS_REPO, apply as skillsApply, check as skillsCheck, inputs as skillsInputs } from '../scripts/skills.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
@@ -27,6 +28,72 @@ const frontmatter = (text) => {
 test('every skill carries the same common rules block', () => {
   const blocks = Object.keys(LIMITS).map((n) => common(read(n)));
   for (const b of blocks.slice(1)) assert.equal(b, blocks[0]);
+});
+
+// Shared blocks are written from shared/ by scripts/skills.mjs; a block edited in a SKILL.md alone fails here.
+test('every shared block matches its source under shared/', () => {
+  assert.deepEqual(skillsCheck(), []);
+});
+
+test('scripts/skills.mjs writes a changed block back, stops on a broken marker pair and keeps CRLF', () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), 'am-skills-'));
+  try {
+    for (const file of skillsInputs()) cpSync(path.join(SKILLS_REPO, file), path.join(base, file), { recursive: true });
+    const at = (file) => path.join(base, file);
+    const get = (file) => readFileSync(at(file), 'utf8');
+    const all = () => Object.fromEntries(skillsInputs(base).map((f) => [f, get(f)]));
+    assert.deepEqual(skillsApply(base), { problems: [], changed: [] });
+    const target = BLOCKS['sibling-parts'].targets[0];
+    const original = get(target);
+    // One character changed inside a block: only that file differs, and apply puts it back.
+    writeFileSync(at(target), original.replace('never implemented whole', 'never implemented Whole'));
+    assert.deepEqual(skillsCheck(base), [`${target}: sibling-parts 블록이 shared/sibling-parts.md 와 다릅니다`]);
+    assert.deepEqual(skillsApply(base), { problems: [], changed: [target] });
+    assert.equal(get(target), original);
+    // An end marker twice is a problem, and nothing is written, not even another file's drift.
+    const other = BLOCKS.common.targets[0];
+    writeFileSync(at(other), get(other).replace('Ask at most 3 questions', 'Ask at most 4 questions'));
+    writeFileSync(at(target), `${original}${BLOCKS['sibling-parts'].end}\n`);
+    let before = all();
+    let r = skillsApply(base);
+    assert.equal(r.problems.length, 1);
+    assert.match(r.problems[0], new RegExp(`^${target}: sibling-parts .*\\(시작 표시 1번, 끝 표시 2번\\)$`));
+    assert.deepEqual(r.changed, []);
+    assert.deepEqual(all(), before);
+    writeFileSync(at(target), original);
+    assert.deepEqual(skillsApply(base), { problems: [], changed: [other] });
+    // A CRLF target keeps CRLF in the rewritten block.
+    const crlf = original.replace(/\n/g, '\r\n');
+    writeFileSync(at(target), crlf.replace('never implemented whole', 'never implemented Whole'));
+    assert.deepEqual(skillsApply(base), { problems: [], changed: [target] });
+    assert.equal(get(target), crlf);
+    writeFileSync(at(target), original);
+    // A source saved without its last newline still leaves the end marker on a line of its own.
+    const source = BLOCKS['sibling-parts'].source;
+    const sourceText = get(source);
+    writeFileSync(at(source), sourceText.replace(/\n$/, ''));
+    assert.deepEqual(skillsApply(base), { problems: [], changed: [] });
+    writeFileSync(at(source), sourceText);
+    // A block whose markers enclose another block's markers is a problem, not overwritten.
+    const runs = BLOCKS['sibling-runs'];
+    const nested = original.replace(`${runs.start}\n`, '').replace(BLOCKS.common.start, `${runs.start}\n${BLOCKS.common.start}`);
+    writeFileSync(at(target), nested);
+    r = skillsApply(base);
+    assert.deepEqual(r, { problems: [`${target}: sibling-runs 블록 안에 다른 블록의 표시가 있습니다`], changed: [] });
+    assert.equal(get(target), nested);
+    writeFileSync(at(target), original);
+    // A marker in a SKILL.md that is not on the block's target list, or an unknown block name, stops the script.
+    mkdirSync(at('plugin/skills/x'));
+    writeFileSync(at('plugin/skills/x/SKILL.md'), `# x\n${BLOCKS.common.start}\n${BLOCKS.common.end}\n<!-- am:shared:nope:start -->\n`);
+    before = all();
+    r = skillsApply(base);
+    assert.equal(r.problems.length, 2);
+    assert.match(r.problems[0], /^plugin\/skills\/x\/SKILL\.md: common 블록의 표시가 있지만 그 대상 목록에 없습니다/);
+    assert.match(r.problems[1], /^plugin\/skills\/x\/SKILL\.md: 모르는 블록 이름 "nope"/);
+    assert.deepEqual(all(), before);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('am skills refer to other skills by name, not with a slash prefix', () => {

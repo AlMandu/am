@@ -36,17 +36,23 @@ Request: $ARGUMENTS
 - Refer to other am skills by name, e.g. "the am:check skill"; the slash or $ prefix differs per tool.
 <!-- am:common:end -->
 
+<!-- am:shared:sibling-runs:start -->
 ## How this skill runs
 Read `${CLAUDE_PLUGIN_ROOT}/skills/auto/SKILL.md` (if the placeholder was not replaced, `skills/auto/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it. If it cannot be read, change no file and stop. These differences override that file:
-- Never look for, read or run the am-orchestrator run skill: skip the `claude plugin list --json` part of step 2, never hand over in step 4 (if the plan's Change log already has a `Hand-over:` line, stop and tell the user to continue with the am:auto skill), and ignore `HANDED`, every rule about the run skill or its hook, and step 7's hand-over items.
+- Never look for, read or run the am-orchestrator run skill: skip the `claude plugin list --json` part of step 2, never hand over in step 4, and ignore `HANDED`, every rule about the run skill or its hook, and step 7's hand-over items.
+- If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
+- After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (the do, check and commit stages) with Parts (below).
+<!-- am:shared:sibling-runs:end -->
+- If the plan's Change log already has a `Hand-over:` line, stop and tell the user to continue with the am:auto skill.
 - Add `--solo` to every `stage.mjs` command of this task (`--solo=<slug>` for a part, below), next to `--push` and `--fix`, also when a stage runs again after `WAIT` or `NEEDS_DECISION` and when you resume.
 - Read "a fresh session" for each stage as: the stages continue one session; between stages the runner starts the stage in a new session when it runs on another model than the last stage or the conversation holds 100,000 tokens or more, or the same stage last ended BLOCKED or failed (its result then says why). "Run this skill again" means the am:solo skill.
-- If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
-- After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (in stage sessions: the do, check and commit stages) with Parts (below).
 
+<!-- am:shared:sibling-parts:start -->
 ## Parts
 A plan of 2 or more implementation runs is never implemented whole; each part runs as a task of its own.
-- The plan holds a section headed exactly `## Parts` right after the Summary, with one line per part in exactly this form: `- Part <k>: Steps <a>-<b> — <the part's scope in one line>`. The parts take consecutive Steps in order and together cover every Step, each at most one implementation run; the lines never start with a number and never carry a done mark. When you plan in this session (no stage sessions), write it yourself. If the plan stage ends without it, run the plan stage once more; still none stops.
+- The plan holds a section headed exactly `## Parts` right after the Summary, with one line per part in exactly this form: `- Part <k>: Steps <a>-<b> — <the part's scope in one line>`. The parts take consecutive Steps in order and together cover every Step, each at most one implementation run; the lines never start with a number and never carry a done mark.
+<!-- am:shared:sibling-parts:end -->
+- When you plan in this session (no stage sessions), write the `## Parts` section yourself. If the plan stage ends without it, run the plan stage once more; still none stops.
 - From the first Part line with no `- Part <k> done:` line in the parent's Change log, in order:
   1. Tell the user in one plain line `Part <k>/<N>: <slug>-p<k>` and the part's scope.
   2. If `.am/<slug>-p<k>/request.md` is missing, write exactly `Part <k> of <N> of .am/<slug>/plan.md: <that Part line>. Plan only this part; the parent plan holds the whole design and its decisions.`; if the folder's request.md does not start with `Part <k> of <N> of .am/<slug>/plan.md:`, stop.
