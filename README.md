@@ -464,8 +464,8 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:auto-multi` | `opus` | `medium` |
 | `am:auto-one` | `opus` | `medium` |
 | `am:auto-agent` | `opus` | `medium` |
-| `am:land` | `opus` | `high` |
 | `am:sessions` | `sonnet` | `low` |
+| `am-util:land` | `opus` | `high` |
 | 단계 사이 맥락 압축 세션(`am:auto-multi`·`am:auto-one`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
 | `am:auto-agent` 계획 단계 에이전트(`am:stage-plan`) | `opus` | `high` |

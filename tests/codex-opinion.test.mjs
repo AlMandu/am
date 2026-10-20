@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ANSWER_HEADER, CODEX_ARGS, MAX_BRIEF_BYTES, buildPrompt, checkBrief, codexArgs, main, reviewerLine } from '../plugin/scripts/codex-opinion.mjs';
 import { OPINION_MODELS, USER_EFFORTS, frontmatterModels } from '../plugin/scripts/user-models.mjs';
+import { CODEX_ARGS as UTIL_CODEX_ARGS, main as utilMain } from '../util/scripts/codex-opinion.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(here, '..', 'plugin', 'scripts', 'codex-opinion.mjs');
@@ -269,6 +270,23 @@ function running(pid) {
     return false;
   }
 }
+
+// util/ ships a generated copy (scripts/sync-shared.mjs) that reads the reviewer file beside it.
+test('the am-util copy runs with its own reviewer file and the same Codex flags', async () => {
+  assert.deepEqual(UTIL_CODEX_ARGS, CODEX_ARGS);
+  const own = frontmatterModels(path.join(here, '..', 'util', 'scripts', 'second-opinion.md'));
+  const t = setup();
+  const model = other(own.model, OPINION_MODELS);
+  const file = userFile(t, { model: { 'second-opinion': model } });
+  let text = '';
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: t.config, PATH: t.bin, FAKE_CODEX_MODE: 'ok', FAKE_CODEX_LOG: t.log };
+  // No agentFile: the default must be the copy's own second-opinion.md.
+  const code = await utilMain(['.am/x/brief.md'], { cwd: t.repo, env, timeoutMs: 20000, out: { write: (s) => (text += s) } });
+  assert.equal(code, 0, text);
+  const lines = text.split('\n');
+  assert.equal(lines[0], reviewerLine({ model, effort: own.effort }, file));
+  assert.equal(lines[1], ANSWER_HEADER);
+});
 
 test('CLI: usage error without a brief', () => {
   const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8' });

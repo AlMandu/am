@@ -35,9 +35,9 @@ function readsStatusLikeAuto(text) {
   for (const v of ['done', 'decide', 'answer', 'blocked']) assert.ok(text.includes(`\`${v}\``) && SKILL.includes(`\`${v}\``) && SCRIPT.includes(`'${v}'`), v);
 }
 
-test('the marketplace lists both plugins and each source holds a manifest with that name', () => {
+test('the marketplace lists every plugin and each source holds a manifest with that name', () => {
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
-  assert.deepEqual(market.plugins.map((p) => p.name), ['am', 'am-orchestrator']);
+  assert.deepEqual(market.plugins.map((p) => p.name), ['am', 'am-util', 'am-orchestrator']);
   for (const p of market.plugins) {
     const manifest = JSON.parse(read(p.source, '.claude-plugin', 'plugin.json'));
     assert.equal(manifest.name, p.name);

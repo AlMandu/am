@@ -5,6 +5,7 @@
     { "name": "orchestrator-tests", "run": "node --test tests/orchestrator-skill.test.mjs tests/orchestrator.test.mjs tests/orchestrator-plan.test.mjs tests/orchestrator-commit.test.mjs tests/orchestrator-drive.test.mjs tests/orchestrator-doctor.test.mjs tests/orchestrator-parallel.test.mjs tests/orchestrator-volatile.test.mjs tests/orchestrator-rewrite.test.mjs tests/orchestrator-sessions.test.mjs tests/orchestrator-progress.test.mjs tests/orchestrator-follow.test.mjs", "timeoutMs": 600000 },
     { "name": "validate-marketplace", "run": "claude plugin validate ." },
     { "name": "validate-am", "run": "claude plugin validate plugin" },
+    { "name": "validate-util", "run": "claude plugin validate util" },
     { "name": "validate-orchestrator", "run": "claude plugin validate orchestrator" }
   ]
 }

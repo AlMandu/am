@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run from anywhere: node scripts/skills.mjs [--check]
 // The files under shared/ at the repository root are the one source of the text several SKILL.md files share: the
-// common rules block of every skill and the lines am:solo and am:lean have in common. Neither plugin reads shared/ at
+// common rules block of every skill and the lines am:auto-one and am:auto-agent have in common. No plugin reads shared/ at
 // runtime (it is not shipped): this script writes each source between its markers in every SKILL.md that carries it.
 // Without arguments it rewrites those files; with --check it only lists what differs and exits 1.
 // Every target must hold its marker pair exactly once, and a marker in a file that is not a target of its block stops
@@ -11,14 +11,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const am = (name) => `plugin/skills/${name}/SKILL.md`;
+const skill = (dir) => (name) => `${dir}/skills/${name}/SKILL.md`;
+const am = skill('plugin');
 // Block name -> its source, its marker lines (each on a line of its own) and the SKILL.md files that carry it.
 export const BLOCKS = {
   common: {
     source: 'shared/common.md',
     start: '<!-- am:common:start -->',
     end: '<!-- am:common:end -->',
-    targets: [...['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'land', 'sessions'].map(am), 'orchestrator/skills/run/SKILL.md'],
+    targets: [...['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'sessions'].map(am), skill('util')('land'), 'orchestrator/skills/run/SKILL.md'],
   },
   'sibling-runs': {
     source: 'shared/sibling-runs.md',
@@ -33,8 +34,8 @@ export const BLOCKS = {
     targets: [am('auto-one'), am('auto-agent')],
   },
 };
-// Every SKILL.md under these folders is scanned for markers, targets or not.
-const SKILL_DIRS = ['plugin/skills', 'orchestrator/skills'];
+// Every SKILL.md under these folders is scanned for markers, targets or not (a missing folder is skipped).
+const SKILL_DIRS = ['plugin/skills', 'util/skills', 'auto/skills', 'orchestrator/skills'];
 const MARKER = /<!-- am:(?:common|shared:([^\s>]*?)):(?:start|end) -->/g;
 
 const readText = (file) => readFileSync(file, 'utf8').replace(/^﻿/, '');

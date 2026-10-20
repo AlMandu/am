@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { RENAMED, REPO, STAGE_AGENTS, STAGE_SKILLS, apply, check, load, targets, validate } from '../scripts/models.mjs';
+import { REPO, STAGE_AGENTS, STAGE_SKILLS, apply, check, load, targets, validate } from '../scripts/models.mjs';
+import { COPIES, apply as syncApply, check as syncCheck, inputs as syncInputs } from '../scripts/sync-shared.mjs';
 
 const bases = [];
 after(() => {
@@ -37,8 +38,6 @@ test('the orchestrator stage-to-skill mapping is complete', () => {
   assert.deepEqual(STAGE_SKILLS, { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' });
   // am:auto-agent stage agents run the am skill of their stage; both commit agents run am:commit.
   assert.deepEqual(STAGE_AGENTS, { 'stage-plan': 'plan', 'stage-do': 'do', 'stage-check': 'check', 'stage-commit': 'commit', 'stage-commit-push': 'commit' });
-  // The notice skills under the old names take the values of the skill they point to.
-  assert.deepEqual(RENAMED, { auto: 'auto-multi', solo: 'auto-one', lean: 'auto-agent' });
 });
 
 test('values that would be silently ignored or unsafe are refused', () => {
@@ -63,6 +62,7 @@ test('apply writes a changed value into every place that carries it, and check i
     m.am.commit.effort = other(m.am.commit.effort, ['low', 'medium']);
     m.am.do.effort = other(m.am.do.effort, ['low', 'high']);
     m.am['auto-multi'].effort = other(m.am['auto-multi'].effort, ['low', 'high']);
+    m['am-util'].land.effort = other(m['am-util'].land.effort, ['low', 'medium']);
     m.am.check.model = other(m.am.check.model, ['sonnet', 'haiku']);
     m.orchestrator.split.model = other(m.orchestrator.split.model, ['sonnet', 'haiku']);
     m.orchestrator.run.effort = other(m.orchestrator.run.effort, ['max', 'low']);
@@ -79,8 +79,9 @@ test('apply writes a changed value into every place that carries it, and check i
   assert.ok(changed.includes('plugin/skills/commit/SKILL.md') && !changed.includes('plugin/skills/plan/SKILL.md'), changed.join(', '));
   const fm = (v) => `\nmodel: ${v.model}\neffort: ${v.effort}\n---\n`;
   assert.ok(read(base, 'plugin/skills/commit/SKILL.md').includes(fm(commit)));
-  // The notice skill under the old name follows the skill it points to.
-  for (const file of ['plugin/skills/auto-multi/SKILL.md', 'plugin/skills/auto/SKILL.md']) assert.ok(changed.includes(file) && read(base, file).includes(fm(multi)), file);
+  assert.ok(changed.includes('plugin/skills/auto-multi/SKILL.md') && read(base, 'plugin/skills/auto-multi/SKILL.md').includes(fm(multi)));
+  // A skill of another plugin folder takes its own group's values.
+  assert.ok(changed.includes('util/skills/land/SKILL.md') && read(base, 'util/skills/land/SKILL.md').includes(fm(models['am-util'].land)));
   assert.ok(read(base, 'plugin/agents/second-opinion.md').includes(fm(agent)));
   for (const [name, skill] of Object.entries(STAGE_AGENTS)) assert.ok(read(base, `plugin/agents/${name}.md`).includes(fm(models.am[skill])), name);
   for (const name of ['stage-do', 'stage-check', 'stage-commit', 'stage-commit-push']) assert.ok(changed.includes(`plugin/agents/${name}.md`), name);
@@ -118,4 +119,38 @@ test('a target whose format changed stops the script, and nothing is written', (
   const skill = path.join(base, 'plugin', 'skills', 'plan', 'SKILL.md');
   writeFileSync(skill, `${read(base, 'plugin/skills/plan/SKILL.md')}\nmodel: opus\neffort: high\n---\n`);
   assert.match(check(base, load()).join('\n'), /plugin\/skills\/plan\/SKILL\.md: frontmatter.*\(2번\)/);
+});
+
+// scripts/sync-shared.mjs copies files several plugins use from plugin/ into util/ and auto/.
+test('every shared copy matches its plugin/ source', () => {
+  assert.deepEqual(syncCheck(), []);
+});
+
+test('sync-shared writes missing or changed copies, stops on a lost replacement and writes nothing then', () => {
+  const base = mkdtempSync(path.join(tmpdir(), 'am-sync-'));
+  bases.push(base);
+  for (const file of syncInputs()) cpSync(path.join(REPO, file), path.join(base, file));
+  const copies = COPIES.flatMap((c) => c.copies).sort();
+  let r = syncApply(base);
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual([...r.changed].sort(), copies);
+  assert.deepEqual(syncApply(base), { problems: [], changed: [] });
+  assert.ok(read(base, 'util/scripts/codex-opinion.mjs').includes("\nconst AGENT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'second-opinion.md');\n"));
+  // One character changed in a source: both of its copies differ, and apply puts them back in line.
+  const gate = path.join(base, 'plugin', 'hooks', 'gate.mjs');
+  const gateText = read(base, 'plugin/hooks/gate.mjs');
+  writeFileSync(gate, `${gateText} `);
+  assert.deepEqual(syncCheck(base), ['util/hooks/gate.mjs: plugin/hooks/gate.mjs 와 다릅니다', 'auto/hooks/gate.mjs: plugin/hooks/gate.mjs 와 다릅니다']);
+  assert.deepEqual(syncApply(base), { problems: [], changed: ['util/hooks/gate.mjs', 'auto/hooks/gate.mjs'] });
+  assert.equal(read(base, 'auto/hooks/gate.mjs'), `${gateText} `);
+  // A replacement that no longer matches its source is one problem, and nothing is written, not even other drift.
+  writeFileSync(gate, gateText);
+  const opinion = path.join(base, 'plugin', 'scripts', 'codex-opinion.mjs');
+  writeFileSync(opinion, read(base, 'plugin/scripts/codex-opinion.mjs').replace("'..', 'agents', 'second-opinion.md')", "'agents.md')"));
+  const before = Object.fromEntries(copies.map((f) => [f, read(base, f)]));
+  r = syncApply(base);
+  assert.equal(r.problems.length, 1);
+  assert.match(r.problems[0], /^plugin\/scripts\/codex-opinion\.mjs: 바꿀 곳 .*\(0번\)\. scripts\/sync-shared\.mjs 의 바꿀 곳을 고치세요$/);
+  assert.deepEqual(r.changed, []);
+  assert.deepEqual(Object.fromEntries(copies.map((f) => [f, read(base, f)])), before);
 });

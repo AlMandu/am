@@ -5,18 +5,22 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
 import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
 import { BLOCKS, REPO as SKILLS_REPO, apply as skillsApply, check as skillsCheck, inputs as skillsInputs } from '../scripts/skills.mjs';
-import { RENAMED } from '../scripts/models.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'skills');
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, 'auto-multi': 80, 'auto-one': 80, 'auto-agent': 80, land: 80, sessions: 80 };
+// Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
+const SKILL_HOME = { land: 'util' };
+const PLUGIN_FOLDERS = ['plugin', 'util', 'auto'];
+const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
-const read = (name) => readFileSync(path.join(ROOT, name, 'SKILL.md'), 'utf8');
+const read = (name) => readFileSync(path.join(skillDir(name), 'SKILL.md'), 'utf8');
 const frontmatter = (text) => {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
   assert.ok(m, 'frontmatter');
@@ -114,35 +118,72 @@ test('skills stay within their line limits and name themselves after their folde
 test('am:plan, am:do, am:auto-multi, am:auto-one, am:auto-agent and am:land are user-invoked only in both tools', () => {
   for (const name of ['plan', 'do', 'auto-multi', 'auto-one', 'auto-agent', 'land']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
-    const yaml = readFileSync(path.join(ROOT, name, 'agents', 'openai.yaml'), 'utf8');
+    const yaml = readFileSync(path.join(skillDir(name), 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
   }
 });
 
-test('every skill folder is a skill with limits or a notice skill under an old name', () => {
-  const dirs = readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
-  assert.deepEqual(dirs, [...Object.keys(LIMITS), ...Object.keys(RENAMED)].sort());
-  for (const old of Object.keys(RENAMED)) assert.ok(!(old in LIMITS), old);
-  for (const now of Object.values(RENAMED)) assert.ok(now in LIMITS, now);
+test('every skill folder of every plugin folder is a skill with limits, in its own plugin folder', () => {
+  const found = [];
+  for (const folder of PLUGIN_FOLDERS) {
+    const dir = path.join(REPO_ROOT, folder, 'skills');
+    if (!existsSync(dir)) continue;
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      found.push(e.name);
+      assert.equal(folder, SKILL_HOME[e.name] ?? 'plugin', `${folder}/skills/${e.name}`);
+    }
+  }
+  assert.deepEqual(found.sort(), Object.keys(LIMITS).sort());
 });
 
-// The skills renamed in 0.1.64 keep a notice skill under the old name; remove them and RENAMED in the version after 0.1.65.
-test('the notice skills under the old names only point to the new name and stop', () => {
-  for (const [old, now] of Object.entries(RENAMED)) {
-    const text = read(old);
-    const fm = frontmatter(text);
-    assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'disable-model-invocation', 'effort', 'model', 'name'], old);
-    assert.equal(fm.name, old);
-    assert.ok(fm.description.includes(`am:${now}`), old);
-    const target = frontmatter(read(now));
-    assert.equal(fm.model, target.model, old);
-    assert.equal(fm.effort, target.effort, old);
-    const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
-    assert.equal(body, `\n# am:${old}\n\nThis skill was renamed to am:${now}. Do nothing else: read no file, run no command and change nothing. Tell the user, in their language and in one or two lines, that am:${old} is now am:${now}, that they should run am:${now} again with the same arguments, and that the old name am:${old} will go away soon. Then stop.\n`, old);
-    assert.ok(!text.includes('<!-- am:'), old);
-    assert.ok(!text.includes('$ARGUMENTS'), old);
-    assert.doesNotMatch(text, SLASH_NAME, old);
-    assert.match(readFileSync(path.join(ROOT, old, 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/, old);
+// Each plugin is installed on its own; only am-auto (Part 4) will depend on am.
+test('am and am-util declare no dependencies', () => {
+  const market = JSON.parse(readFileSync(path.join(REPO_ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
+  for (const name of ['am', 'am-util']) {
+    const entry = market.plugins.find((p) => p.name === name);
+    assert.ok(entry, name);
+    const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, entry.source, '.claude-plugin', 'plugin.json'), 'utf8'));
+    assert.ok(!('dependencies' in manifest), name);
+  }
+});
+
+test('the skills checked here and the common block targets are every SKILL.md of the plugin folders', () => {
+  const actual = [];
+  for (const folder of PLUGIN_FOLDERS) {
+    const dir = path.join(REPO_ROOT, folder, 'skills');
+    if (!existsSync(dir)) continue;
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/skills/${e.name}/SKILL.md`);
+    }
+  }
+  actual.sort();
+  assert.deepEqual(Object.keys(LIMITS).map((n) => `${SKILL_HOME[n] ?? 'plugin'}/skills/${n}/SKILL.md`).sort(), actual);
+  assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual, 'orchestrator/skills/run/SKILL.md'].sort());
+});
+
+// A copy moved to another plugin folder must still find what it imports; a static check would miss a lost export name.
+test('every .mjs of the plugin folders loads in a child process', () => {
+  const config = mkdtempSync(path.join(os.tmpdir(), 'am-import-'));
+  try {
+    const files = [];
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) walk(path.join(dir, e.name));
+        else if (e.name.endsWith('.mjs')) files.push(path.join(dir, e.name));
+      }
+    };
+    for (const folder of PLUGIN_FOLDERS) if (existsSync(path.join(REPO_ROOT, folder))) walk(path.join(REPO_ROOT, folder));
+    assert.ok(files.some((f) => f.includes(`${path.sep}util${path.sep}`)), 'util copies found');
+    for (const file of files) {
+      const r = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import(process.argv[1])', pathToFileURL(file).href], { cwd: config, input: '', encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: config }, timeout: 30000 });
+      const where = path.relative(REPO_ROOT, file);
+      assert.equal(r.status, 0, `${where}: ${r.stderr}`);
+      // hook.mjs catches a failed import and still exits 0, with a crash notice.
+      assert.ok(!`${r.stdout}${r.stderr}`.includes('crashed'), `${where}: ${r.stdout}${r.stderr}`);
+    }
+  } finally {
+    rmSync(config, { recursive: true, force: true });
   }
 });
 
