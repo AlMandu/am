@@ -15,7 +15,8 @@
 //     Prints every open decision card of plan.md (between `<!-- am:card OPEN -->` and `<!-- am:card end -->`), as written.
 //   answer <slug> <file>
 //     Writes the file's text under every open card of plan.md, as written, and marks the cards answered.
-// The model and effort are the stage agent's frontmatter, or the user models file's stage (else default) values; a model
+// The stage agents and claude-opinion are this plugin's (OWN_ROOT); the skills come from the core am (findCore), whose
+// folder stage.json keeps as `core` for the stage hook. The model and effort are the stage agent's frontmatter, or the user models file's stage (else default) values; a model
 // that is not an alias keeps the frontmatter's, with a note.
 // Exit codes: 0 result printed (start's and end's failures are in their JSON line), 1 bad arguments or a file that cannot
 // be read or used (card, answer), 2 no open card (card, answer).
@@ -28,8 +29,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { appendEvent, pidAlive, readFrom } from './progress.mjs';
 import { AGENT_RECORD, AGENT_STAGES, AGENT_STALE_MS, GRACE_MS, MARKS, POLL_MS, RECORD_SETTLE_MS, WAIT_MS, WORKER_STALE_MS, agentRules, ensureIgnored, inlineSkill, leaseOf, otherRuns, ownerState, skillCall, takeLock, taskState } from './stage.mjs';
 import { OPINION_MODELS, frontmatterModels, readUserModels, resolveUser, userModelsFile } from './user-models.mjs';
+import { findCore } from '../hooks/handover.mjs';
 
-const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const OWN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const USAGE = `usage: node agent-stage.mjs start <plan|do|check|commit> <slug> [--push] [--fix] [--part]
        node agent-stage.mjs end <slug> <runId> <status>
        node agent-stage.mjs card <slug>
@@ -133,7 +135,7 @@ async function start(argv, o) {
     return 1;
   }
   const { stage, slug, push, fix, part } = args;
-  const { cwd, env, amRoot, now, alive } = o;
+  const { cwd, env, ownRoot, now, alive } = o;
   const fail = (error) => result(o.out, startLine({ error }));
   const pidText = String(env.CLAUDE_PID ?? '');
   const pid = /^[1-9]\d*$/.test(pidText) ? Number(pidText) : null;
@@ -143,8 +145,12 @@ async function start(argv, o) {
   const userFile = userModelsFile(env);
   const user = readUserModels(userFile);
   if (user.error) return fail(`the user model settings cannot be used (fix or remove the file): ${user.error}`);
+  // The stage agents are this plugin's; the stage skills come from the core am, looked up once.
+  const core = o.core();
+  if (core.error) return fail(`the am plugin cannot be used: ${core.error}`);
+  const coreRoot = core.root;
   const agentName = stage === 'commit' && push ? 'stage-commit-push' : `stage-${stage}`;
-  const fm = frontmatterModels(path.join(amRoot, 'agents', `${agentName}.md`));
+  const fm = frontmatterModels(path.join(ownRoot, 'agents', `${agentName}.md`));
   if (fm.error) return fail(`the stage agent's model and effort cannot be read: ${fm.error}`);
   const picked = resolveUser(user, stage, fm);
   let note = null;
@@ -178,12 +184,12 @@ async function start(argv, o) {
   const write = (runId) => {
     const rel = (name) => `.am/${slug}/${name}`;
     const record = path.join(dir, AGENT_RECORD);
-    const recErr = writeAtomic(record, `${JSON.stringify({ pid, runId, stage, slug, push, fix, part, t: now() })}\n`);
+    const recErr = writeAtomic(record, `${JSON.stringify({ pid, runId, stage, slug, push, fix, part, core: coreRoot, t: now() })}\n`);
     if (recErr) return { error: `could not write ${rel(AGENT_RECORD)}: ${recErr}` };
     try {
       const sc = skillCall(stage, slug, { push });
-      writeFileSync(path.join(dir, `skill-${stage}.md`), inlineSkill(readFileSync(path.join(amRoot, 'skills', sc.skill, 'SKILL.md'), 'utf8'), sc.args, amRoot));
-      writeFileSync(path.join(dir, `rules-${stage}.md`), agentRules(stage, slug, { push, fix, part, owner: owner ?? '', runId, amRoot }));
+      writeFileSync(path.join(dir, `skill-${stage}.md`), inlineSkill(readFileSync(path.join(coreRoot, 'skills', sc.skill, 'SKILL.md'), 'utf8'), sc.args, coreRoot));
+      writeFileSync(path.join(dir, `rules-${stage}.md`), agentRules(stage, slug, { push, fix, part, owner: owner ?? '', runId, ownRoot }));
       if (!event({ ev: 'start', text: `stage ${stage} started`, pid, stage })) throw new Error(`could not write ${rel('progress.jsonl')}`);
     } catch (err) {
       rmSync(record, { force: true });
@@ -352,8 +358,8 @@ function answer(argv, o) {
 }
 
 /** Runs one subcommand. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, amRoot = AM_ROOT, out = process.stdout, err = process.stderr, now = Date.now, alive = pidAlive, ppid = process.ppid, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, agentStaleMs = AGENT_STALE_MS, lockWaitMs = LOCK_WAIT_MS, newRunId: makeRunId = newRunId } = {}) {
-  const o = { cwd, env, amRoot, out, err, now, alive, ppid, pollMs, waitMs, graceMs, settleMs, agentStaleMs, lockWaitMs, newRunId: makeRunId };
+export async function main(argv, { cwd = process.cwd(), env = process.env, ownRoot = OWN_ROOT, core = () => findCore(), out = process.stdout, err = process.stderr, now = Date.now, alive = pidAlive, ppid = process.ppid, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, agentStaleMs = AGENT_STALE_MS, lockWaitMs = LOCK_WAIT_MS, newRunId: makeRunId = newRunId } = {}) {
+  const o = { cwd, env, ownRoot, core, out, err, now, alive, ppid, pollMs, waitMs, graceMs, settleMs, agentStaleMs, lockWaitMs, newRunId: makeRunId };
   const [command, ...rest] = argv;
   if (command === 'start') return start(rest, o);
   if (command === 'end') return end(rest, o);

@@ -10,6 +10,8 @@
 // and effort apply), or inline from .am/<slug>/skill-<kind>.md with --model/--effort when the user models
 // file gives the stage other values, and ends with one marker line that this script reads. Called by am:auto:
 //   node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]
+// Two roots: this plugin's own folder (OWN_ROOT: claude-opinion, the stage agents) and the core am folder that findCore
+// finds once per call (the stage skills, the Codex script, --plugin-dir); `node stage.mjs core` prints the core folder.
 // The do stage becomes a hand-over to the am-orchestrator run skill when the plan says so.
 // Before the stage, task files that hold more than about 13,000 tokens are shortened in a short session of their own
 // (originals kept as <name>.orig-<n>.md); `compacted` reports it. The request (request.md) is the user's own words: never
@@ -85,7 +87,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOnPath, killTree } from '../hooks/gate.mjs';
-import { findAm, findOrchestrator, handedRun, handedStartBranch, readPlan, withinOneRun } from '../hooks/handover.mjs';
+import { findCore, findOrchestrator, handedRun, handedStartBranch, readPlan, withinOneRun } from '../hooks/handover.mjs';
 import { HEARTBEAT_MS, holdRecord, liveRecords, memoryShortMB, sessionsDirOf } from './memory-guard.mjs';
 import { createTracker } from './proc-tree.mjs';
 import { appendEvent, pidAlive, readFrom, runningStart } from './progress.mjs';
@@ -93,8 +95,8 @@ import { FRONTMATTER, frontmatterModels, readUserModels, resolveUser, userModels
 import { readUserSettings, userSettingsFile } from './user-settings.mjs';
 
 const WIN = process.platform === 'win32';
-const AM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]';
+const OWN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const USAGE = 'usage: node stage.mjs <plan|do|check|commit> <slug> [--push] [--fix] [--solo | --solo=<owner>]\n       node stage.mjs core';
 export const STAGES = ['plan', 'do', 'check', 'commit'];
 // Minutes per session. The hand-over drives a whole orchestrator run, which takes hours.
 // A caller of main that gives only some of them gets the rest from here.
@@ -225,13 +227,13 @@ export const CODEX_STAGES = ['plan'];
 
 /**
  * Allowed and denied tools of one stage, after the orchestrator's stage profiles. `/x` is from the repository root.
- * `installedAm`: the installed am folders a new session loads, which may differ from the runner's own amRoot.
+ * `amRoot`: the core am folder, whose Codex script a plan session may run.
  * `startBranch`: the branch a hand-over merges back into, the only one it may switch to (none when it is not a plain name).
  * `files`: the task files a compaction session may edit, by name inside `.am/<slug>/` (none without a slug).
  */
-export function permissions(stage, { push = false, amRoot = AM_ROOT, orchRoot = '', slug = '', files = [], installedAm = [], startBranch = '', soloOwner = '' } = {}) {
+export function permissions(stage, { push = false, amRoot = OWN_ROOT, orchRoot = '', slug = '', files = [], startBranch = '', soloOwner = '' } = {}) {
   const read = ['Read', 'Glob', 'Grep'];
-  const codex = CODEX_STAGES.includes(stage) ? [...new Set([amRoot, ...installedAm].flatMap((root) => nodeScript(path.join(root, 'scripts', 'codex-opinion.mjs'))))] : [];
+  const codex = CODEX_STAGES.includes(stage) ? nodeScript(path.join(amRoot, 'scripts', 'codex-opinion.mjs')) : [];
   const gitRead = ['Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git ls-files *)', 'Bash(git check-ignore *)', 'Bash(git rev-parse *)'];
   const edit = (dir) => [`Edit(/${dir}/**)`, `Edit(${dir}/**)`];
   const pushRules = ['Bash(git push)', 'Bash(git push *)'];
@@ -446,10 +448,10 @@ export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' }
  * The rules file of one am:lean subagent stage: agentBase's text with agentSwaps applied (it throws when a swap does not
  * match exactly once), then, for plan, the Claude reviewer line, and last the status line with this run's runId.
  */
-export function agentRules(stage, slug, { push = false, fix = false, part = false, owner = '', runId = '', amRoot = AM_ROOT } = {}) {
+export function agentRules(stage, slug, { push = false, fix = false, part = false, owner = '', runId = '', ownRoot = OWN_ROOT } = {}) {
   const { swaps, status } = agentSwaps(stage, slug, { part, owner, runId });
   const text = applySwaps(agentBase(stage, slug, { push, fix, part, owner }), swaps);
-  const opinion = stage === 'plan' ? `- Claude reviewer: this stage has no Agent tool, so instead of the am:second-opinion subagent run \`node "${amRoot.split(path.sep).join('/')}/scripts/claude-opinion.mjs" <brief file>\` from the repository root with a 10-minute timeout; it prints the answer under \`Claude's answer:\`. When the Codex command ends with exit code 2 (Codex is not installed), run it twice instead, with \`--as 1\` as Claude 1 and with \`--as 2\` as Claude 2. Exit code 2 of this command means no Claude reviewer can run.\n` : '';
+  const opinion = stage === 'plan' ? `- Claude reviewer: this stage has no Agent tool, so instead of the am:second-opinion subagent run \`node "${ownRoot.split(path.sep).join('/')}/scripts/claude-opinion.mjs" <brief file>\` from the repository root with a 10-minute timeout; it prints the answer under \`Claude's answer:\`. When the Codex command ends with exit code 2 (Codex is not installed), run it twice instead, with \`--as 1\` as Claude 1 and with \`--as 2\` as Claude 2. Exit code 2 of this command means no Claude reviewer can run.\n` : '';
   return `${text}${opinion}${status}\n`;
 }
 
@@ -1285,7 +1287,7 @@ export function stageLine(stage, slug, status, reason) {
 }
 
 /** Runs one stage and writes its JSON result line. Returns the exit code. */
-export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, am = findAm, amRoot = AM_ROOT, out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS, track = createTracker, log = () => {} } = {}) {
+export async function main(argv, { cwd = process.cwd(), env = process.env, claude = ['claude'], timeoutMin = TIMEOUT_MIN, orchestrator = findOrchestrator, core = () => findCore(), out = process.stdout, now = Date.now, relayMs = RELAY_MS, opinionMs = OPINION_MS, pollMs = POLL_MS, waitMs = WAIT_MS, graceMs = GRACE_MS, settleMs = RECORD_SETTLE_MS, alive = pidAlive, kill = signalRun, freeMem = os.freemem, platform = process.platform, heartbeatMs = HEARTBEAT_MS, track = createTracker, log = () => {} } = {}) {
   const args = stageArgs(argv);
   if (!args) {
     out.write(BAD_ARGS);
@@ -1310,6 +1312,10 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const settingsFile = userSettingsFile(env);
   const settings = readUserSettings(settingsFile);
   if (settings.error) return done({ reason: `the user settings cannot be used (fix or remove the file): ${settings.error}` });
+  // The am plugin whose skills, Codex script and --plugin-dir the stage session uses; looked up once, before the start lock.
+  const found = core();
+  if (found.error) return done({ reason: `the am plugin cannot be used: ${found.error}` });
+  const amRoot = found.root;
   if (stage === 'plan' && !existsSync(path.join(dir, 'request.md'))) return done({ reason: `no .am/${slug}/request.md: write the request there first` });
   if (stage !== 'plan' && !existsSync(planFile)) return done({ reason: `no .am/${slug}/plan.md: run the plan stage first` });
   ensureIgnored(cwd);
@@ -1449,20 +1455,13 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
   const c = compaction.compacted;
   if (c) event({ ev: 'note', text: c.failed ? `shortening undone, files kept: ${c.failed.split('\n')[0]}` : `shortened ${c.files.join(', ')}: about ${c.before} -> ${c.after} tokens` });
   result.costUsd = compaction.costUsd;
-  // A new session loads the installed am, which may be newer than this runner's folder: allow its Codex script too.
-  const installedAm = CODEX_STAGES.includes(kind) && !pluginDirFor(amRoot, env) ? am().map((p) => path.resolve(p)) : [];
-  const same = (a, b) => (WIN ? a.toLowerCase() === b.toLowerCase() : a === b);
-  if (installedAm.length && !installedAm.some((p) => same(p, path.resolve(amRoot)))) {
-    const runner = solo ? 'am:auto-one' : 'am:auto-multi';
-    event({ ev: 'note', text: `this ${runner} session runs am from ${amRoot}, but stage sessions load the installed am from ${installedAm.join(', ')}; the Codex second opinion is allowed for both. Restart the session that runs ${runner} to use one version.` });
-  }
   // A hand-over merges back into the branch its Change log names, or into the branch checked out now.
   let startBranch = '';
   if (kind === 'handover') {
     startBranch = handedStartBranch(readFileSync(planFile, 'utf8')) || '';
     if (!startBranch) startBranch = String(spawnSync('git', ['branch', '--show-current'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 }).stdout || '').trim();
   }
-  const perm = permissions(kind, { push, amRoot, orchRoot, slug, installedAm, startBranch, soloOwner: solo?.owner ?? '' });
+  const perm = permissions(kind, { push, amRoot, orchRoot, slug, startBranch, soloOwner: solo?.owner ?? '' });
   const instOpts = { ...opts, compacted: result.compacted, unquoted: resolveCommand(bin, env).shell };
   const inst = instructions(kind, slug, instOpts);
   let { prompt } = inst;
@@ -2128,8 +2127,25 @@ export function interrupt(sig, { exit = process.exit, reason = `stopped by ${sig
   exit(1);
 }
 
+/** `node stage.mjs core`: prints the core am folder (exit 0), or findCore's error line on stderr (exit 1). */
+export function coreCommand(argv, { core = () => findCore(), out = process.stdout, err = process.stderr } = {}) {
+  if (argv.length) {
+    err.write(`${USAGE}\n`);
+    return 1;
+  }
+  const found = core();
+  if (found.error) {
+    err.write(`${found.error}\n`);
+    return 1;
+  }
+  out.write(`${found.root}\n`);
+  return 0;
+}
+
 if (isMain()) {
-  if (process.argv[2] === '--worker') {
+  if (process.argv[2] === 'core') {
+    process.exitCode = coreCommand(process.argv.slice(3));
+  } else if (process.argv[2] === '--worker') {
     // The worker sets up its own stop signals.
     worker(process.argv.slice(3)).then((code) => {
       process.exitCode = code;

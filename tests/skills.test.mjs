@@ -299,6 +299,9 @@ test('am:auto-multi keeps the anchors am:auto-one and am:auto-agent refer to', (
   const step = Object.fromEntries(('\n' + steps).split(/\n(?=\d+\. )/).filter((s) => /^\d+\. /.test(s)).map((s) => [Number(s.split('.')[0]), s]));
   for (const n of [2, 4, 7]) assert.ok(step[n], `step ${n}`);
   assert.ok(step[2].includes('claude plugin list --json'), 'step 2');
+  // Step 2 reads the four skills from the core am folder that this command prints.
+  assert.ok(step[2].includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" core`'), 'step 2: the core command');
+  assert.match(readFileSync(path.join(ROOT, '..', 'scripts', 'stage.mjs'), 'utf8'), /\nexport function coreCommand\(/);
   assert.ok(step[4].includes('Hand-over:'), 'step 4');
   assert.ok(step[7].includes('After a hand-over'), 'step 7');
 });

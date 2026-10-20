@@ -119,6 +119,57 @@ test('plan: only the second-opinion scripts of this plugin, with a brief of this
   s.done();
 });
 
+/** A folder made to look like the am plugin (manifest name, plan skill); `name` changes the manifest's name. */
+function fakeCore(dir, name = 'am') {
+  mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+  mkdirSync(path.join(dir, 'skills', 'plan'), { recursive: true });
+  writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name, version: '0.1.66' }));
+  writeFileSync(path.join(dir, 'skills', 'plan', 'SKILL.md'), 'plan');
+  return dir;
+}
+const slashed = (p) => p.split(path.sep).join('/');
+
+test('plan: the codex-opinion of the recorded core am outside the repository, or of the development sibling; claude-opinion of this plugin only', () => {
+  const out = mkdtempSync(path.join(tmpdir(), 'am-stage-guard-core-'));
+  try {
+    const core = fakeCore(path.join(out, 'am'));
+    const other = fakeCore(path.join(out, 'other'), 'am-auto');
+    const brief = '.am/task/opinion-1.md';
+    const codex = (root) => `node ${slashed(root)}/scripts/codex-opinion.mjs ${brief}`;
+    const claude = (root) => `node ${slashed(root)}/scripts/claude-opinion.mjs ${brief}`;
+
+    // A recorded am outside the repository: its Codex script only.
+    const s = setup('plan');
+    writeRecord(s.root, 'task', { core });
+    assert.equal(s.bash(codex(core)), 'allow');
+    assert.equal(s.bash(`node "${slashed(core)}/scripts/codex-opinion.mjs" ${brief}`), 'allow');
+    assert.equal(s.bash(claude(core)), 'deny');
+    assert.equal(s.bash(`node ${slashed(core)}/scripts/stage.mjs ${brief}`), 'deny');
+    // Not an am (manifest name) or a relative path: refused.
+    writeRecord(s.root, 'task', { core: other });
+    assert.equal(s.bash(codex(other)), 'deny');
+    writeRecord(s.root, 'task', { core: path.relative(process.cwd(), core) });
+    assert.equal(s.bash(codex(core)), 'deny');
+    // A record without core: as before, only this plugin's scripts.
+    writeRecord(s.root, 'task');
+    assert.equal(s.bash(codex(core)), 'deny');
+    assert.equal(s.bash(`node ${PLUGIN}/scripts/codex-opinion.mjs ${brief}`), 'allow');
+    // An am inside the repository is refused even when recorded.
+    const inside = fakeCore(path.join(s.root, 'plugin'));
+    writeRecord(s.root, 'task', { core: inside });
+    assert.equal(s.bash(codex(inside)), 'deny');
+    // The same folder as the development sibling of this plugin's root is allowed, record or not.
+    const auto = path.join(s.root, 'auto');
+    mkdirSync(auto);
+    writeRecord(s.root, 'task');
+    assert.equal(verdict(s.run({ tool_name: 'Bash', tool_input: { command: codex(inside) } }, { pluginRoot: auto })), 'allow');
+    assert.equal(verdict(s.run({ tool_name: 'Bash', tool_input: { command: claude(inside) } }, { pluginRoot: auto })), 'deny');
+    s.done();
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
 test('commit: add, commit with a message file or plain -m, restore --staged only, no push', () => {
   const s = setup('commit');
   assert.equal(s.bash('git add plugin/x.mjs'), 'allow');

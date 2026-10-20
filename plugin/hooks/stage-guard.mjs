@@ -4,7 +4,8 @@
 // SubagentStop. A stage agent runs inside the user's session, so what this module allows runs without a question: each
 // stage gets its own allow list and everything else is denied. On every tool call it also binds the task's open stage
 // record .am/<slug>/stage.json (written by scripts/agent-stage.mjs) to the agent that first used it and touches the record
-// as a heartbeat. SubagentStop blocks once when the final answer is not the one status line `AM_STAGE: <status> <runId>`.
+// as a heartbeat. The plan stage may run codex-opinion.mjs of this plugin, of the record's `core` am (outside the repository)
+// or of the development sibling ../plugin, and claude-opinion.mjs of this plugin only. SubagentStop blocks once when the final answer is not the one status line `AM_STAGE: <status> <runId>`.
 // Node only, no dependencies.
 
 import { lstatSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
@@ -12,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { denyOutput, findRepoRoot, gitSubcommand, programName, shellCommands } from './gate.mjs';
 import { AGENT_RECORD, AGENT_STALE_MS, MARKS } from '../scripts/stage.mjs';
+import { isCore } from './handover.mjs';
 import { pidAlive } from '../scripts/progress.mjs';
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -180,7 +182,7 @@ function badOption(words) {
 const PLAIN_HINT = 'Run one plain command with no shell characters.';
 
 /** The plan and commit stages: one plain command from the stage's list. */
-function strictShell(command, { stage, push, slug, root, pluginRoots }) {
+function strictShell(command, { stage, push, slug, root, pluginRoots, coreRoots: cores }) {
   if (SPECIAL.test(command)) {
     const hint = stage === 'commit' ? ` For a commit message, write it to .am/${slug}/${COMMIT_MESSAGE} with the Write tool and run git commit -F .am/${slug}/${COMMIT_MESSAGE}.` : '';
     return deny(`am stage hook: the ${stage} stage runs only plain commands, and this one holds a shell character ($ \` < > | ; & ( ) { } \\ or a line break).${hint || ` ${PLAIN_HINT}`}`);
@@ -189,7 +191,7 @@ function strictShell(command, { stage, push, slug, root, pluginRoots }) {
   if (parsed.error) return deny(`am stage hook: the ${stage} stage refused this command (${parsed.error}). Quote the word or ${PLAIN_HINT.toLowerCase()}`);
   const words = parsed.words;
   if (words[0] === 'git') return stageGit(words.slice(1), { stage, push, slug, root });
-  if (words[0] === 'node' && stage === 'plan') return opinionScript(words.slice(1), { slug, pluginRoots });
+  if (words[0] === 'node' && stage === 'plan') return opinionScript(words.slice(1), { slug, pluginRoots, coreRoots: cores });
   return deny(`am stage hook: the ${stage} stage may not run ${JSON.stringify(words[0] ?? '')}. ${stage === 'plan' ? 'It runs read-only git commands and the second-opinion scripts of the skill only.' : 'It runs git status, diff, log, ls-files, check-ignore, rev-parse, add, commit and restore --staged only.'}`);
 }
 
@@ -240,14 +242,42 @@ function pushArgs(rest) {
   return deny('am stage hook: git push takes only [-u] [<remote name> [<branch>]] here: no URL, refspec (+ or :) or other option.');
 }
 
-function opinionScript(args, { slug, pluginRoots }) {
+function opinionScript(args, { slug, pluginRoots, coreRoots = [] }) {
   const [script, brief, ...more] = args;
-  const names = ['codex-opinion.mjs', 'claude-opinion.mjs'];
-  const which = names.find((n) => pluginRoots.some((r) => script === `${r}/scripts/${n}`));
+  const is = (roots, name) => roots.some((r) => script === `${r}/scripts/${name}`);
+  const which = is([...pluginRoots, ...coreRoots], 'codex-opinion.mjs') ? 'codex-opinion.mjs' : is(pluginRoots, 'claude-opinion.mjs') ? 'claude-opinion.mjs' : null;
   const briefOk = typeof brief === 'string' && new RegExp(`^\\.am/${slug}/[\\w.-]+\\.md$`).test(brief) && !brief.includes('..');
   const moreOk = more.length === 0 || (which === 'claude-opinion.mjs' && more.length === 2 && more[0] === '--as' && ['1', '2'].includes(more[1]));
   if (which && briefOk && moreOk) return allow(`am stage hook: the ${which} second opinion is allowed in the plan stage`);
-  return deny(`am stage hook: the plan stage runs node only for this plugin's scripts/codex-opinion.mjs or scripts/claude-opinion.mjs (path with /), with a brief .am/${slug}/<name>.md (and --as 1 or 2 for claude-opinion.mjs).`);
+  return deny(`am stage hook: the plan stage runs node only for this plugin's or the am plugin's scripts/codex-opinion.mjs, or this plugin's scripts/claude-opinion.mjs (path with /), with a brief .am/${slug}/<name>.md (and --as 1 or 2 for claude-opinion.mjs).`);
+}
+
+/**
+ * The am folders whose codex-opinion.mjs the plan stage may run besides this plugin's, each as given and real, with `/`:
+ * the record's `core` when it is an absolute am folder outside the repository (real paths), and the development sibling
+ * `<pluginRoot>/../plugin` when it is am. A candidate whose real path cannot be read is dropped.
+ */
+export function coreRoots(rec, root, pluginRoot) {
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return null;
+    }
+  };
+  const roots = [];
+  const core = rec?.core;
+  if (typeof core === 'string' && path.isAbsolute(core) && isCore(core)) {
+    const [r, realRoot] = [real(core), real(root)];
+    const rel = r && realRoot ? path.relative(realRoot, r) : '';
+    if (r && realRoot && (rel.startsWith('..') || path.isAbsolute(rel))) roots.push(core, r);
+  }
+  const dev = path.resolve(pluginRoot, '..', 'plugin');
+  if (isCore(dev)) {
+    const r = real(dev);
+    if (r) roots.push(dev, r);
+  }
+  return [...new Set(roots.map(slash))];
 }
 
 /** The do and check stages: any command but a session, a history change or a shell nested too deep. */
@@ -397,7 +427,7 @@ export function decide(payload, { pluginRoot = PLUGIN_ROOT, now = Date.now, aliv
     if (typeof input.command !== 'string') return out(deny('am stage hook: the command is not text.'));
     if (agent.stage === 'plan' || agent.stage === 'commit') {
       const roots = [...new Set([pluginRoot, (() => { try { return realpathSync(pluginRoot); } catch { return pluginRoot; } })()].map(slash))];
-      return out(strictShell(input.command, { ...ctx, pluginRoots: roots }));
+      return out(strictShell(input.command, { ...ctx, pluginRoots: roots, coreRoots: coreRoots(found.rec, root, pluginRoot) }));
     }
     return out(looseShell(input.command, ctx));
   }

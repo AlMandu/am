@@ -32,13 +32,15 @@ function makeRepo(t, { plan = null, request = 'Fix the typo' } = {}) {
   return { dir, cfg };
 }
 
+/** A core lookup that finds `root`. */
+const coreAt = (root) => () => ({ root, source: 'list', version: '0.1.66' });
 let ids = 0;
 async function run({ dir, cfg }, argv, opts = {}) {
   let out = '';
   let err = '';
   const env = { CLAUDE_CONFIG_DIR: cfg, CLAUDE_PID: String(LIVE), ...(opts.env || {}) };
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
-  const code = await main(argv, { cwd: dir, amRoot: AM, alive: aliveOnly, ppid: SHELL, pollMs: 10, waitMs: 80, settleMs: 0, lockWaitMs: 60, newRunId: () => `r${++ids}-abcdef`, ...opts, env, out: { write: (s) => (out += s) }, err: { write: (s) => (err += s) } });
+  const code = await main(argv, { cwd: dir, ownRoot: AM, core: coreAt(AM), alive: aliveOnly, ppid: SHELL, pollMs: 10, waitMs: 80, settleMs: 0, lockWaitMs: 60, newRunId: () => `r${++ids}-abcdef`, ...opts, env, out: { write: (s) => (out += s) }, err: { write: (s) => (err += s) } });
   let json = null;
   try {
     json = JSON.parse(out);
@@ -73,8 +75,8 @@ test('start: under the lock it writes stage.json, the skill and rules files and 
   assert.deepEqual(r.json, { agent: 'am:stage-plan', rules: '.am/demo/rules-plan.md', skill: '.am/demo/skill-plan.md', runId, model, effort, wait: null, note: null, error: null });
   assert.equal(r.out.split('\n').length, 2, 'one line');
   const rec = JSON.parse(read(repo.dir, `.am/demo/${AGENT_RECORD}`));
-  assert.deepEqual({ ...rec, t: 0 }, { pid: LIVE, runId, stage: 'plan', slug: 'demo', push: false, fix: false, part: false, t: 0 });
-  assert.equal(read(repo.dir, '.am/demo/rules-plan.md'), agentRules('plan', 'demo', { runId, amRoot: AM }));
+  assert.deepEqual({ ...rec, t: 0 }, { pid: LIVE, runId, stage: 'plan', slug: 'demo', push: false, fix: false, part: false, core: AM, t: 0 });
+  assert.equal(read(repo.dir, '.am/demo/rules-plan.md'), agentRules('plan', 'demo', { runId, ownRoot: AM }));
   assert.equal(read(repo.dir, '.am/demo/skill-plan.md'), inlineSkill(read(AM, 'skills/plan/SKILL.md'), 'Read the request in .am/demo/request.md (slug demo)', AM));
   assert.ok(!read(repo.dir, '.am/demo/skill-plan.md').startsWith('---'));
   const ev = events(repo.dir);
@@ -183,6 +185,29 @@ test('start: CLAUDE_PID must name the running session, not the shell', async (t)
   }
 });
 
+test('start: the skill comes from the core am and the stage agent and claude-opinion from this plugin; no core, nothing written', async (t) => {
+  const core = mkdtempSync(path.join(os.tmpdir(), 'am-agent-core-'));
+  t.after(() => rm(core, { recursive: true, force: true }));
+  mkdirSync(path.join(core, 'skills', 'plan'), { recursive: true });
+  writeFileSync(path.join(core, 'skills', 'plan', 'SKILL.md'), '---\nmodel: sonnet\neffort: low\n---\nRequest: $ARGUMENTS\nRun `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>`\n');
+  const repo = makeRepo(t);
+  const r = await run(repo, ['start', 'plan', 'demo'], { core: coreAt(core) });
+  assert.equal(r.json.error, null, r.json.error);
+  assert.deepEqual([r.json.model, r.json.effort], [fm('stage-plan').model, fm('stage-plan').effort], 'the stage agent of this plugin');
+  const slashed = (p) => p.split(path.sep).join('/');
+  const skill = read(repo.dir, r.json.skill);
+  assert.equal(skill, `Request: Read the request in .am/demo/request.md (slug demo)\nRun \`node "${slashed(core)}/scripts/codex-opinion.mjs" <brief file>\`\n`);
+  const rules = read(repo.dir, r.json.rules);
+  assert.ok(rules.includes(`\`node "${slashed(AM)}/scripts/claude-opinion.mjs" <brief file>\``) && !rules.includes(slashed(core)), 'claude-opinion of this plugin');
+  assert.equal(JSON.parse(read(repo.dir, `.am/demo/${AGENT_RECORD}`)).core, core);
+
+  const none = makeRepo(t);
+  const f = await run(none, ['start', 'plan', 'demo'], { core: () => ({ error: 'The am plugin is not installed: run x.' }) });
+  assert.equal(f.code, 0);
+  assert.deepEqual(f.json, { ...Object.fromEntries(KEYS.map((k) => [k, null])), error: 'the am plugin cannot be used: The am plugin is not installed: run x.' });
+  for (const name of [AGENT_RECORD, 'skill-plan.md', 'rules-plan.md', 'progress.jsonl']) assert.ok(!existsSync(path.join(none.dir, '.am', 'demo', name)), name);
+});
+
 test('end: only the open stage of the same runId, once, under the lock; an unknown status is failed', async (t) => {
   const repo = makeRepo(t);
   const { runId } = (await run(repo, ['start', 'plan', 'demo'])).json;
@@ -206,6 +231,7 @@ test('end: only the open stage of the same runId, once, under the lock; an unkno
   const rec = JSON.parse(readFileSync(recFile, 'utf8'));
   assert.equal(rec.status, 'READY');
   assert.ok(Number.isFinite(rec.ended));
+  assert.equal(rec.core, AM, 'the core folder stays after end');
   const twice = await run(repo, ['end', 'demo', runId, 'READY']);
   assert.deepEqual(twice.json, { ended: false, status: 'READY', reason: `the stage of runId ${runId} has already ended` });
   assert.equal(events(repo.dir).filter((e) => e.ev === 'end').length, 1);

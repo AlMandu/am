@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf } from '../plugin/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand } from '../plugin/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -93,7 +93,7 @@ function fakeTracker(cleaned = { count: 0, workingSetMB: 0 }, { order = [], fini
 async function run(dir, argv, opts = {}) {
   let text = '';
   const out = { write: (s) => (text += s) };
-  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, am: () => [], out, freeMem: () => 2 ** 50, track: NO_TRACK, ...opts });
+  const code = await main(argv, { cwd: dir, env: isolatedEnv, claude: [process.execPath, path.join(dir, 'fake-claude.mjs')], orchestrator: () => null, out, freeMem: () => 2 ** 50, track: NO_TRACK, ...opts });
   const calls = existsSync(path.join(dir, 'calls.jsonl')) ? readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
   return { code, text, result: code === 0 ? JSON.parse(text) : null, calls };
 }
@@ -151,21 +151,20 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   // The compaction session reads, and writes only the picked task files: no shell at all.
   const compact = permissions('compact');
   assert.equal(compact.mode, 'dontAsk');
-  // Only the plan stage may run the Codex script: of the runner's am and of every installed am, in both quote forms.
+  // Only the plan stage may run the Codex script: of the core am only, in both quote forms.
   assert.deepEqual(CODEX_STAGES, ['plan']);
   for (const s of CODEX_STAGES) {
-    const p = permissions(s, { amRoot: '/am', installedAm: ['/inst/a', '/inst/b', '/am'] });
-    for (const root of ['/am', '/inst/a', '/inst/b']) {
-      assert.ok(p.allow.includes(`Bash(node "${root}/scripts/codex-opinion.mjs" *)`) && p.allow.includes(`Bash(node ${root}/scripts/codex-opinion.mjs *)`), `${s}: ${root}`);
-    }
+    const p = permissions(s, { amRoot: '/am' });
+    assert.ok(p.allow.includes('Bash(node "/am/scripts/codex-opinion.mjs" *)') && p.allow.includes('Bash(node /am/scripts/codex-opinion.mjs *)'), s);
+    assert.ok(p.allow.filter((r) => r.includes('codex-opinion')).every((r) => r.split('\\').join('/').includes('/am/scripts/codex-opinion.mjs')), s);
     assert.equal(p.allow.length, new Set(p.allow).size, `${s}: no duplicate rule`);
     assert.ok(!p.allow.includes('Bash') && !p.allow.includes('Edit') && !p.allow.includes('PowerShell'), s);
   }
   for (const s of ['do', 'check', 'commit', 'handover', 'compact']) {
-    const p = permissions(s, { amRoot: '/am', installedAm: ['/inst/a'], orchRoot: '/orch', slug: 'demo' });
+    const p = permissions(s, { amRoot: '/am', orchRoot: '/orch', slug: 'demo' });
     assert.ok(!p.allow.some((r) => r.includes('codex-opinion')), s);
   }
-  assert.ok(!permissions('commit', { amRoot: '/am', installedAm: ['/inst/a'] }).allow.some((r) => r.includes('node')), 'commit runs no node script');
+  assert.ok(!permissions('commit', { amRoot: '/am' }).allow.some((r) => r.includes('node')), 'commit runs no node script');
   assert.deepEqual(compact.allow, ['Read', 'Glob', 'Grep']);
   assert.deepEqual(compact.deny, ['AskUserQuestion']);
   // With the slug, only the picked files in both path forms; the request is denied in both, should it ever be picked.
@@ -384,12 +383,12 @@ const agentCombos = () => AGENT_STAGES.flatMap((stage) => [false, true].flatMap(
 test('agentRules: the stage rules for an am:lean subagent, with no session wording, the report in the reply file and the runId in the status line', () => {
   assert.deepEqual(AGENT_STAGES, STAGES);
   const runId = 'mgs1x2y3-a1b2c3';
-  const amRoot = path.join(REPO, 'plugin');
+  const ownRoot = path.join(REPO, 'plugin');
   const stops = ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds'];
   const pushOk = '(the push keyword is that confirmation for the push)';
   for (const { stage, push, fix, part, slug } of agentCombos()) {
     const name = `${stage} push ${push} fix ${fix} part ${part}`;
-    const text = agentRules(stage, slug, { push, fix, part, owner: 'demo', runId, amRoot });
+    const text = agentRules(stage, slug, { push, fix, part, owner: 'demo', runId, ownRoot });
     const reply = `.am/${slug}/reply-${stage}.md`;
     assert.doesNotMatch(text, /session/i, name);
     const lines = text.split('\n');
@@ -409,7 +408,7 @@ test('agentRules: the stage rules for an am:lean subagent, with no session wordi
     assert.equal(text.split(pushOk).length, push ? 2 : 1, `${name}: push confirmation`);
     assert.equal(text.includes('claude-opinion.mjs'), stage === 'plan', name);
     if (stage === 'plan') {
-      assert.ok(text.includes(`\`node "${amRoot.split(path.sep).join('/')}/scripts/claude-opinion.mjs" <brief file>\``) && text.includes('`--as 1`') && text.includes('`--as 2`'), name);
+      assert.ok(text.includes(`\`node "${ownRoot.split(path.sep).join('/')}/scripts/claude-opinion.mjs" <brief file>\``) && text.includes('`--as 1`') && text.includes('`--as 2`'), name);
       assert.equal(text.includes('## Parts'), !part, name);
       assert.equal(text.includes('This is a part plan'), part, name);
       assert.ok(!text.includes('solo-context'), name);
@@ -2650,6 +2649,8 @@ function fakeAm(t, skill, text) {
   writeFileSync(path.join(dir, 'skills', skill, 'SKILL.md'), text);
   return dir;
 }
+/** A core lookup that finds `root` as the listed am. */
+const coreAt = (root) => () => ({ root, source: 'list', version: '0.1.66' });
 const assertInline = (body) => {
   assert.ok(!body.startsWith('---') && !body.includes('$ARGUMENTS') && !body.includes('${CLAUDE_'), body.slice(0, 200));
 };
@@ -2682,10 +2683,8 @@ test('the plan stage allows the Codex command exactly as an inline skill body wr
       const body = inlineSkill(skillText(stage), 'x', root);
       const file = /node "([^"]+codex-opinion\.mjs)"/.exec(body)[1];
       assert.equal(file, `${root.split(path.sep).join('/')}/scripts/codex-opinion.mjs`);
-      for (const opts of [{ amRoot: root }, { amRoot: path.join(os.tmpdir(), 'other-am'), installedAm: [root] }]) {
-        const { allow } = permissions(stage, opts);
-        assert.ok(allow.includes(`Bash(node "${file}" *)`) && allow.includes(`Bash(node ${file} *)`), `${stage}: ${root}`);
-      }
+      const { allow } = permissions(stage, { amRoot: root });
+      assert.ok(allow.includes(`Bash(node "${file}" *)`) && allow.includes(`Bash(node ${file} *)`), `${stage}: ${root}`);
     }
   }
 });
@@ -2740,12 +2739,12 @@ test('user values equal to the frontmatter keep the slash call; an unreadable fr
   const def = userModels(t, '{"model":{"default":"sonnet"}}');
   const sonnet = fakeAm(t, 'check', '---\nmodel: sonnet\neffort: high\n---\nTarget: $ARGUMENTS\n');
   const s = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTE'] } });
-  const r = await run(s, ['check', 'demo'], { env: cfgEnv(def), amRoot: sonnet });
+  const r = await run(s, ['check', 'demo'], { env: cfgEnv(def), core: coreAt(sonnet) });
   assert.equal(r.calls[0][1], '/am:check demo');
   assert.ok(!r.calls[0].includes('--model'));
   const broken = fakeAm(t, 'check', '---\nmodel: sonnet\n---\nTarget: $ARGUMENTS\n');
   const b = makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: NOTE'] } });
-  const f = await run(b, ['check', 'demo'], { env: cfgEnv(def), amRoot: broken });
+  const f = await run(b, ['check', 'demo'], { env: cfgEnv(def), core: coreAt(broken) });
   assert.equal(f.calls.length, 0);
   assert.equal(f.result.status, 'failed');
   assert.ok(f.result.reason.startsWith("the skill's model and effort cannot be read: ") && f.result.reason.includes(path.join(broken, 'skills', 'check', 'SKILL.md')) && f.result.reason.includes('effort'), f.result.reason);
@@ -2860,45 +2859,76 @@ test('run values equal to the run skill, or values for other stages only, keep t
   assert.ok(!r.calls[0].includes('--model'));
 });
 
-// ------------------------------------------------------------------ the installed am of a new session
+// ------------------------------------------------------------------ the core am of a stage
 
-test('the plan stage also allows the Codex script of the installed am, and note a different folder', async (t) => {
+test('the core am: its Codex script only, --plugin-dir only outside the cache, a lookup error fails before anything', async (t) => {
   const cfg = mkdtempSync(path.join(os.tmpdir(), 'am-stage-inst-'));
   t.after(() => rmSync(cfg, { recursive: true, force: true }));
   const env = { ...isolatedEnv, CLAUDE_CONFIG_DIR: cfg };
-  const amRoot = path.join(cfg, 'plugins', 'cache', 'am-workflow', 'am', '0.1.26');
-  const installed = path.join(cfg, 'plugins', 'cache', 'am-workflow', 'am', '0.1.30');
+  const cached = path.join(cfg, 'plugins', 'cache', 'am-workflow', 'am', '0.1.66');
   const script = (root) => `${root.split(path.sep).join('/')}/scripts/codex-opinion.mjs`;
-  const notes = (dir) => events(dir).filter((e) => e.ev === 'note');
+  const codexRules = (call) => flag(call, '--allowedTools').split(',').filter((r) => r.includes('codex-opinion'));
 
+  // (a) An installed core: its Codex script only, no --plugin-dir, no note.
   const dir = makeRepo(t, { fake: PLANNED });
-  const { result, calls } = await run(dir, ['plan', 'demo'], { env, amRoot, am: () => [installed] });
+  const { result, calls } = await run(dir, ['plan', 'demo'], { env, core: coreAt(cached) });
   assert.equal(result.status, 'READY');
   const allow = flag(calls[0], '--allowedTools').split(',');
-  for (const root of [amRoot, installed]) assert.ok(allow.includes(`Bash(node "${script(root)}" *)`) && allow.includes(`Bash(node ${script(root)} *)`), root);
+  assert.ok(allow.includes(`Bash(node "${script(cached)}" *)`) && allow.includes(`Bash(node ${script(cached)} *)`));
+  assert.deepEqual(codexRules(calls[0]), permissions('plan', { amRoot: cached }).allow.filter((r) => r.includes('codex-opinion')));
   assert.ok(!calls[0].includes('--plugin-dir'), 'an installed copy');
-  assert.deepEqual(notes(dir).map((e) => e.text), [`this am:auto-multi session runs am from ${amRoot}, but stage sessions load the installed am from ${installed}; the Codex second opinion is allowed for both. Restart the session that runs am:auto-multi to use one version.`]);
+  assert.deepEqual(events(dir).filter((e) => e.ev === 'note'), []);
 
-  // The same folder (on Windows also in other letter case) gives no note.
-  for (const same of [amRoot, ...(process.platform === 'win32' ? [amRoot.toUpperCase()] : [])]) {
-    const d = makeRepo(t, { fake: PLANNED });
-    await run(d, ['plan', 'demo'], { env, amRoot, am: () => [same] });
-    assert.deepEqual(notes(d), [], same);
+  // (b) A development copy outside the cache is loaded with --plugin-dir.
+  const devRoot = path.join(os.tmpdir(), 'am-dev-copy');
+  const dev = await run(makeRepo(t, { fake: PLANNED }), ['plan', 'demo'], { env, core: coreAt(devRoot) });
+  assert.equal(flag(dev.calls[0], '--plugin-dir'), devRoot);
+  assert.ok(codexRules(dev.calls[0]).every((r) => r.split('\\').join('/').includes(script(devRoot))), codexRules(dev.calls[0]).join(', '));
+
+  // (c) No usable am: `failed` with no session and no event line.
+  for (const stage of ['plan', 'check']) {
+    const d = makeRepo(t, { plan: SMALL, fake: PLANNED });
+    const f = await run(d, [stage, 'demo'], { env, core: () => ({ error: 'The am plugin is not installed: run x.' }) });
+    assert.equal(f.result.status, 'failed', stage);
+    assert.equal(f.result.reason, 'the am plugin cannot be used: The am plugin is not installed: run x.', stage);
+    assert.equal(f.calls.length, 0, stage);
+    assert.ok(!existsSync(path.join(d, '.am', 'demo', 'progress.jsonl')), stage);
   }
 
-  // No lookup for other stages or for a development copy; none found keeps the runner's rule only.
-  const looked = [];
-  const spy = () => (looked.push(1), [installed]);
-  await run(makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: DONE'] } }), ['do', 'demo'], { env, amRoot, am: spy });
-  await run(makeRepo(t, { plan: SMALL, fake: { replies: ['AM_STAGE: PASS'] } }), ['check', 'demo'], { env, amRoot, am: spy });
-  const devDir = makeRepo(t, { fake: PLANNED });
-  const dev = await run(devDir, ['plan', 'demo'], { env, am: spy });
-  assert.ok(!flag(dev.calls[0], '--allowedTools').includes(script(installed)));
-  assert.deepEqual(looked, []);
-  const noneDir = makeRepo(t, { fake: PLANNED });
-  const none = await run(noneDir, ['plan', 'demo'], { env, amRoot, am: () => [] });
-  assert.deepEqual(flag(none.calls[0], '--allowedTools').split(',').filter((r) => r.includes('codex-opinion')), permissions('plan', { amRoot }).allow.filter((r) => r.includes('codex-opinion')));
-  assert.deepEqual(notes(noneDir), []);
+  // (d) No claude command with a core found stays `unavailable`.
+  const gone = makeRepo(t, { plan: SMALL });
+  const u = await run(gone, ['check', 'demo'], { env, core: coreAt(cached), claude: [path.join(gone, 'no-such-claude-binary')] });
+  assert.equal(u.result.status, 'unavailable');
+
+  // (e) A stage the user models file changes runs inline from the core's frontmatter and body.
+  const fake = fakeAm(t, 'plan', '---\nmodel: sonnet\neffort: low\n---\nRequest: $ARGUMENTS\nRun `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-opinion.mjs" <brief file>`\n');
+  const key = userModels(t, '{"effort":{"plan":"max"}}');
+  const inl = makeRepo(t, { fake: PLANNED });
+  const e = await run(inl, ['plan', 'demo'], { env: cfgEnv(key), core: coreAt(fake) });
+  assert.equal(e.result.status, 'READY');
+  assert.equal(flag(e.calls[0], '--model'), 'sonnet');
+  assert.equal(flag(e.calls[0], '--effort'), 'max');
+  const body = readFileSync(skillFile(inl, 'plan'), 'utf8');
+  assert.ok(body.includes('Request: Read the request in .am/demo/request.md (slug demo)') && body.includes(`node "${script(fake)}"`), body);
+  assert.ok(flag(e.calls[0], '--allowedTools').split(',').includes(`Bash(node "${script(fake)}" *)`));
+});
+
+test('coreCommand prints the core folder, or the lookup error with exit 1; extra arguments print the usage', () => {
+  const sink = () => {
+    const s = { text: '', write: (x) => (s.text += x) };
+    return s;
+  };
+  const [out, err] = [sink(), sink()];
+  assert.equal(coreCommand([], { out, err }), 0);
+  assert.equal(out.text, `${path.join(REPO, 'plugin')}\n`);
+  assert.equal(err.text, '');
+  const [o2, e2] = [sink(), sink()];
+  assert.equal(coreCommand([], { core: () => ({ error: 'no am here.' }), out: o2, err: e2 }), 1);
+  assert.deepEqual([o2.text, e2.text], ['', 'no am here.\n']);
+  const [o3, e3] = [sink(), sink()];
+  let looked = 0;
+  assert.equal(coreCommand(['extra'], { core: () => (looked++, { root: 'x' }), out: o3, err: e3 }), 1);
+  assert.ok(o3.text === '' && e3.text.includes('node stage.mjs core') && looked === 0, e3.text);
 });
 
 // ------------------------------------------------------------------ second-opinion news
@@ -3238,7 +3268,6 @@ function startWorker(dir, argv, opts = {}) {
     env: isolatedEnv,
     claude: [process.execPath, path.join(dir, 'fake-claude.mjs')],
     orchestrator: () => null,
-    am: () => [],
     freeMem: () => 2 ** 50,
     track: NO_TRACK,
     out: { write: (s) => (w.text += s) },
@@ -3539,7 +3568,7 @@ test('worker: reads no environment variable; its times are parameters', () => {
 
 const STAGE_URL = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
 // The worker the follower starts: stage.mjs's worker with the fake claude and test times.
-const WRAPPER = `import { worker } from ${JSON.stringify(STAGE_URL)};\nprocess.exitCode = await worker(process.argv.slice(2), { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => null, am: () => [], freeMem: () => 2 ** 50, confirmMs: 50, busyMs: 300 });\n`;
+const WRAPPER = `import { worker } from ${JSON.stringify(STAGE_URL)};\nprocess.exitCode = await worker(process.argv.slice(2), { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => null, freeMem: () => 2 ** 50, confirmMs: 50, busyMs: 300 });\n`;
 // A worker command that must not run: it leaves spawned.txt.
 const NO_SPAWN = [process.execPath, '-e', "require('fs').writeFileSync('spawned.txt', 'x')"];
 const spawned = (dir) => existsSync(path.join(dir, 'spawned.txt'));
