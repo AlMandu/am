@@ -158,13 +158,14 @@ test('every skill sets the model and effort its turn runs with', () => {
   }
 });
 
-test('am:land lands from a temporary worktree, never force pushes and never touches the working tree', () => {
+test('am:land lands from a temporary worktree, never force pushes and only fast-forwards this folder at the end', () => {
   const skill = withoutCommon(read('land'));
-  for (const s of ['git worktree add --detach', 'git merge --no-ff', 'merge --continue', 'merge --abort', 'git worktree remove', 'git fetch . ', 'git ls-remote --symref origin HEAD', 'git branch -f <target> origin/<target>', '--set-upstream-to=origin/<target>', 'Never force push', "Never touch this folder's working tree"]) assert.ok(skill.includes(s), s);
-  // Nothing that moves this folder's checkout, a commit the gate would check in the bare temp folder, or a ref move that skips the worktree check.
+  for (const s of ['git worktree add --detach', 'git merge --no-ff', 'merge --continue', 'merge --abort', 'git worktree remove', 'git fetch . ', 'git ls-remote --symref origin HEAD', 'git branch -f <target> origin/<target>', '--set-upstream-to=origin/<target>', 'Never force push', "Until step 8, never touch this folder's working tree", 'git merge --ff-only --no-autostash --no-overwrite-ignore', 'even if the local target update or upstream setup failed']) assert.ok(skill.includes(s), s);
+  // No destructive checkout change, commit that runs the gate in the temp folder, or unchecked ref move.
   assert.doesNotMatch(skill, /git (switch|checkout|stash|reset|restore|rebase|pull)\b/);
   for (const s of ['git commit', 'git update-ref', 'merge.md', 'commits.md', 'feature/<slug>']) assert.ok(!skill.includes(s), s);
   for (const line of skill.split('\n').filter((l) => l.includes('git push'))) assert.doesNotMatch(line, /--force|-f |\+/, line);
+  for (const line of skill.split('\n').filter((l) => l.includes('git merge ') && !l.includes('-C <temp>'))) assert.ok(line.includes('--ff-only'), line);
 });
 
 test('am:commit records its commits outside am-orchestrator', () => {

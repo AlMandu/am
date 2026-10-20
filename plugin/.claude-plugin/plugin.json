@@ -1,7 +1,7 @@
 {
   "name": "am",
-  "version": "0.1.65",
-  "description": "가벼운 plan → do → check → commit 워크플로와, 작업 폴더를 건드리지 않고 지금 브랜치를 대상 브랜치에 합쳐 push 하는 land. 커밋 직전에 프로젝트의 빌드·테스트 명령(am-gate.json)을 돌려 실패하면 막는다. Claude Code·Codex 공용.",
+  "version": "0.1.66",
+  "description": "가벼운 plan → do → check → commit 워크플로와, 지금 브랜치를 대상 브랜치에 합쳐 push 한 뒤 합친 커밋으로 옮기는 land. 커밋하지 않은 변경은 보존하며, 커밋 직전에 프로젝트의 빌드·테스트 명령(am-gate.json)을 돌려 실패하면 막는다. Claude Code·Codex 공용.",
   "author": { "name": "Seonghun" },
   "homepage": "https://github.com/AlMandu/am",
   "repository": "https://github.com/AlMandu/am",
