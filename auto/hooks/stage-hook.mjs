@@ -1,7 +1,7 @@
 // Stage agent hook: the stage guard (stage-guard.mjs) first; an allowed shell command also passes the commit gate, whose deny wins.
-// hook.mjs calls stageOutput(raw) today; in Part 4 this becomes am-auto's hooks.json entry through main(). Runs nothing on import.
+// am-auto's hooks.json entry: its command imports this file and calls main(). Runs nothing on import.
 
-export const STAGE_PREFIX = 'am:stage-';
+export const STAGE_PREFIX = 'am-auto:stage-';
 
 /** Reads all of stdin; gives up after 5 s so a hook without input cannot hang (as gate.mjs's readStdin). */
 function readInput() {

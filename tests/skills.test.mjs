@@ -13,9 +13,11 @@ import { BLOCKS, REPO as SKILLS_REPO, apply as skillsApply, check as skillsCheck
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, 'auto-multi': 80, 'auto-one': 80, 'auto-agent': 80, land: 80, sessions: 80 };
+// am-auto's folder: its skills, scripts, hooks and stage agents.
+const AUTO = path.join(REPO_ROOT, 'auto');
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, sessions: 80 };
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util' };
+const SKILL_HOME = { land: 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto' };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto'];
 const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
@@ -116,7 +118,7 @@ test('skills stay within their line limits and name themselves after their folde
 });
 
 test('am:plan, am:do, am:auto-multi, am:auto-one, am:auto-agent and am:land are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'auto-multi', 'auto-one', 'auto-agent', 'land']) {
+  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'land']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(skillDir(name), 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -137,8 +139,8 @@ test('every skill folder of every plugin folder is a skill with limits, in its o
   assert.deepEqual(found.sort(), Object.keys(LIMITS).sort());
 });
 
-// Each plugin is installed on its own; only am-auto (Part 4) will depend on am.
-test('am and am-util declare no dependencies', () => {
+// Each plugin is installed on its own; only am-auto depends on am (it runs am's skills).
+test('am and am-util declare no dependencies, and am-auto depends on am alone', () => {
   const market = JSON.parse(readFileSync(path.join(REPO_ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
   for (const name of ['am', 'am-util']) {
     const entry = market.plugins.find((p) => p.name === name);
@@ -146,6 +148,9 @@ test('am and am-util declare no dependencies', () => {
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, entry.source, '.claude-plugin', 'plugin.json'), 'utf8'));
     assert.ok(!('dependencies' in manifest), name);
   }
+  const auto = market.plugins.find((p) => p.name === 'am-auto');
+  assert.equal(auto?.source, './auto');
+  assert.deepEqual(JSON.parse(readFileSync(path.join(REPO_ROOT, 'auto', '.claude-plugin', 'plugin.json'), 'utf8')).dependencies, ['am']);
 });
 
 test('the skills checked here and the common block targets are every SKILL.md of the plugin folders', () => {
@@ -175,6 +180,7 @@ test('every .mjs of the plugin folders loads in a child process', () => {
     };
     for (const folder of PLUGIN_FOLDERS) if (existsSync(path.join(REPO_ROOT, folder))) walk(path.join(REPO_ROOT, folder));
     assert.ok(files.some((f) => f.includes(`${path.sep}util${path.sep}`)), 'util copies found');
+    assert.ok(files.some((f) => f.endsWith(path.join('auto', 'hooks', 'stage-hook.mjs'))), 'auto files found');
     for (const file of files) {
       const r = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import(process.argv[1])', pathToFileURL(file).href], { cwd: config, input: '', encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: config }, timeout: 30000 });
       const where = path.relative(REPO_ROOT, file);
@@ -191,8 +197,8 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'auto-multi', 'auto-one', 'auto-agent', 'land'].includes(name) ? ['disable-model-invocation'] : [];
-    const hooks = name === 'auto-multi' ? ['hooks'] : [];
+    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land'].includes(name) ? ['disable-model-invocation'] : [];
+    const hooks = name === 'multi' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
     assert.ok(USER_EFFORTS.includes(fm.effort), `${name}: ${fm.effort}`);
@@ -246,15 +252,15 @@ test('am:auto-multi declares the hand-over hook, and only am:auto-multi', () => 
   // stays for the session, with CLAUDE_PLUGIN_ROOT set). One line, so the frontmatter stays one key per line.
   // am:auto-agent has no hook: a skill's frontmatter hook does not run in its subagents (.am/subagent-stages/facts.md (a)).
   const line = `hooks: { PreToolUse: [ { matcher: "Read|Edit|Write|MultiEdit|NotebookEdit", hooks: [ { type: command, command: "node -e \\"import(require('url').pathToFileURL(process.env.CLAUDE_PLUGIN_ROOT+'/hooks/handover.mjs')).then((m) => m.main()).catch(() => {})\\"", timeout: 60 } ] } ] }`;
-  assert.ok(read('auto-multi').includes(`\n${line}\nmodel: `));
-  assert.ok(existsSync(path.join(ROOT, '..', 'hooks', 'handover.mjs')));
-  for (const name of Object.keys(LIMITS).filter((n) => n !== 'auto-multi')) assert.doesNotMatch(read(name), /\nhooks:/, name);
-  assert.match(read('auto-multi'), /this skill's hook denies file edits outside `\.am\/`/);
+  assert.ok(read('multi').includes(`\n${line}\nmodel: `));
+  assert.ok(existsSync(path.join(AUTO, 'hooks', 'handover.mjs')));
+  for (const name of Object.keys(LIMITS).filter((n) => n !== 'multi')) assert.doesNotMatch(read(name), /\nhooks:/, name);
+  assert.match(read('multi'), /this skill's hook denies file edits outside `\.am\/`/);
 });
 
 test('am:auto-multi drives the stage runner and handles every status it prints', async () => {
-  const auto = read('auto-multi');
-  const { MARKS, STAGES } = await import('../plugin/scripts/stage.mjs');
+  const auto = read('multi');
+  const { MARKS, STAGES } = await import('../auto/scripts/stage.mjs');
   assert.ok(auto.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" <stage> <slug>`'));
   assert.match(auto, /## Stage sessions \(Claude Code\)\nIn Claude Code, when `\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/stage\.mjs` exists/);
   for (const s of STAGES) assert.ok(auto.includes(`\`${s}\``), `stage ${s}`);
@@ -272,9 +278,9 @@ test('am:auto-multi drives the stage runner and handles every status it prints',
 });
 
 test('am:auto-one follows am:auto-multi\'s file with its own differences', async () => {
-  const solo = withoutCommon(read('auto-one'));
-  const { PART_LINE } = await import('../plugin/scripts/stage.mjs');
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto-multi/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  const solo = withoutCommon(read('one'));
+  const { PART_LINE } = await import('../auto/scripts/stage.mjs');
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
   // A part request's first line: a later run reads part folders written earlier and stops when it does not match.
   for (const s of ['`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(solo.includes(s), s);
   // The plan stage writes the Parts lines in this form; in a session with no stage sessions am:auto-one writes them itself.
@@ -288,10 +294,10 @@ test('am:auto-one follows am:auto-multi\'s file with its own differences', async
 });
 
 test('am:auto-agent follows am:auto-multi\'s file and replaces its stage sessions with stage agents', async () => {
-  const lean = withoutCommon(read('auto-agent'));
-  const { MARKS, PART_LINE } = await import('../plugin/scripts/stage.mjs');
+  const lean = withoutCommon(read('agent'));
+  const { MARKS, PART_LINE } = await import('../auto/scripts/stage.mjs');
   const cmd = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs"';
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/auto-multi/SKILL.md', '`## Stage sessions (Claude Code)`', '\n## Stage agents (Claude Code)\n', '`HANDED`', 'step 2', 'step 4', 'step 7']) assert.ok(lean.includes(s), s);
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md', '`## Stage sessions (Claude Code)`', '\n## Stage agents (Claude Code)\n', '`HANDED`', 'step 2', 'step 4', 'step 7']) assert.ok(lean.includes(s), s);
   // The four commands of agent-stage.mjs, the keys of start's JSON line and the fixed prompt of the stage agent.
   for (const s of [`${cmd} start <stage> <slug>`, `${cmd} end <slug> <runId> failed`, `${cmd} end <slug> <runId> <status>`, `${cmd} card <slug>`, `${cmd} answer <slug> <that file>`]) assert.ok(lean.includes(`\`${s}\``), s);
   for (const k of ['agent', 'rules', 'skill', 'runId', 'model', 'effort', 'wait', 'note', 'error']) assert.ok(lean.includes(`\`${k}\``), k);
@@ -306,7 +312,7 @@ test('am:auto-agent follows am:auto-multi\'s file and replaces its stage session
   assert.ok(lean.includes(PART_LINE), 'PART_LINE');
   for (const s of ['- Part <k> done:', '`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(lean.includes(s), s);
   // It copies the Parts rules instead of reading am:auto-one, and runs neither the orchestrator nor stage sessions.
-  for (const s of ['skills/auto-one/SKILL.md', 'skills/run/SKILL.md', 'scripts/stage.mjs', 'progress.mjs', '--solo']) assert.ok(!lean.includes(s), s);
+  for (const s of ['skills/one/SKILL.md', 'skills/run/SKILL.md', 'scripts/stage.mjs', 'progress.mjs', '--solo']) assert.ok(!lean.includes(s), s);
   // The fixed command that logs a part as done, run as written on copies of a parent plan.
   const m = /`node -e '([^']*)' \.am\/<slug>\/plan\.md '- Part <k> done: <slug>-p<k>'`/.exec(lean);
   assert.ok(m, 'the Part done command');
@@ -333,7 +339,7 @@ test('am:auto-agent follows am:auto-multi\'s file and replaces its stage session
 });
 
 test('am:auto-multi keeps the anchors am:auto-one and am:auto-agent refer to', () => {
-  const auto = read('auto-multi');
+  const auto = read('multi');
   for (const s of ['## Running without stops', '## Stage sessions (Claude Code)', '`HANDED`']) assert.ok(auto.includes(s), s);
   const steps = auto.split('\n## Steps\n')[1];
   assert.ok(steps, 'the Steps section');
@@ -342,7 +348,7 @@ test('am:auto-multi keeps the anchors am:auto-one and am:auto-agent refer to', (
   assert.ok(step[2].includes('claude plugin list --json'), 'step 2');
   // Step 2 reads the four skills from the core am folder that this command prints.
   assert.ok(step[2].includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" core`'), 'step 2: the core command');
-  assert.match(readFileSync(path.join(ROOT, '..', 'scripts', 'stage.mjs'), 'utf8'), /\nexport function coreCommand\(/);
+  assert.match(readFileSync(path.join(AUTO, 'scripts', 'stage.mjs'), 'utf8'), /\nexport function coreCommand\(/);
   assert.ok(step[4].includes('Hand-over:'), 'step 4');
   assert.ok(step[7].includes('After a hand-over'), 'step 7');
 });
@@ -350,22 +356,22 @@ test('am:auto-multi keeps the anchors am:auto-one and am:auto-agent refer to', (
 test('am:sessions runs the read-only report script once and the model may invoke it', () => {
   const skill = read('sessions');
   assert.ok(skill.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/sessions.mjs"`'));
-  assert.ok(existsSync(path.join(ROOT, '..', 'scripts', 'sessions.mjs')), 'plugin/scripts/sessions.mjs');
+  assert.ok(existsSync(path.join(AUTO, 'scripts', 'sessions.mjs')), 'auto/scripts/sessions.mjs');
   // No Codex manifest: the model may pick this skill on its own in both tools.
-  assert.ok(!existsSync(path.join(ROOT, 'sessions', 'agents', 'openai.yaml')));
+  assert.ok(!existsSync(path.join(skillDir('sessions'), 'agents', 'openai.yaml')));
   assert.match(skill, /Change, remove or stop nothing/);
   // The report names the skill of each task, so both ways to resume are named.
   assert.ok(skill.includes('`am:auto-multi <slug>`') && skill.includes('`am:auto-one <slug>`'));
 });
 
 test('am:auto-multi starts the progress command next to every stage command', async () => {
-  const m = /## Stage sessions \(Claude Code\)\n([\s\S]*?)\n## Steps\n/.exec(read('auto-multi'));
+  const m = /## Stage sessions \(Claude Code\)\n([\s\S]*?)\n## Steps\n/.exec(read('multi'));
   assert.ok(m, 'the Stage sessions section');
   const section = m[1];
   assert.ok(section.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs" <slug> --consumer main`'));
-  assert.ok(existsSync(path.join(ROOT, '..', 'scripts', 'progress.mjs')), 'plugin/scripts/progress.mjs');
+  assert.ok(existsSync(path.join(AUTO, 'scripts', 'progress.mjs')), 'auto/scripts/progress.mjs');
   // The skill stops restarting the progress command when its last line is the one the script prints for an ended task.
-  const { stateLine } = await import('../plugin/scripts/progress.mjs');
+  const { stateLine } = await import('../auto/scripts/progress.mjs');
   assert.equal(stateLine([]), 'state: ended');
   assert.ok(section.includes(`\`${stateLine([])}\``), 'state: ended');
   assert.ok(section.includes('each `second opinion:` line gets its own plain line: what had to be decided and which option was chosen, and which reviewers agreed, if both did'));
@@ -374,11 +380,11 @@ test('am:auto-multi starts the progress command next to every stage command', as
   assert.ok(section.includes('--consumer main` from the repository root in the background unless one is still running'));
   assert.ok(section.includes('has already ended and no stage command of this task is running now'));
   // The skill relays news by this prefix; a changed prefix would silently drop the plain line.
-  assert.ok(readFileSync(path.join(ROOT, '..', 'scripts', 'stage.mjs'), 'utf8').includes('text: `second opinion: ${line}`'));
+  assert.ok(readFileSync(path.join(AUTO, 'scripts', 'stage.mjs'), 'utf8').includes('text: `second opinion: ${line}`'));
 });
 
 test('am:auto-multi gathers the choices the second opinion settled in its final reply', () => {
-  const auto = read('auto-multi');
+  const auto = read('multi');
   assert.ok(auto.includes('each choice the second opinion settled (from Defaults applied in plan.md: what had to be decided and the agreed option, and whether it overruled your own pick)'));
   assert.ok(auto.includes('`autoDecided` and `secondOpinions` lines join what you decided'));
 });
@@ -397,7 +403,7 @@ test('the second-opinion agent stays pinned and read-only, and the common rules 
 
 // am:auto-agent stage agents; their values are models.json's through STAGE_AGENTS of scripts/models.mjs (tests/models.test.mjs).
 const STAGE_AGENT_NAMES = ['stage-plan', 'stage-do', 'stage-check', 'stage-commit', 'stage-commit-push'];
-const AGENTS_DIR = path.dirname(AGENT);
+const AGENTS_DIR = path.join(AUTO, 'agents');
 
 test('am:auto-agent stage agents stay pinned', () => {
   const rest = [];
@@ -428,8 +434,9 @@ test('am:auto-agent stage agents stay pinned', () => {
   for (const r of rest.slice(1)) assert.equal(r, rest[0]);
 });
 
-test('plugin/agents holds only the reviewer and the stage agents', () => {
-  assert.deepEqual(readdirSync(AGENTS_DIR).sort(), ['second-opinion.md', ...STAGE_AGENT_NAMES.map((n) => `${n}.md`)].sort());
+test('plugin/agents holds only the reviewer, and auto/agents only the stage agents', () => {
+  assert.deepEqual(readdirSync(path.dirname(AGENT)), ['second-opinion.md']);
+  assert.deepEqual(readdirSync(AGENTS_DIR).sort(), STAGE_AGENT_NAMES.map((n) => `${n}.md`).sort());
 });
 
 test('with Codex installed, the common rules have Codex answer the same brief and send a lasting split to the user', () => {
@@ -445,7 +452,7 @@ test('with Codex installed, the common rules have Codex answer the same brief an
   assert.match(block, /still split after that goes to the user as a decision card/);
   assert.match(block, /If one reviewer fails, in any round, the other's answer stands/);
   assert.match(readFileSync(AGENT, 'utf8'), /another reviewer's pick and reasons/);
-  const auto = read('auto-multi');
+  const auto = read('multi');
   assert.match(auto, /\n- The two reviewers of a technical choice still split on it after their rounds \(rules above\)\.\n/);
   assert.match(auto, /In the first five cases, ask with a decision card/);
 });

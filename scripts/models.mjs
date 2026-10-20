@@ -20,19 +20,20 @@ const MODEL = {
   codex: [/^([A-Za-z0-9._:-]+)?$/, '빈 문자열(사용자의 codex 설정) 또는 따옴표 없이 쓰는 모델 이름'],
 };
 const ENTRIES = {
-  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', 'auto-multi': 'alias', 'auto-one': 'alias', 'auto-agent': 'alias', sessions: 'alias', compact: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
+  am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
+  'am-auto': { multi: 'alias', one: 'alias', agent: 'alias', sessions: 'alias', compact: 'alias' },
   'am-util': { land: 'alias' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Skills per models.json group and the plugin folder that holds them (<folder>/skills/<name>/SKILL.md).
-export const SKILLS = { am: ['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'sessions'], 'am-util': ['land'] };
-export const PLUGIN_DIRS = { am: 'plugin', 'am-util': 'util' };
+export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'sessions'], 'am-util': ['land'] };
+export const PLUGIN_DIRS = { am: 'plugin', 'am-auto': 'auto', 'am-util': 'util' };
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs keeps a copy).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
-// am:lean stage agents (plugin/agents/<agent>.md) take the values of the am skill they run.
+// am-auto:agent stage agents (auto/agents/<agent>.md) take the values of the am skill they run.
 export const STAGE_AGENTS = { 'stage-plan': 'plan', 'stage-do': 'do', 'stage-check': 'check', 'stage-commit': 'commit', 'stage-commit-push': 'commit' };
 // BUILTIN_MODELS of plugin/scripts/user-files.mjs: the user models file's keys (without default) in its order, with their group.
-const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['commit', 'am'], ['compact', 'am'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
+const USER_FILE_KEYS = [['plan', 'am'], ['do', 'am'], ['check', 'am'], ['commit', 'am'], ['compact', 'am-auto'], ['run', 'orchestrator'], ['split', 'orchestrator'], ['second-opinion', 'am'], ['codex-opinion', 'am']];
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (o) => Object.keys(o).filter((k) => !k.startsWith('_')); // `_` keys are notes
@@ -96,7 +97,7 @@ export function targets() {
   return [
     ...Object.entries(SKILLS).flatMap(([group, names]) => names.map((name) => frontmatter(`${PLUGIN_DIRS[group]}/skills/${name}/SKILL.md`, (m) => m[group][name]))),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
-    ...Object.entries(STAGE_AGENTS).map(([agent, skill]) => frontmatter(`plugin/agents/${agent}.md`, (m) => m.am[skill])),
+    ...Object.entries(STAGE_AGENTS).map(([agent, skill]) => frontmatter(`auto/agents/${agent}.md`, (m) => m.am[skill])),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),
     ...['split', ...Object.keys(STAGE_SKILLS)].map((stage) => ({
       file: 'orchestrator/scripts/orchestrator.mjs',
@@ -114,10 +115,10 @@ export function targets() {
       },
     },
     {
-      file: 'plugin/scripts/stage.mjs',
+      file: 'auto/scripts/stage.mjs',
       what: 'COMPACT_MODEL',
       pattern: /\nexport const COMPACT_MODEL = \{ model: '[^'\n]*', effort: '[^'\n]*' \};/g,
-      text: (m) => `\nexport const COMPACT_MODEL = { model: '${m.am.compact.model}', effort: '${m.am.compact.effort}' };`,
+      text: (m) => `\nexport const COMPACT_MODEL = { model: '${m['am-auto'].compact.model}', effort: '${m['am-auto'].compact.effort}' };`,
     },
     {
       file: 'plugin/scripts/user-files.mjs',
@@ -131,12 +132,12 @@ export function targets() {
     generated('README.md', (m) =>
       table('대상', [
         ...Object.entries(SKILLS).flatMap(([group, names]) => names.map((n) => [code(`${group}:${n}`), m[group][n]])),
-        ['단계 사이 맥락 압축 세션(`am:auto-multi`·`am:auto-one`, Claude Code)', m.am.compact],
+        ['단계 사이 맥락 압축 세션(`am-auto:multi`·`am-auto:one`, Claude Code)', m['am-auto'].compact],
         ['2차 의견 서브에이전트(`am:second-opinion`)', m.am['second-opinion']],
-        ['`am:auto-agent` 계획 단계 에이전트(`am:stage-plan`)', m.am.plan],
-        ['`am:auto-agent` 구현 단계 에이전트(`am:stage-do`)', m.am.do],
-        ['`am:auto-agent` 점검 단계 에이전트(`am:stage-check`)', m.am.check],
-        ['`am:auto-agent` 커밋 단계 에이전트(`am:stage-commit`·`am:stage-commit-push`)', m.am.commit],
+        ['`am-auto:agent` 계획 단계 에이전트(`am-auto:stage-plan`)', m.am.plan],
+        ['`am-auto:agent` 구현 단계 에이전트(`am-auto:stage-do`)', m.am.do],
+        ['`am-auto:agent` 점검 단계 에이전트(`am-auto:stage-check`)', m.am.check],
+        ['`am-auto:agent` 커밋 단계 에이전트(`am-auto:stage-commit`·`am-auto:stage-commit-push`)', m.am.commit],
         ['Codex 2차 의견', m.am['codex-opinion'], m.am['codex-opinion'].model ? undefined : '사용자의 codex 설정'],
       ]),
     ),

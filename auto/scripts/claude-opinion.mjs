@@ -1,6 +1,6 @@
 // am second opinion through a fresh Claude session.
 // Has a separate read-only `claude -p` session answer a second-opinion brief, so a reviewer runs
-// without the calling session's context. The body of agents/second-opinion.md and the brief go in
+// without the calling session's context. The body of scripts/second-opinion.md and the brief go in
 // on stdin, Claude runs with fixed flags (Read, Grep and Glob only, no MCP servers, no skills), on the
 // model and effort of the second-opinion key of the user models file, else the subagent's frontmatter,
 // and its answer is printed under `Claude's answer:`. `--as N` names the reviewer Claude N; `--as 2`
@@ -25,7 +25,7 @@ const TIMEOUT_MS = 540000;
 // After a timeout kill or an exit, how long to wait for the pipes to close before giving up on them.
 const KILL_GRACE_MS = 3000;
 const TAIL_CHARS = 1500;
-const AGENT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'agents', 'second-opinion.md');
+const AGENT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'second-opinion.md'); // synced copy of am's agents/second-opinion.md
 const USAGE = 'usage: node claude-opinion.mjs <brief .md file under .am/> [--as 1|2]';
 // The same text as stage.mjs's EMPTY_MCP_CONFIG: no MCP server reaches the reviewer.
 const EMPTY_MCP_CONFIG = '{"mcpServers":{}}\n';

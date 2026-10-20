@@ -9,16 +9,16 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand } from '../plugin/scripts/stage.mjs';
-import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../plugin/scripts/progress.mjs';
-import { handedStartBranch, readPlan } from '../plugin/hooks/handover.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand } from '../auto/scripts/stage.mjs';
+import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../auto/scripts/progress.mjs';
+import { handedStartBranch, readPlan } from '../auto/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
 import { BUILTIN_MODELS, ensureUserFiles, modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
-import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../plugin/scripts/memory-guard.mjs';
+import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../auto/scripts/memory-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const AUTO = readFileSync(path.join(REPO, 'plugin', 'skills', 'auto-multi', 'SKILL.md'), 'utf8');
+const AUTO = readFileSync(path.join(REPO, 'auto', 'skills', 'multi', 'SKILL.md'), 'utf8');
 
 // A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
@@ -383,7 +383,7 @@ const agentCombos = () => AGENT_STAGES.flatMap((stage) => [false, true].flatMap(
 test('agentRules: the stage rules for an am:lean subagent, with no session wording, the report in the reply file and the runId in the status line', () => {
   assert.deepEqual(AGENT_STAGES, STAGES);
   const runId = 'mgs1x2y3-a1b2c3';
-  const ownRoot = path.join(REPO, 'plugin');
+  const ownRoot = path.join(REPO, 'auto');
   const stops = ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds'];
   const pushOk = '(the push keyword is that confirmation for the push)';
   for (const { stage, push, fix, part, slug } of agentCombos()) {
@@ -1514,7 +1514,7 @@ test('runRelay: which run is followed and from where', (t) => {
 
 test('relay: the real command ends by itself and prints the same result line', (t) => {
   const dir = newHandover(t);
-  const stage = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
+  const stage = pathToFileURL(path.join(REPO, 'auto', 'scripts', 'stage.mjs')).href;
   writeFileSync(path.join(dir, 'wrapper.mjs'), `import { main } from ${JSON.stringify(stage)};\nprocess.exitCode = await main(['do', 'demo'], { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => '/orch', relayMs: 60000, freeMem: () => 2 ** 50 });\n`);
   // A timer that is neither unref'd nor cleared would keep the process alive past the limit.
   const r = spawnSync(process.execPath, ['wrapper.mjs'], { cwd: dir, env: isolatedEnv, encoding: 'utf8', timeout: 20000 });
@@ -2130,7 +2130,7 @@ const MB = 1048576;
 
 test('memory guard: the module reads no environment variable and imports only node built-ins and ./user-settings.mjs, which imports only node built-ins', () => {
   const importsOf = (file) => {
-    const src = readFileSync(path.join(REPO, 'plugin', 'scripts', file), 'utf8');
+    const src = readFileSync(path.join(REPO, 'auto', 'scripts', file), 'utf8');
     assert.ok(!src.includes('process.env'), file);
     return [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
   };
@@ -2266,7 +2266,7 @@ test('memory guard: records still held when the process exits are removed, with 
   writeFileSync(
     script,
     `import { readdirSync } from 'node:fs';
-import { holdRecord } from ${JSON.stringify(pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'memory-guard.mjs')).href)};
+import { holdRecord } from ${JSON.stringify(pathToFileURL(path.join(REPO, 'auto', 'scripts', 'memory-guard.mjs')).href)};
 const dir = process.argv[2];
 const before = process.listenerCount('exit');
 holdRecord({ kind: 'a' }, { dir });
@@ -3566,7 +3566,7 @@ test('worker: reads no environment variable; its times are parameters', () => {
 
 // ------------------------------------------------------------------ follow mode
 
-const STAGE_URL = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
+const STAGE_URL = pathToFileURL(path.join(REPO, 'auto', 'scripts', 'stage.mjs')).href;
 // The worker the follower starts: stage.mjs's worker with the fake claude and test times.
 const WRAPPER = `import { worker } from ${JSON.stringify(STAGE_URL)};\nprocess.exitCode = await worker(process.argv.slice(2), { claude: [process.execPath, 'fake-claude.mjs'], orchestrator: () => null, freeMem: () => 2 ** 50, confirmMs: 50, busyMs: 300 });\n`;
 // A worker command that must not run: it leaves spawned.txt.
@@ -3873,7 +3873,7 @@ test('follow: a task without its folder ends as main does, with no file', async 
 
 test('follow: the command with bad arguments prints the usage, exits 1 and starts nothing', (t) => {
   const dir = makeRepo(t, { plan: SMALL });
-  const r = spawnSync(process.execPath, [path.join(REPO, 'plugin', 'scripts', 'stage.mjs'), 'ship', 'demo'], { cwd: dir, env: isolatedEnv, encoding: 'utf8', timeout: 20000 });
+  const r = spawnSync(process.execPath, [path.join(REPO, 'auto', 'scripts', 'stage.mjs'), 'ship', 'demo'], { cwd: dir, env: isolatedEnv, encoding: 'utf8', timeout: 20000 });
   assert.equal(r.status, 1);
   assert.match(r.stdout, /^bad arguments[^]*usage: node stage\.mjs/);
   assert.deepEqual(Object.values(WORKER_FILES).filter((name) => existsSync(path.join(dir, '.am', 'demo', name))), []);
@@ -4233,7 +4233,7 @@ test('exec: a session over its time is stopped and then cleaned up', async (t) =
 
 test('exec: the cleanup limit never keeps the process alive', (t) => {
   const dir = tmpDir(t);
-  const stage = pathToFileURL(path.join(REPO, 'plugin', 'scripts', 'stage.mjs')).href;
+  const stage = pathToFileURL(path.join(REPO, 'auto', 'scripts', 'stage.mjs')).href;
   // A quick cleanup under a long limit: the limit's timer is cleared, so the script ends at once.
   const script = `import { exec } from ${JSON.stringify(stage)};
 const r = await exec(process.execPath, ['-e', ''], { cwd: process.cwd(), env: process.env, timeoutMs: 10000, cleanupMs: 600000,

@@ -6,9 +6,9 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readd
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULTS, appendEvent, formatEvent, main, readFrom, stateLine, wait } from '../plugin/scripts/progress.mjs';
+import { DEFAULTS, appendEvent, formatEvent, main, readFrom, stateLine, wait } from '../auto/scripts/progress.mjs';
 
-const SCRIPT = fileURLToPath(new URL('../plugin/scripts/progress.mjs', import.meta.url));
+const SCRIPT = fileURLToPath(new URL('../auto/scripts/progress.mjs', import.meta.url));
 const T0 = Date.parse('2026-10-08T00:00:00.000Z');
 const SLUG = 'task-1';
 const LIVE = 4242;

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FIRST_LIST_MS, LIST_EVERY_MS, WIN_LIST_ARGS, collect, createTracker, parsePsList, parseWinList, pickTargets,
-} from '../plugin/scripts/proc-tree.mjs';
+} from '../auto/scripts/proc-tree.mjs';
 
 const MB = 1048576;
 const START = 1000;

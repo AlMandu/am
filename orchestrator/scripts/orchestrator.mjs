@@ -172,7 +172,7 @@ export function parseResult(stdout) {
 }
 
 // ------------------------------------------------------------------ 남은 프로세스 정리 (am proc-tree.mjs 사본)
-// am 의 `plugin/scripts/proc-tree.mjs` 사본(내보내는 이름과 함수 본문은 같고 주석만 한국어). 바꾸면 그쪽과
+// am 의 `auto/scripts/proc-tree.mjs` 사본(내보내는 이름과 함수 본문은 같고 주석만 한국어). 바꾸면 그쪽과
 // `tests/orchestrator-skill.test.mjs` 의 비교 시험을 같은 커밋에서 바꾼다.
 // `claude -p` 세션이 남긴 프로세스를 찾아 끝내고, 관계없는 프로세스는 건드리지 않는다. exec() 가 세션마다 쓴다.
 // Windows: 추적기가 FIRST_LIST_MS 뒤 한 번, 그 뒤 LIST_EVERY_MS 마다 모든 프로세스를 나열하고(PowerShell, Win32_Process)
@@ -586,7 +586,7 @@ function killTree(child) {
 const activeChildren = new Set(); // 지금 돌고 있는 자식 프로세스(세션, 게이트). 중단 신호를 받으면 함께 끝낸다
 let onInterrupt = null; // 중단 신호를 받았을 때 상태를 정리하는 함수(run 이 등록)
 
-// 진행 소식: 실행 폴더의 progress.jsonl 에 한 줄씩(plugin/scripts/progress.mjs 와 같은 줄 형식). 잠금 전후 어디서든 쓰므로 모듈 상태로 둔다
+// 진행 소식: 실행 폴더의 progress.jsonl 에 한 줄씩(auto/scripts/progress.mjs 와 같은 줄 형식). 잠금 전후 어디서든 쓰므로 모듈 상태로 둔다
 let progress = null; // { file, stage, started, ended }
 
 /** 소식 한 줄을 덧붙인다. 폴더를 만들지 않고 오류는 삼킨다: 소식 때문에 일이 멈추지 않게. */
@@ -3829,7 +3829,7 @@ async function cmdRun(repo, opt) {
 
 // ------------------------------------------------------------------ 진행 소식 기다리기
 
-// am 의 대기 명령(plugin/scripts/progress.mjs)과 같은 규격이다: 같은 이벤트 줄에는 같은 출력을 낸다.
+// am 의 대기 명령(auto/scripts/progress.mjs)과 같은 규격이다: 같은 이벤트 줄에는 같은 출력을 낸다.
 // am 과 따로 설치되므로 그 파일을 import 하지 않고 다시 쓴다. 시간 값은 모두 인자로 받는다.
 export const PROGRESS_DEFAULTS = { batchMs: 120000, quietMs: 480000, startWaitMs: 60000, pollMs: 1000, maxLifeMs: 510000 };
 const PROGRESS_EVENTS = ['start', 'step', 'note', 'alert', 'end'];

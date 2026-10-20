@@ -13,25 +13,26 @@ import { fileURLToPath } from 'node:url';
 export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skill = (dir) => (name) => `${dir}/skills/${name}/SKILL.md`;
 const am = skill('plugin');
+const auto = skill('auto');
 // Block name -> its source, its marker lines (each on a line of its own) and the SKILL.md files that carry it.
 export const BLOCKS = {
   common: {
     source: 'shared/common.md',
     start: '<!-- am:common:start -->',
     end: '<!-- am:common:end -->',
-    targets: [...['plan', 'do', 'check', 'commit', 'auto-multi', 'auto-one', 'auto-agent', 'sessions'].map(am), skill('util')('land'), 'orchestrator/skills/run/SKILL.md'],
+    targets: [...['plan', 'do', 'check', 'commit'].map(am), ...['multi', 'one', 'agent', 'sessions'].map(auto), skill('util')('land'), 'orchestrator/skills/run/SKILL.md'],
   },
   'sibling-runs': {
     source: 'shared/sibling-runs.md',
     start: '<!-- am:shared:sibling-runs:start -->',
     end: '<!-- am:shared:sibling-runs:end -->',
-    targets: [am('auto-one'), am('auto-agent')],
+    targets: [auto('one'), auto('agent')],
   },
   'sibling-parts': {
     source: 'shared/sibling-parts.md',
     start: '<!-- am:shared:sibling-parts:start -->',
     end: '<!-- am:shared:sibling-parts:end -->',
-    targets: [am('auto-one'), am('auto-agent')],
+    targets: [auto('one'), auto('agent')],
   },
 };
 // Every SKILL.md under these folders is scanned for markers, targets or not (a missing folder is skipped).

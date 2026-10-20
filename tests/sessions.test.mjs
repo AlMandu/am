@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { NEWS_MAX, collect, gitWorktrees, main, render, shortNews } from '../plugin/scripts/sessions.mjs';
-import { hhmm } from '../plugin/scripts/stage.mjs';
+import { NEWS_MAX, collect, gitWorktrees, main, render, shortNews } from '../auto/scripts/sessions.mjs';
+import { hhmm } from '../auto/scripts/stage.mjs';
 
 const T0 = Date.parse('2026-10-08T00:00:00.000Z');
 const LIVE = 4242;

@@ -195,7 +195,7 @@ async function start(argv, o) {
       rmSync(record, { force: true });
       return { error: String(err?.message || err) };
     }
-    return { agent: `am:${agentName}`, rules: rel(`rules-${stage}.md`), skill: rel(`skill-${stage}.md`), runId, model: picked.model, effort: picked.effort, note };
+    return { agent: `am-auto:${agentName}`, rules: rel(`rules-${stage}.md`), skill: rel(`skill-${stage}.md`), runId, model: picked.model, effort: picked.effort, note };
   };
   const lockFile = path.join(cwd, '.am', '.admission.lock');
   const waitBegan = Date.now();

@@ -1,0 +1,10 @@
+{
+  "name": "am-auto",
+  "version": "0.1.0",
+  "description": "요청 하나를 계획 → 구현 → 점검 → 커밋까지 이어 가는 자동 실행(multi·one·agent)과 백그라운드 세션 보기(sessions). Claude Code 전용, am 필요.",
+  "author": { "name": "Seonghun" },
+  "homepage": "https://github.com/AlMandu/am",
+  "repository": "https://github.com/AlMandu/am",
+  "keywords": ["workflow", "automation", "stage-sessions", "subagents", "claude-code"],
+  "dependencies": ["am"]
+}

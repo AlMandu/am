@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import path from 'node:path';
 import { test } from 'node:test';
 import { PROGRESS_DEFAULTS, waitProgress } from '../orchestrator/scripts/orchestrator.mjs';
-import { readFrom, stateLine } from '../plugin/scripts/progress.mjs';
+import { readFrom, stateLine } from '../auto/scripts/progress.mjs';
 import { makeRepo, planOf, prepared, sleep, task, tmp } from './orchestrator-helpers.mjs';
 
 const KEYS = ['t', 'ev', 'text', 'pid', 'stage', 'task', 'status', 'min'];

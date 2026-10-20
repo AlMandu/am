@@ -1,11 +1,11 @@
-// Tests for plugin/hooks/stage-guard.mjs: the allow lists of the am:lean stage agents, the stage record lookup and
+// Tests for auto/hooks/stage-guard.mjs: the allow lists of the am:lean stage agents, the stage record lookup and
 // binding, the heartbeat and the final-answer check. decide is called directly; time, pids and the plugin root are arguments.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { decide, findRecord, CLAIM_FILE } from '../plugin/hooks/stage-guard.mjs';
+import { decide, findRecord, CLAIM_FILE } from '../auto/hooks/stage-guard.mjs';
 
 const PID = 4242;
 const NOW = 1_800_000_000_000;
@@ -48,7 +48,7 @@ function writeRecord(root, slug, fields = {}, mtime = NOW) {
 function setup(stage, { push = false, slug = 'task' } = {}) {
   const root = makeRepo();
   const record = writeRecord(root, slug, { stage, push });
-  const agent = stage === 'commit' && push ? 'am:stage-commit-push' : `am:stage-${stage}`;
+  const agent = stage === 'commit' && push ? 'am-auto:stage-commit-push' : `am-auto:stage-${stage}`;
   const run = (fields, opts = {}) => decide({ hook_event_name: 'PreToolUse', agent_type: agent, agent_id: 'agent-1', cwd: root, ...fields }, { pluginRoot: PLUGIN, now, alive, env: {}, ...opts });
   const bash = (command, extra = {}) => verdict(run({ tool_name: 'Bash', tool_input: { command }, ...extra }));
   const write = (file, tool = 'Write') => verdict(run({ tool_name: tool, tool_input: { file_path: path.isAbsolute(file) ? file : path.join(root, file) } }));
@@ -273,15 +273,15 @@ test('file writes by stage', () => {
 
 // ------------------------------------------------------------- agents and records
 
-test('an unknown am:stage- agent is refused', () => {
+test('an unknown am-auto:stage- agent is refused', () => {
   const s = setup('plan');
-  assert.equal(verdict(s.run({ agent_type: 'am:stage-x', tool_name: 'Bash', tool_input: { command: 'git status' } })), 'deny');
+  assert.equal(verdict(s.run({ agent_type: 'am-auto:stage-x', tool_name: 'Bash', tool_input: { command: 'git status' } })), 'deny');
   s.done();
 });
 
 test('the record: none, the user decision C1, CLAUDE_PID, ended and dead pids', () => {
   const root = makeRepo();
-  const run = (opts = {}) => verdict(decide({ hook_event_name: 'PreToolUse', agent_type: 'am:stage-plan', agent_id: 'a', cwd: root, tool_name: 'Bash', tool_input: { command: 'git status' } }, { pluginRoot: PLUGIN, now, alive, env: {}, ...opts }));
+  const run = (opts = {}) => verdict(decide({ hook_event_name: 'PreToolUse', agent_type: 'am-auto:stage-plan', agent_id: 'a', cwd: root, tool_name: 'Bash', tool_input: { command: 'git status' } }, { pluginRoot: PLUGIN, now, alive, env: {}, ...opts }));
   assert.equal(run(), 'deny');
   writeRecord(root, 'ended', { ended: NOW - 10 });
   writeRecord(root, 'dead', { pid: 99999 });
@@ -309,7 +309,7 @@ test('the record: none, the user decision C1, CLAUDE_PID, ended and dead pids', 
 
 test('the record: push is compared only for the commit stage', () => {
   const root = makeRepo();
-  // In push mode am:lean passes --push to every start; am:stage-plan, -do and -check still find their record.
+  // In push mode am:lean passes --push to every start; am-auto:stage-plan, -do and -check still find their record.
   for (const stage of ['plan', 'do', 'check']) {
     writeRecord(root, stage, { stage, push: true });
     assert.equal(findRecord(root, stage, false, { now, alive }).slug, stage, stage);

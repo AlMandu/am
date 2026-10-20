@@ -1,9 +1,9 @@
 // Hook entry point of hooks.json: PreToolUse of the shell tools (Bash, PowerShell) and the file tools (Write, Edit,
 // MultiEdit, NotebookEdit), and SubagentStop. hooks.json loads this file with `node -e "import(...)"`, so it runs on import.
 // Before anything else it creates the missing user files (scripts/user-files.mjs).
-// Input whose agent_type starts with am:stage- (an am:auto-agent stage agent) goes to stage-hook.mjs (stage guard, then the gate
-// for an allowed shell command), refused when that fails; any other input goes to the commit gate (gate.mjs) alone, and
-// stage-hook.mjs is never loaded. gate.mjs is imported inside the try, so a load failure also ends with the crash notice and exit 0.
+// Input whose agent_type starts with am-auto:stage- (an am-auto:agent stage agent) ends with no output and loads nothing:
+// am-auto's own hooks.json checks those. Any other input goes to the commit gate (gate.mjs), imported inside the try, so a
+// load failure also ends with the crash notice and exit 0.
 
 // No install-time hook exists, so the first hook call creates the two user files, with no hooks.json entry of its own.
 // A load or creation failure is swallowed so it never changes the gate or the output.
@@ -33,31 +33,15 @@ function readInput() {
 }
 
 const raw = await readInput();
-let stagePayload = null;
+let stageAgent = false;
 try {
   const p = JSON.parse(raw);
-  if (p && typeof p.agent_type === 'string' && p.agent_type.startsWith('am:stage-')) stagePayload = p;
+  stageAgent = Boolean(p && typeof p.agent_type === 'string' && p.agent_type.startsWith('am-auto:stage-'));
 } catch {
   // Not JSON: the gate reports it.
 }
 
-/** A stage agent's call through stage-hook.mjs; a load failure or a missed stage input (null) is refused, never let through. */
-async function stageHook(payload) {
-  try {
-    const out = await (await import('./stage-hook.mjs')).stageOutput(raw);
-    if (typeof out === 'string') return out;
-    throw new Error('stage-hook.mjs did not take this stage input');
-  } catch (err) {
-    // A stage agent is never let through unchecked: deny the tool call, or block the stop once.
-    const reason = `am stage hook: crashed (${err && err.message}), so this was refused; tell the user.`;
-    if (payload.hook_event_name === 'SubagentStop') return payload.stop_hook_active === true ? '' : JSON.stringify({ decision: 'block', reason }) + '\n';
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n';
-  }
-}
-
-if (stagePayload) {
-  const stdout = await stageHook(stagePayload);
-  if (stdout) process.stdout.write(stdout);
+if (stageAgent) {
   process.exitCode = 0;
 } else {
   try {

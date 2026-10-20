@@ -1,5 +1,5 @@
-// am:lean stage guard (Claude Code only).
-// hook.mjs sends here only the hook input of the five am:lean stage agents (`agent_type` am:stage-*): PreToolUse of the
+// am-auto:agent stage guard (Claude Code only).
+// stage-hook.mjs sends here only the hook input of the five stage agents (`agent_type` am-auto:stage-*): PreToolUse of the
 // shell tools and the file tools (the Bash|PowerShell and Write|Edit|MultiEdit|NotebookEdit groups of hooks.json) and
 // SubagentStop. A stage agent runs inside the user's session, so what this module allows runs without a question: each
 // stage gets its own allow list and everything else is denied. On every tool call it also binds the task's open stage
@@ -20,13 +20,13 @@ const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 // The five stage agents: the stage each runs, and whether it may push.
 export const STAGE_AGENTS = {
-  'am:stage-plan': { stage: 'plan', push: false },
-  'am:stage-do': { stage: 'do', push: false },
-  'am:stage-check': { stage: 'check', push: false },
-  'am:stage-commit': { stage: 'commit', push: false },
-  'am:stage-commit-push': { stage: 'commit', push: true },
+  'am-auto:stage-plan': { stage: 'plan', push: false },
+  'am-auto:stage-do': { stage: 'do', push: false },
+  'am-auto:stage-check': { stage: 'check', push: false },
+  'am-auto:stage-commit': { stage: 'commit', push: false },
+  'am-auto:stage-commit-push': { stage: 'commit', push: true },
 };
-export const STAGE_PREFIX = 'am:stage-';
+export const STAGE_PREFIX = 'am-auto:stage-';
 // The agent a stage record is bound to: written once per runId by the first tool call that finds the record.
 export const CLAIM_FILE = 'stage-claim.json';
 export const COMMIT_MESSAGE = 'commit-message.txt';

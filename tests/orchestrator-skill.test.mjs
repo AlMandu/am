@@ -16,6 +16,8 @@ const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
 const SKILL = read('orchestrator', 'skills', 'run', 'SKILL.md');
 const SCRIPT = read('orchestrator', 'scripts', 'orchestrator.mjs');
 const amSkill = (name) => read('plugin', 'skills', name, 'SKILL.md');
+// am-auto's skills (multi, one, agent, sessions).
+const autoSkill = (name) => read('auto', 'skills', name, 'SKILL.md');
 // Orchestrator stages that run an am skill: a copy of STAGE_SKILLS of scripts/models.mjs, so this file needs no models.mjs.
 const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // A model alias and an effort, the form models.json's values take (tests/models.test.mjs checks the values where that file exists).
@@ -37,7 +39,7 @@ function readsStatusLikeAuto(text) {
 
 test('the marketplace lists every plugin and each source holds a manifest with that name', () => {
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
-  assert.deepEqual(market.plugins.map((p) => p.name), ['am', 'am-util', 'am-orchestrator']);
+  assert.deepEqual(market.plugins.map((p) => p.name), ['am', 'am-auto', 'am-util', 'am-orchestrator']);
   for (const p of market.plugins) {
     const manifest = JSON.parse(read(p.source, '.claude-plugin', 'plugin.json'));
     assert.equal(manifest.name, p.name);
@@ -100,7 +102,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(amSkill('do').trim().split('\n').at(-1), /use the am:check skill/);
   assert.match(SCRIPT, /do not use the am:check skill/);
   // The mark for choices made on the user's behalf, which the report collects.
-  assert.match(amSkill('auto-multi'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
+  assert.match(autoSkill('multi'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
   assert.match(SCRIPT, /auto-decided\|자동 결정/);
   // The second-opinion marks of the common rules, which progress news reads.
   for (const mark of ['(second opinion)', '(second opinion, Codex agreed)', '(second opinion, Claude reviewers agreed)', '(no second opinion)']) assert.ok(amSkill('plan').includes(mark), mark);
@@ -132,7 +134,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
 });
 
 test('am:auto hands a large task to the run skill only through what is pinned here', () => {
-  const auto = amSkill('auto-multi');
+  const auto = autoSkill('multi');
   // Finding the run skill: the plugin id in `claude plugin list --json` and the skill's path under its installPath.
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
   assert.equal(market.plugins.find((p) => p.source === './orchestrator')?.name, 'am-orchestrator');
@@ -171,8 +173,8 @@ test('am:auto hands a large task to the run skill only through what is pinned he
 });
 
 test('the am stage runner hands a large plan to the run skill only through what is pinned here', async () => {
-  const { instructions, permissions } = await import('../plugin/scripts/stage.mjs');
-  const hook = read('plugin', 'hooks', 'handover.mjs');
+  const { instructions, permissions } = await import('../auto/scripts/stage.mjs');
+  const hook = read('auto', 'hooks', 'handover.mjs');
   // Finding the run skill: the same plugin id and skill path as am:auto.
   assert.match(hook, /startsWith\('am-orchestrator@'\) && p\.enabled === true/);
   assert.match(hook, /path\.join\(p\.installPath, 'skills', 'run', 'SKILL\.md'\)/);
@@ -190,7 +192,7 @@ test('the am stage runner hands a large plan to the run skill only through what 
 });
 
 test('an inline hand-over reads the run skill frontmatter and fills a command path its permissions allow', async () => {
-  const { skillDefaults, inlineSkill, permissions } = await import('../plugin/scripts/stage.mjs');
+  const { skillDefaults, inlineSkill, permissions } = await import('../auto/scripts/stage.mjs');
   const root = path.join(REPO, 'orchestrator');
   const line = (key) => new RegExp(`^${key}: (.+)$`, 'm').exec(SKILL)[1].trim();
   assert.deepEqual(skillDefaults(root, 'run'), { model: line('model'), effort: line('effort') });
@@ -206,8 +208,8 @@ test('an inline hand-over reads the run skill frontmatter and fills a command pa
 });
 
 test('the am stage runner copies the events a real split writes, from the path the orchestrator uses', async () => {
-  const { runRelay, instructions } = await import('../plugin/scripts/stage.mjs');
-  const { readFrom } = await import('../plugin/scripts/progress.mjs');
+  const { runRelay, instructions } = await import('../auto/scripts/stage.mjs');
+  const { readFrom } = await import('../auto/scripts/progress.mjs');
   const r = makeRepo();
   const doctor = r.orch('doctor');
   assert.equal(doctor.code, 0, doctor.out);
@@ -239,7 +241,7 @@ test('the am stage runner copies the events a real split writes, from the path t
 });
 
 test('the am stage runner waits on the orchestrator through what is pinned here: the lock pid and the ends of split and answer', async () => {
-  const { otherRuns, GRACE_MS } = await import('../plugin/scripts/stage.mjs');
+  const { otherRuns, GRACE_MS } = await import('../auto/scripts/stage.mjs');
   // The lock names the live command's pid; the ends after which the run skill starts its next command.
   assert.match(SCRIPT, /createLock\(lockFile\(repo\), \{ pid: process\.pid, command,/);
   assert.match(SCRIPT, /event\(\{ ev: 'end', stage: 'split', status: 'done',/);
@@ -258,7 +260,7 @@ test('the am stage runner waits on the orchestrator through what is pinned here:
 });
 
 test('the hand-over owner the am stage runner gives its session is the worker.json owner it stops by', async () => {
-  const { sessionEnv, stopHandedRun } = await import('../plugin/scripts/stage.mjs');
+  const { sessionEnv, stopHandedRun } = await import('../auto/scripts/stage.mjs');
   const N = 4321;
   const r = makeRepo();
   // The follower passes its environment to the detached worker, as a hand-over session's command does.
@@ -283,7 +285,7 @@ test('the hand-over owner the am stage runner gives its session is the worker.js
 
 test('the second-opinion mark is the same regular expression in the orchestrator and the am stage runner', async () => {
   const orch = (await import('../orchestrator/scripts/orchestrator.mjs')).SECOND_MARK;
-  const stage = (await import('../plugin/scripts/stage.mjs')).SECOND_MARK;
+  const stage = (await import('../auto/scripts/stage.mjs')).SECOND_MARK;
   assert.deepEqual([orch.source, orch.flags], [stage.source, stage.flags]);
   for (const yes of ['(second opinion)', '(Second Opinion, Codex agreed)', '(second opinion, Claude reviewers agreed)', '(2차 의견)', '(2차 의견, Codex 동의)']) assert.ok(orch.test(yes), yes);
   for (const no of ['(no second opinion)', '(2차 의견 없음)', '2차 의견']) assert.ok(!orch.test(no), no);
@@ -291,7 +293,7 @@ test('the second-opinion mark is the same regular expression in the orchestrator
 
 // Windows cannot be sent SIGINT from here (the same reason as the lock test in orchestrator-drive.test.mjs).
 test('the lock pid the am stage runner reads is the detached worker, not the command it follows', { skip: process.platform === 'win32' }, async () => {
-  const { otherRuns } = await import('../plugin/scripts/stage.mjs');
+  const { otherRuns } = await import('../auto/scripts/stage.mjs');
   const r = makeRepo({ scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
   assert.equal(r.orch('doctor').code, 0);
   assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
@@ -317,7 +319,7 @@ test('the lock pid the am stage runner reads is the detached worker, not the com
 
 // Skipped on Windows for the same reason: SIGINT.
 test('the am sessions report puts a handed-over run and its implement session under the am:auto task that owns it', { skip: process.platform === 'win32' }, async () => {
-  const { collect, render } = await import('../plugin/scripts/sessions.mjs');
+  const { collect, render } = await import('../auto/scripts/sessions.mjs');
   const r = makeRepo({ scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
   assert.equal(r.orch('doctor').code, 0);
   assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
@@ -361,7 +363,7 @@ test('the am sessions report puts a handed-over run and its implement session un
 });
 
 test('the am stage runner and the orchestrator read end markers and check.md verdicts alike', async () => {
-  const { MARKS, lastMark, checkVerdict } = await import('../plugin/scripts/stage.mjs');
+  const { MARKS, lastMark, checkVerdict } = await import('../auto/scripts/stage.mjs');
   const { lastMarker, verdictFromFile } = await import('../orchestrator/scripts/orchestrator.mjs');
   const values = MARKS.do;
   const marks = [
@@ -394,7 +396,7 @@ test('the am stage runner and the orchestrator read end markers and check.md ver
 });
 
 test('stages that never push deny both git push rules in both runners', async () => {
-  const { permissions } = await import('../plugin/scripts/stage.mjs');
+  const { permissions } = await import('../auto/scripts/stage.mjs');
   const { defaults } = await import('../orchestrator/scripts/orchestrator.mjs');
   const denies = (p, where) => {
     for (const rule of ['Bash(git push)', 'Bash(git push *)']) {
@@ -472,7 +474,7 @@ test('the run skill follows a long command that is still running: exit code 4 an
 test('the same event lines give the same output from the am wait command and the orchestrator one', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
-  const { DEFAULTS, wait } = await import('../plugin/scripts/progress.mjs');
+  const { DEFAULTS, wait } = await import('../auto/scripts/progress.mjs');
   const { PROGRESS_DEFAULTS, waitProgress } = await import('../orchestrator/scripts/orchestrator.mjs');
   assert.deepEqual(PROGRESS_DEFAULTS, DEFAULTS);
   const T0 = Date.parse('2026-10-08T00:00:00.000Z');
@@ -639,7 +641,7 @@ test('the am user settings module and the orchestrator copy read the same files 
 test('am memory guard and the orchestrator: same free-memory rule, record rule, folder, name and host on the same inputs', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
-  const am = await import('../plugin/scripts/memory-guard.mjs');
+  const am = await import('../auto/scripts/memory-guard.mjs');
   const orch = await import('../orchestrator/scripts/orchestrator.mjs');
   assert.equal(am.DEFAULT_MIN_FREE_MEMORY_MB, orch.DEFAULT_MIN_FREE_MEMORY_MB);
   assert.equal(am.HEARTBEAT_MS, orch.HEARTBEAT_MS);
@@ -775,9 +777,9 @@ async function playScene(mod, platform, scene) {
 }
 
 test('am proc-tree and the orchestrator: same targets, counts and working-set sums on the same fake lists', async () => {
-  const am = await import('../plugin/scripts/proc-tree.mjs');
+  const am = await import('../auto/scripts/proc-tree.mjs');
   const orch = await import('../orchestrator/scripts/orchestrator.mjs');
-  const stage = await import('../plugin/scripts/stage.mjs');
+  const stage = await import('../auto/scripts/stage.mjs');
   for (const k of ['LIST_TIMEOUT_MS', 'KILL_TIMEOUT_MS', 'FIRST_LIST_MS', 'LIST_EVERY_MS', 'TERM_WAIT_MS']) assert.equal(orch[k], am[k], k);
   assert.deepEqual(orch.WIN_LIST_ARGS, am.WIN_LIST_ARGS);
   assert.equal(orch.CLEANUP_MS, stage.CLEANUP_MS);

@@ -8,12 +8,13 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANSWER_LINE, CARD_ANSWERED, CARD_END, CARD_OPEN, MAX_ANSWER_BYTES, findCards, main, newRunId, startArgs } from '../plugin/scripts/agent-stage.mjs';
-import { AGENT_RECORD, AGENT_STALE_MS, agentRules, inlineSkill } from '../plugin/scripts/stage.mjs';
+import { ANSWER_LINE, CARD_ANSWERED, CARD_END, CARD_OPEN, MAX_ANSWER_BYTES, findCards, main, newRunId, startArgs } from '../auto/scripts/agent-stage.mjs';
+import { AGENT_RECORD, AGENT_STALE_MS, agentRules, inlineSkill } from '../auto/scripts/stage.mjs';
 import { frontmatterModels } from '../plugin/scripts/user-models.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const AM = path.join(REPO, 'plugin');
+const OWN = path.join(REPO, 'auto'); // am-auto: stage agents, claude-opinion
+const AM = path.join(REPO, 'plugin'); // the core am: skills
 const LIVE = 101;
 const OTHER = 103;
 const DEAD = 102;
@@ -40,7 +41,7 @@ async function run({ dir, cfg }, argv, opts = {}) {
   let err = '';
   const env = { CLAUDE_CONFIG_DIR: cfg, CLAUDE_PID: String(LIVE), ...(opts.env || {}) };
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
-  const code = await main(argv, { cwd: dir, ownRoot: AM, core: coreAt(AM), alive: aliveOnly, ppid: SHELL, pollMs: 10, waitMs: 80, settleMs: 0, lockWaitMs: 60, newRunId: () => `r${++ids}-abcdef`, ...opts, env, out: { write: (s) => (out += s) }, err: { write: (s) => (err += s) } });
+  const code = await main(argv, { cwd: dir, ownRoot: OWN, core: coreAt(AM), alive: aliveOnly, ppid: SHELL, pollMs: 10, waitMs: 80, settleMs: 0, lockWaitMs: 60, newRunId: () => `r${++ids}-abcdef`, ...opts, env, out: { write: (s) => (out += s) }, err: { write: (s) => (err += s) } });
   let json = null;
   try {
     json = JSON.parse(out);
@@ -56,7 +57,7 @@ function taskEvents(dir, slug, lines) {
   mkdirSync(path.join(dir, '.am', slug), { recursive: true });
   writeFileSync(path.join(dir, '.am', slug, 'progress.jsonl'), lines.map((l) => `${JSON.stringify({ t: new Date().toISOString(), ...l })}\n`).join(''));
 }
-const fm = (name) => frontmatterModels(path.join(AM, 'agents', `${name}.md`));
+const fm = (name) => frontmatterModels(path.join(OWN, 'agents', `${name}.md`));
 
 test('startArgs and newRunId: the stage, slug and flags, each flag once', () => {
   assert.deepEqual(startArgs(['do', 'demo', '--fix', '--push']), { stage: 'do', slug: 'demo', push: true, fix: true, part: false });
@@ -72,11 +73,11 @@ test('start: under the lock it writes stage.json, the skill and rules files and 
   const { model, effort } = fm('stage-plan');
   const runId = r.json.runId;
   assert.match(runId, /^r\d+-abcdef$/);
-  assert.deepEqual(r.json, { agent: 'am:stage-plan', rules: '.am/demo/rules-plan.md', skill: '.am/demo/skill-plan.md', runId, model, effort, wait: null, note: null, error: null });
+  assert.deepEqual(r.json, { agent: 'am-auto:stage-plan', rules: '.am/demo/rules-plan.md', skill: '.am/demo/skill-plan.md', runId, model, effort, wait: null, note: null, error: null });
   assert.equal(r.out.split('\n').length, 2, 'one line');
   const rec = JSON.parse(read(repo.dir, `.am/demo/${AGENT_RECORD}`));
   assert.deepEqual({ ...rec, t: 0 }, { pid: LIVE, runId, stage: 'plan', slug: 'demo', push: false, fix: false, part: false, core: AM, t: 0 });
-  assert.equal(read(repo.dir, '.am/demo/rules-plan.md'), agentRules('plan', 'demo', { runId, ownRoot: AM }));
+  assert.equal(read(repo.dir, '.am/demo/rules-plan.md'), agentRules('plan', 'demo', { runId, ownRoot: OWN }));
   assert.equal(read(repo.dir, '.am/demo/skill-plan.md'), inlineSkill(read(AM, 'skills/plan/SKILL.md'), 'Read the request in .am/demo/request.md (slug demo)', AM));
   assert.ok(!read(repo.dir, '.am/demo/skill-plan.md').startsWith('---'));
   const ev = events(repo.dir);
@@ -105,7 +106,7 @@ test('start: another run of the working tree makes it wait (one note, nothing wr
   assert.ok(!existsSync(path.join(repo.dir, '.am', 'demo', 'rules-plan.md')));
   taskEvents(repo.dir, 'a', [{ ev: 'start', text: 's', pid: OTHER, stage: 'commit' }, { ev: 'end', text: 'e', stage: 'commit', status: 'COMMITTED' }]);
   const go = await run(repo, ['start', 'plan', 'demo']);
-  assert.equal(go.json.agent, 'am:stage-plan');
+  assert.equal(go.json.agent, 'am-auto:stage-plan');
   assert.deepEqual(events(repo.dir).map((e) => e.ev), ['note', 'start']);
   // Another stage taking the start lock right now is waited for too.
   const held = makeRepo(t);
@@ -116,13 +117,13 @@ test('start: another run of the working tree makes it wait (one note, nothing wr
 test('start: push, fix and part', async (t) => {
   const repo = makeRepo(t, { plan: SMALL });
   const push = await run(repo, ['start', 'commit', 'demo', '--push']);
-  assert.equal(push.json.agent, 'am:stage-commit-push');
+  assert.equal(push.json.agent, 'am-auto:stage-commit-push');
   assert.equal(push.json.model, fm('stage-commit-push').model);
   assert.ok(read(repo.dir, push.json.rules).includes('(the push keyword is that confirmation for the push)'));
   assert.equal(read(repo.dir, push.json.skill), inlineSkill(read(AM, 'skills/commit/SKILL.md'), 'push', AM));
   await run(repo, ['end', 'demo', push.json.runId, 'COMMITTED']);
   const fix = await run(repo, ['start', 'do', 'demo', '--fix']);
-  assert.equal(fix.json.agent, 'am:stage-do');
+  assert.equal(fix.json.agent, 'am-auto:stage-do');
   assert.ok(read(repo.dir, fix.json.rules).includes('Read .am/demo/check.md first'));
   assert.equal(JSON.parse(read(repo.dir, `.am/demo/${AGENT_RECORD}`)).fix, true);
   // A part of demo: not held by its owner's gap between stages.
@@ -132,7 +133,7 @@ test('start: push, fix and part', async (t) => {
   taskEvents(part.dir, 'demo', [{ ev: 'start', text: 's', pid: DEAD, stage: 'plan' }, { ev: 'end', text: 'e', stage: 'plan', status: 'READY' }]);
   const p = await run(part, ['start', 'plan', 'demo-p1', '--part']);
   assert.equal(p.json.error, null, p.json.error);
-  assert.equal(p.json.agent, 'am:stage-plan');
+  assert.equal(p.json.agent, 'am-auto:stage-plan');
   const rules = read(part.dir, p.json.rules);
   assert.ok(rules.includes('This is a part plan') && !rules.includes('## Parts'));
   assert.equal(JSON.parse(read(part.dir, `.am/demo-p1/${AGENT_RECORD}`)).part, true);
@@ -198,7 +199,7 @@ test('start: the skill comes from the core am and the stage agent and claude-opi
   const skill = read(repo.dir, r.json.skill);
   assert.equal(skill, `Request: Read the request in .am/demo/request.md (slug demo)\nRun \`node "${slashed(core)}/scripts/codex-opinion.mjs" <brief file>\`\n`);
   const rules = read(repo.dir, r.json.rules);
-  assert.ok(rules.includes(`\`node "${slashed(AM)}/scripts/claude-opinion.mjs" <brief file>\``) && !rules.includes(slashed(core)), 'claude-opinion of this plugin');
+  assert.ok(rules.includes(`\`node "${slashed(OWN)}/scripts/claude-opinion.mjs" <brief file>\``) && !rules.includes(slashed(core)), 'claude-opinion of this plugin');
   assert.equal(JSON.parse(read(repo.dir, `.am/demo/${AGENT_RECORD}`)).core, core);
 
   const none = makeRepo(t);

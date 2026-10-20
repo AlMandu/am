@@ -1,5 +1,5 @@
 ---
-name: auto-agent
+name: agent
 description: "am:auto-multi 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 이 세션의 서브에이전트(단계 에이전트)를 띄워 진행만 맡고, 단계가 끝날 때마다 채팅에 한 줄만 남깁니다. 터미널을 닫으면 멈추고 기존 slug 를 주면 남은 단계부터 이어 가며, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
@@ -38,7 +38,7 @@ Request: $ARGUMENTS
 
 <!-- am:shared:sibling-runs:start -->
 ## How this skill runs
-Read `${CLAUDE_PLUGIN_ROOT}/skills/auto-multi/SKILL.md` (if the placeholder was not replaced, `skills/auto-multi/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it (inside the four skill files of its step 2, the folder that step names). If it cannot be read, change no file and stop. These differences override that file:
+Read `${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md` (if the placeholder was not replaced, `skills/multi/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it (inside the four skill files of its step 2, the folder that step names). If it cannot be read, change no file and stop. These differences override that file:
 - Never look for, read or run the am-orchestrator run skill: skip the `claude plugin list --json` part of step 2, never hand over in step 4, and ignore `HANDED`, every rule about the run skill or its hook, and step 7's hand-over items.
 - If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
 - After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (the do, check and commit stages) with Parts (below).

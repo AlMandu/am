@@ -6,14 +6,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANSWER_HEADER, CONTRARIAN, buildPrompt, checkBrief, claudeArgs, main, parseArgs, reviewerName } from '../plugin/scripts/claude-opinion.mjs';
-import { MAX_BRIEF_BYTES, checkBrief as codexCheckBrief } from '../plugin/scripts/codex-opinion.mjs';
-import { EMPTY_MCP_CONFIG } from '../plugin/scripts/stage.mjs';
+import { ANSWER_HEADER, CONTRARIAN, buildPrompt, checkBrief, claudeArgs, main, parseArgs, reviewerName } from '../auto/scripts/claude-opinion.mjs';
+import { MAX_BRIEF_BYTES, checkBrief as codexCheckBrief } from '../auto/scripts/codex-opinion.mjs'; // the copy claude-opinion.mjs imports
+import { EMPTY_MCP_CONFIG } from '../auto/scripts/stage.mjs';
 import { FRONTMATTER, OPINION_MODELS, USER_EFFORTS, frontmatterModels } from '../plugin/scripts/user-models.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.join(here, '..', 'plugin', 'scripts', 'claude-opinion.mjs');
-const AGENT = path.join(here, '..', 'plugin', 'agents', 'second-opinion.md');
+const SCRIPT = path.join(here, '..', 'auto', 'scripts', 'claude-opinion.mjs');
+const AGENT = path.join(here, '..', 'auto', 'scripts', 'second-opinion.md'); // synced copy of plugin/agents/second-opinion.md
 const FAKE = path.join(here, 'fake-claude.mjs');
 const WIN = process.platform === 'win32';
 const REVIEWER = frontmatterModels(AGENT);

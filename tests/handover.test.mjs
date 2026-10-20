@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AM_MIN_VERSION, countDone, decide, findAm, findCore, findOrchestrator, handedRun, installedPaths, readPlan, versionKey, withinOneRun } from '../plugin/hooks/handover.mjs';
+import { AM_MIN_VERSION, countDone, decide, findAm, findCore, findOrchestrator, handedRun, installedPaths, readPlan, versionKey, withinOneRun } from '../auto/hooks/handover.mjs';
 
 const LARGE = '# t\n## 요약\n- 규모: 구현 2회, 커밋 3개\n## 단계\n1. 첫 단계. 확인: x\n## 변경 기록\n';
 const SMALL = '# t\n## Summary\n- Scale: 1 implementation run, 1 commit\n## Steps\n1. Step. Check: x\n## Change log\n';

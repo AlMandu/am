@@ -461,17 +461,17 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am:do` | `opus` | `medium` |
 | `am:check` | `opus` | `high` |
 | `am:commit` | `sonnet` | `medium` |
-| `am:auto-multi` | `opus` | `medium` |
-| `am:auto-one` | `opus` | `medium` |
-| `am:auto-agent` | `opus` | `medium` |
-| `am:sessions` | `sonnet` | `low` |
+| `am-auto:multi` | `opus` | `medium` |
+| `am-auto:one` | `opus` | `medium` |
+| `am-auto:agent` | `opus` | `medium` |
+| `am-auto:sessions` | `sonnet` | `low` |
 | `am-util:land` | `opus` | `high` |
-| 단계 사이 맥락 압축 세션(`am:auto-multi`·`am:auto-one`, Claude Code) | `sonnet` | `medium` |
+| 단계 사이 맥락 압축 세션(`am-auto:multi`·`am-auto:one`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
-| `am:auto-agent` 계획 단계 에이전트(`am:stage-plan`) | `opus` | `high` |
-| `am:auto-agent` 구현 단계 에이전트(`am:stage-do`) | `opus` | `medium` |
-| `am:auto-agent` 점검 단계 에이전트(`am:stage-check`) | `opus` | `high` |
-| `am:auto-agent` 커밋 단계 에이전트(`am:stage-commit`·`am:stage-commit-push`) | `sonnet` | `medium` |
+| `am-auto:agent` 계획 단계 에이전트(`am-auto:stage-plan`) | `opus` | `high` |
+| `am-auto:agent` 구현 단계 에이전트(`am-auto:stage-do`) | `opus` | `medium` |
+| `am-auto:agent` 점검 단계 에이전트(`am-auto:stage-check`) | `opus` | `high` |
+| `am-auto:agent` 커밋 단계 에이전트(`am-auto:stage-commit`·`am-auto:stage-commit-push`) | `sonnet` | `medium` |
 | Codex 2차 의견 | `gpt-6.1-sol` | `high` |
 
 <!-- am:models:end -->

@@ -9,6 +9,11 @@
       "description": "가벼운 plan → do → check → commit 워크플로와 커밋 게이트(Claude Code·Codex 공용)"
     },
     {
+      "name": "am-auto",
+      "source": "./auto",
+      "description": "요청 하나를 계획 → 구현 → 점검 → 커밋까지 이어 가는 자동 실행과 세션 보기(Claude Code 전용, am 필요)"
+    },
+    {
       "name": "am-util",
       "source": "./util",
       "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land(Claude Code·Codex 공용)"
