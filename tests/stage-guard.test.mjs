@@ -14,6 +14,21 @@ const RUN = 'abc123-0a1b2c';
 const now = () => NOW;
 const alive = (pid) => pid === PID || pid === PID + 1;
 
+// A file symbolic link needs Developer Mode or an elevated account on Windows; directory links below are junctions, which do not.
+const FILE_LINKS = (() => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'am-stage-guard-probe-'));
+  try {
+    writeFileSync(path.join(dir, 'f'), 'x');
+    symlinkSync(path.join(dir, 'f'), path.join(dir, 'l'));
+    return true;
+  } catch (err) {
+    if (err.code !== 'EPERM') throw err;
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
 function makeRepo() {
   const root = mkdtempSync(path.join(tmpdir(), 'am-stage-guard-'));
   mkdirSync(path.join(root, '.git'));
@@ -114,15 +129,20 @@ test('commit: add, commit with a message file or plain -m, restore --staged only
   assert.equal(s.bash('git commit -F .am/other/commit-message.txt'), 'deny');
   assert.equal(s.bash('git commit --amend -m x'), 'deny');
   assert.equal(s.bash('git commit -m x --no-verify'), 'deny');
-  writeFileSync(path.join(s.root, 'elsewhere.txt'), 'x');
-  symlinkSync(path.join(s.root, 'elsewhere.txt'), path.join(s.root, '.am', 'task', 'commit-message.txt'));
-  assert.equal(s.bash('git commit -F .am/task/commit-message.txt'), 'deny');
   assert.equal(s.bash('git restore --staged -- a.txt b.txt'), 'allow');
   assert.equal(s.bash('git restore a.txt'), 'deny');
   assert.equal(s.bash('git restore --staged a.txt'), 'deny');
   assert.equal(s.bash('git restore --worktree --staged -- a.txt'), 'deny');
   assert.equal(s.bash('git push'), 'deny');
   assert.equal(s.bash('git push origin main'), 'deny');
+  s.done();
+});
+
+test('commit: a message file that is a symbolic link is refused', { skip: !FILE_LINKS && 'this account may not create file symbolic links' }, () => {
+  const s = setup('commit');
+  writeFileSync(path.join(s.root, 'elsewhere.txt'), 'x');
+  symlinkSync(path.join(s.root, 'elsewhere.txt'), path.join(s.root, '.am', 'task', 'commit-message.txt'));
+  assert.equal(s.bash('git commit -F .am/task/commit-message.txt'), 'deny');
   s.done();
 });
 
@@ -191,9 +211,9 @@ test('file writes by stage', () => {
     assert.equal(s.write(path.join(path.dirname(s.root), 'outside.txt')), 'deny');
     assert.equal(s.write('../outside.txt'), 'deny');
     const out = mkdtempSync(path.join(tmpdir(), 'am-stage-guard-out-'));
-    symlinkSync(out, path.join(s.root, 'link'));
+    symlinkSync(out, path.join(s.root, 'link'), 'junction');
     assert.equal(s.write('link/x.txt'), 'deny');
-    symlinkSync(path.join(out, 'missing'), path.join(s.root, 'dangling'));
+    symlinkSync(path.join(out, 'missing'), path.join(s.root, 'dangling'), 'junction');
     assert.equal(s.write('dangling'), 'deny');
     rmSync(out, { recursive: true, force: true });
     s.done();
