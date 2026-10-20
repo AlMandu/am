@@ -3,13 +3,14 @@
 // the orchestrator counts `.gate` records only in its memory check, never against its session limit.
 // The rules copy orchestrator/scripts/orchestrator.mjs (memoryShortMB, recordHeld, folder, name, host, times);
 // tests/orchestrator-skill.test.mjs compares both copies on the same inputs.
-// Reads no environment variable itself (the caller passes env or dir). Node only, no dependencies.
+// Reads no environment variable itself (the caller passes env or dir). Node only, imports only ./user-settings.mjs.
 
 import { mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DEFAULT_MIN_FREE_MEMORY_MB } from './user-settings.mjs';
 
-export const DEFAULT_MIN_FREE_MEMORY_MB = 2048;
+export { DEFAULT_MIN_FREE_MEMORY_MB };
 // The owner touches its record every 30 seconds; a record untouched for 5 minutes has lost its owner
 export const HEARTBEAT_MS = 30000;
 export const STALE_MS = 5 * 60000;

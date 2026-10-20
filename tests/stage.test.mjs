@@ -2129,12 +2129,16 @@ const within2s = async (check) => {
 };
 const MB = 1048576;
 
-test('memory guard: the module reads no environment variable and imports only node built-ins', () => {
-  const src = readFileSync(path.join(REPO, 'plugin', 'scripts', 'memory-guard.mjs'), 'utf8');
-  assert.ok(!src.includes('process.env'));
-  const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+test('memory guard: the module reads no environment variable and imports only node built-ins and ./user-settings.mjs, which imports only node built-ins', () => {
+  const importsOf = (file) => {
+    const src = readFileSync(path.join(REPO, 'plugin', 'scripts', file), 'utf8');
+    assert.ok(!src.includes('process.env'), file);
+    return [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
+  };
+  const imports = importsOf('memory-guard.mjs');
   assert.ok(imports.length > 0);
-  for (const name of imports) assert.ok(name.startsWith('node:'), name);
+  for (const name of imports) assert.ok(name.startsWith('node:') || name === './user-settings.mjs', name);
+  for (const name of importsOf('user-settings.mjs')) assert.ok(name.startsWith('node:'), name);
 });
 
 test('memory guard: the built-in default holds on win32 only, a set value on every OS, 0 is off and nothing waits alone', () => {

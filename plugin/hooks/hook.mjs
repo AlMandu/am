@@ -1,9 +1,9 @@
 // Hook entry point of hooks.json: PreToolUse of the shell tools (Bash, PowerShell) and the file tools (Write, Edit,
 // MultiEdit, NotebookEdit), and SubagentStop. hooks.json loads this file with `node -e "import(...)"`, so it runs on import.
 // Before anything else it creates the missing user files (scripts/user-files.mjs).
-// Input whose agent_type starts with am:stage- (an am:lean stage agent) goes to stage-guard.mjs, then, for an allowed
-// shell command, to the commit gate as well; any other input goes to the commit gate (gate.mjs) alone, as before, and
-// stage-guard.mjs is never loaded. gate.mjs is imported inside the try, so a load failure also ends with the crash notice and exit 0.
+// Input whose agent_type starts with am:stage- (an am:auto-agent stage agent) goes to stage-hook.mjs (stage guard, then the gate
+// for an allowed shell command), refused when that fails; any other input goes to the commit gate (gate.mjs) alone, and
+// stage-hook.mjs is never loaded. gate.mjs is imported inside the try, so a load failure also ends with the crash notice and exit 0.
 
 // No install-time hook exists, so the first hook call creates the two user files, with no hooks.json entry of its own.
 // A load or creation failure is swallowed so it never changes the gate or the output.
@@ -41,27 +41,16 @@ try {
   // Not JSON: the gate reports it.
 }
 
-/** A stage agent's call: the stage guard first; an allowed shell command also passes the gate, whose deny wins. */
+/** A stage agent's call through stage-hook.mjs; a load failure or a missed stage input (null) is refused, never let through. */
 async function stageHook(payload) {
-  const event = payload.hook_event_name;
   try {
-    const guard = await import('./stage-guard.mjs');
-    const verdict = guard.decide(payload);
-    if (event === 'SubagentStop' || !['Bash', 'PowerShell'].includes(payload.tool_name)) return verdict.stdout;
-    const out = JSON.parse(verdict.stdout);
-    if (out.hookSpecificOutput.permissionDecision !== 'allow') return verdict.stdout;
-    const { decide } = await import('./gate.mjs');
-    const gate = await decide(raw);
-    if (!gate.stdout) return verdict.stdout;
-    const g = JSON.parse(gate.stdout);
-    if (g.hookSpecificOutput?.permissionDecision === 'deny') return gate.stdout;
-    if (g.hookSpecificOutput?.additionalContext) out.hookSpecificOutput.additionalContext = g.hookSpecificOutput.additionalContext;
-    if (g.systemMessage) out.systemMessage = g.systemMessage;
-    return JSON.stringify(out) + '\n';
+    const out = await (await import('./stage-hook.mjs')).stageOutput(raw);
+    if (typeof out === 'string') return out;
+    throw new Error('stage-hook.mjs did not take this stage input');
   } catch (err) {
     // A stage agent is never let through unchecked: deny the tool call, or block the stop once.
     const reason = `am stage hook: crashed (${err && err.message}), so this was refused; tell the user.`;
-    if (event === 'SubagentStop') return payload.stop_hook_active === true ? '' : JSON.stringify({ decision: 'block', reason }) + '\n';
+    if (payload.hook_event_name === 'SubagentStop') return payload.stop_hook_active === true ? '' : JSON.stringify({ decision: 'block', reason }) + '\n';
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }) + '\n';
   }
 }

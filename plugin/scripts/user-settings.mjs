@@ -1,7 +1,7 @@
 // am user settings: the per-PC file for settings that hold for every am run on this PC.
 // File: <CLAUDE_CONFIG_DIR or ~/.claude>/am/settings.json, JSON (a leading BOM is allowed):
 //   { "minFreeMemoryMB": <number or null>, "stageMcpServers": <true, false or null> }
-// minFreeMemoryMB is null (or missing) for the built-in value, else a finite number of 0 or more.
+// minFreeMemoryMB is null (or missing) for the built-in value (DEFAULT_MIN_FREE_MEMORY_MB), else a finite number of 0 or more.
 // stageMcpServers is true to let am:auto stage sessions start MCP servers; null, false or missing keeps them off.
 // Keys starting with `_` are notes, allowed at the top, and dropped from the result.
 // A broken file is an error (one English line `<file>: <problem>`), never a silent fallback.
@@ -10,6 +10,8 @@
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+export const DEFAULT_MIN_FREE_MEMORY_MB = 2048;
 
 const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isNote = (k) => k.startsWith('_');

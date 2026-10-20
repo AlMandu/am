@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { denyOutput, findRepoRoot, readStdin } from './gate.mjs';
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -99,9 +100,80 @@ export function findOrchestrator(list = pluginList) {
   return installedPaths((p) => String(p.id).startsWith('am-orchestrator@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'skills', 'run', 'SKILL.md')), list)[0] ?? null;
 }
 
-/** The install paths of every enabled am with the Codex second-opinion script: what a new stage session loads. */
+/** The install paths of every enabled am with the Codex second-opinion script and the plan skill: what a new stage session loads. */
 export function findAm(list = pluginList) {
-  return installedPaths((p) => String(p.id).startsWith('am@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'scripts', 'codex-opinion.mjs')), list);
+  return installedPaths((p) => String(p.id).startsWith('am@') && p.enabled === true && typeof p.installPath === 'string' && existsSync(path.join(p.installPath, 'scripts', 'codex-opinion.mjs')) && existsSync(path.join(p.installPath, 'skills', 'plan', 'SKILL.md')), list);
+}
+
+// The lowest am version am-auto relies on. Raise it in the am commit that changes a shared contract; never above am's plugin.json version.
+export const AM_MIN_VERSION = '0.1.66';
+const OWN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const VERSION = /^\d+(\.\d+)*$/;
+const UPDATE = 'run `claude plugin marketplace update am-workflow`, then `claude plugin update am@am-workflow`, and start a new session';
+
+const readManifest = (dir) => {
+  try {
+    return JSON.parse(readFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+};
+
+/** True when dir is the am plugin: its manifest names am and it has the plan skill. */
+export function isCore(dir) {
+  return readManifest(dir)?.name === 'am' && existsSync(path.join(dir, 'skills', 'plan', 'SKILL.md'));
+}
+
+/** The version in dir's manifest when it is dotted numbers, else null. */
+export function coreVersion(dir) {
+  const v = readManifest(dir)?.version;
+  return typeof v === 'string' && VERSION.test(v) ? v : null;
+}
+
+/** Sort key of a dotted version (same as the orchestrator's): compare the keys as strings. */
+export const versionKey = (v) => String(v).split('.').map((n) => String(parseInt(n, 10) || 0).padStart(6, '0')).join('.');
+
+const sameDir = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+
+/** The core am beside autoRoot or installed: { root, version, source: 'dev' | 'list' | 'cache' }, or { error } (one English line). */
+export function findCore(autoRoot = OWN_ROOT, { list = pluginList, minVersion = AM_MIN_VERSION } = {}) {
+  const found = locateCore(autoRoot, list);
+  if (found.error) return found;
+  const version = coreVersion(found.root);
+  if (!version || versionKey(version) < versionKey(minVersion)) {
+    const how = found.source === 'dev' ? 'update this repository to its latest commit' : UPDATE;
+    return { error: `am ${version ?? '(version unreadable)'} at ${found.root} is older than ${minVersion}, the lowest version am-auto needs: ${how}.` };
+  }
+  return { ...found, version };
+}
+
+function locateCore(autoRoot, list) {
+  const dev = path.resolve(autoRoot, '..', 'plugin');
+  if (isCore(dev)) return { root: dev, source: 'dev' };
+  const entries = list();
+  if (Array.isArray(entries)) {
+    const ams = entries.filter((p) => p && typeof p === 'object' && String(p.id).startsWith('am@'));
+    const roots = new Map();
+    for (const p of ams) {
+      if (p.enabled !== true || typeof p.installPath !== 'string' || !path.isAbsolute(p.installPath) || !isCore(p.installPath)) continue;
+      const root = path.resolve(p.installPath);
+      if (!roots.has(sameDir(root))) roots.set(sameDir(root), root);
+    }
+    if (roots.size === 1) return { root: [...roots.values()][0], source: 'list' };
+    if (roots.size > 1) return { error: `Several enabled am plugins are installed in different folders: ${[...roots.values()].join(', ')}. Keep one enabled (\`claude plugin disable <id>\` for the others) and start a new session.` };
+    if (ams.some((p) => p.enabled !== true)) return { error: 'The am plugin is installed but disabled: run `claude plugin enable am@am-workflow` and start a new session.' };
+    return { error: 'The am plugin is not installed: run `claude plugin install am@am-workflow` and start a new session.' };
+  }
+  const cache = path.resolve(autoRoot, '..', '..', 'am');
+  let names = [];
+  try {
+    names = readdirSync(cache, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {}
+  const best = names
+    .filter((n) => !existsSync(path.join(cache, n, '.orphaned_at')) && isCore(path.join(cache, n)))
+    .sort((a, b) => versionKey(b).localeCompare(versionKey(a)))[0];
+  if (best) return { root: path.join(cache, best), source: 'cache' };
+  return { error: 'The plugin list could not be read and no am plugin was found beside am-auto: run `claude plugin install am@am-workflow` and start a new session.' };
 }
 
 /** True when an enabled am-orchestrator with its run skill is installed. */

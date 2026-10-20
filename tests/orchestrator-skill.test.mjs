@@ -614,6 +614,7 @@ test('the am user settings module and the orchestrator copy read the same files 
   try {
     assert.equal(orch.userSettingsFile({ CLAUDE_CONFIG_DIR: base }), am.userSettingsFile({ CLAUDE_CONFIG_DIR: base }));
     assert.equal(orch.userSettingsFile({}), am.userSettingsFile({}));
+    assert.equal(am.DEFAULT_MIN_FREE_MEMORY_MB, orch.DEFAULT_MIN_FREE_MEMORY_MB);
     for (const [name, content, broken] of cases) {
       const file = am.userSettingsFile({ CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(base, 'c-')) });
       if (content !== null) {

@@ -10,8 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, userModelsFile } from './user-models.mjs';
-import { userSettingsFile } from './user-settings.mjs';
-import { DEFAULT_MIN_FREE_MEMORY_MB } from './memory-guard.mjs';
+import { DEFAULT_MIN_FREE_MEMORY_MB, userSettingsFile } from './user-settings.mjs';
 
 export const BUILTIN_MODELS = {
   plan: { model: 'opus', effort: 'high' },
