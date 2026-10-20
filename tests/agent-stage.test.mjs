@@ -1,5 +1,5 @@
 // Run: node --test tests/agent-stage.test.mjs
-// The am:lean stage starter and ender: start (lock, waits, records, rules and skill files, model and effort), end
+// The am-auto:agent stage starter and ender: start (lock, waits, records, rules and skill files, model and effort), end
 // (runId, once, under the lock), card and answer (the cards and answers as written).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

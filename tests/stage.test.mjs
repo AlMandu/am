@@ -1,5 +1,5 @@
 // Run: node --test tests/stage.test.mjs
-// The am:auto stage runner (what each stage session may do, what it is told, how its end is read)
+// The am-auto:multi stage runner (what each stage session may do, what it is told, how its end is read)
 // and the user models module it will use.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -247,11 +247,11 @@ test('the compaction session: its own model and markers, a prompt cmd.exe can pa
   assert.equal(flag(args, '--effort'), COMPACT_MODEL.effort);
   assert.equal(TIMEOUT_MIN.compact, 15);
   assert.deepEqual(COMPACT_MARKS, ['COMPACTED', 'BLOCKED']);
-  // Its markers never reach am:auto as a stage status.
+  // Its markers never reach am-auto:multi as a stage status.
   assert.ok(!Object.keys(MARKS).includes('compact') && !Object.values(MARKS).flat().includes('COMPACTED'));
   const { prompt, system } = compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]);
   assert.ok(!/["%]/.test(prompt), prompt);
-  assert.ok(system.includes('the task files of an am:auto-multi or am:auto-one run'));
+  assert.ok(system.includes('the task files of an am-auto:multi or am-auto:one run'));
   assert.match(system, /- \.am\/demo\/plan\.md: about 14000 tokens now; bring it to about 7000 tokens\./);
   for (const keep of ['규모: 구현 N회, 커밋 M개', '(done) or (완료)', '(auto-decided), (자동 결정)', '(자동 결정), (second opinion…), (2차 의견…), or the user\'s answer', '(자동 결정), (second opinion, (2차 의견, and the word OPEN', 'marked OPEN, in full', 'AM_STAGE: COMPACTED', 'AM_STAGE: BLOCKED', 'never use a question tool', 'Never change .am/demo/request.md: it is the user\'s request in their own words', 'if the runner finds it changed it puts everything back', '`## Parts` section', '`- Part <k> done: …`']) assert.ok(system.includes(keep), keep);
 });
@@ -269,7 +269,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   const oneCommand = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
   for (const s of [...STAGES, 'handover']) {
     const { system } = instructions(s, 'demo');
-    // The same rules as am:auto's "Running without stops" (user decision: a copy written for stage sessions, kept in step by this test).
+    // The same rules as am-auto:multi's "Running without stops" (user decision: a copy written for stage sessions, kept in step by this test).
     assert.match(system, /the mark \(auto-decided\), translated into the plan's language \(\(자동 결정\) in a Korean plan\)/, s);
     for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "the user's or the project's instructions say it needs confirmation", 'the two reviewers of a technical choice still split on it after their rounds']) assert.ok(system.includes(stop), `${s}: ${stop}`);
     assert.match(system, /marked OPEN[\s\S]*AM_STAGE: NEEDS_DECISION/, s);
@@ -295,12 +295,12 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.ok(commit.includes(`${hook}\n${blocked}\n`));
   // The compaction session has no shell tool, so it does not get that line.
   assert.ok(!compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]).system.includes(oneCommand));
-  // The same mark rule in am:auto (with code marks there).
+  // The same mark rule in am-auto:multi (with code marks there).
   assert.match(AUTO, /the mark `\(auto-decided\)` translated into the plan's language \(`\(자동 결정\)` in a Korean plan\)/);
-  // The same stop list in am:auto. Two of its stops are left out on purpose: the run skill's Prepare questions
+  // The same stop list in am-auto:multi. Two of its stops are left out on purpose: the run skill's Prepare questions
   // only reach the handover stage, whose rules name them on their own ("any question of its Prepare step, are stops");
   // an empty request, an unclear push keyword, an unreadable skill file and BLOCK after the retry belong to the
-  // session running am:auto, so a stage session has them as "this stage cannot finish" or "the request cannot be planned".
+  // session running am-auto:multi, so a stage session has them as "this stage cannot finish" or "the request cannot be planned".
   for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "The user's or project's instructions say the next action needs confirmation", 'The two reviewers of a technical choice still split on it after their rounds']) assert.ok(AUTO.includes(stop), stop);
   // Through cmd.exe (claude.cmd) only the unquoted rules for node scripts survive; those sessions are told the form.
   assert.match(instructions('handover', 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/);
@@ -308,9 +308,9 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const s of ['plan']) assert.match(instructions(s, 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/, s);
   for (const s of ['check', 'commit', 'do']) assert.doesNotMatch(instructions(s, 'demo', { unquoted: true }).system, /path unquoted/, s);
   assert.match(instructions('plan', 'demo').system, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
-  // The size of one implementation run, word for word as in am:auto.
+  // The size of one implementation run, word for word as in am-auto:multi.
   const oneRun = AUTO.match(/One implementation run is [^\n]*? separately\./);
-  assert.ok(oneRun, 'am:auto defines one implementation run');
+  assert.ok(oneRun, 'am-auto:multi defines one implementation run');
   assert.ok(instructions('plan', 'demo').system.includes(oneRun[0]), oneRun[0]);
   assert.match(instructions('do', 'demo').system, /do not use the am:check skill/);
   assert.match(instructions('do', 'demo', { fix: true }).system, /Read \.am\/demo\/check\.md first and fix only the causes it reports/);
@@ -319,14 +319,14 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const s of ['plan', 'commit', 'handover']) assert.doesNotMatch(instructions(s, 'demo').system, /scratch\//, s);
   assert.match(instructions('handover', 'demo', { push: true }).system, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`[\s\S]*push the start branch/);
   assert.match(instructions('handover', 'demo').system, /Do not push\./);
-  // The same run fields as the hand-over items of am:auto's step 7.
+  // The same run fields as the hand-over items of am-auto:multi's step 7.
   for (const resume of [true, false]) assert.ok(instructions('handover', 'demo', { resume }).system.includes('every line of `autoDecided` and `secondOpinions`'), `resume ${resume}`);
 });
 
 test('instructions: solo changes three sentences of the unattended rules (four in the commit stage) and adds the Parts rule to the plan stage', () => {
   const swaps = [
-    ['You are one stage of the am:auto-multi skill, started in a fresh session by the am stage runner.', 'You are one stage of the am:auto-one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model or the conversation holds 100000 tokens or more; then the stage starts in a new session.'],
-    ['- Running am:auto-multi is the user\'s request', '- Running am:auto-one is the user\'s request'],
+    ['You are one stage of the am-auto:multi skill, started in a fresh session by the am stage runner.', 'You are one stage of the am-auto:one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model or the conversation holds 100000 tokens or more; then the stage starts in a new session.'],
+    ['- Running am-auto:multi is the user\'s request', '- Running am-auto:one is the user\'s request'],
     ['this stage starts again in a new session.', 'this stage continues in this same session.'],
   ];
   const oneCommand = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
@@ -335,7 +335,7 @@ test('instructions: solo changes three sentences of the unattended rules (four i
     assert.equal(instructions(s, 'demo', { push, solo: null }).system, plain, `${s} push ${push}: solo null changes nothing`);
     const { system } = instructions(s, 'demo', { push, solo: { owner: 'demo' } });
     let back = system;
-    for (const [from, to] of s === 'commit' ? [...swaps, ['The am:auto-multi run asks for this commit', 'The am:auto-one run asks for this commit']] : swaps) {
+    for (const [from, to] of s === 'commit' ? [...swaps, ['The am-auto:multi run asks for this commit', 'The am-auto:one run asks for this commit']] : swaps) {
       assert.equal(system.split(to).length, 2, `${s}: ${to} once`);
       assert.ok(!system.includes(from), `${s}: ${from} gone`);
       back = back.replace(to, from);
@@ -368,7 +368,7 @@ test('instructions: solo changes three sentences of the unattended rules (four i
   // A part saves and reads its owner's memory file; the read rule comes only with soloRead, after the save rule.
   const read = instructions('do', 'demo-p1', { solo: { owner: 'demo' }, soloRead: true }).system;
   assert.ok(read.includes('rewrite .am/demo/solo-context.md whole with the Write tool, in the plan\'s language and in about 60 lines or fewer'));
-  assert.ok(read.endsWith('- This stage starts in a new session: the shared session of this am:auto-one task could not be continued. Before anything else, read .am/demo/solo-context.md, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.\n'));
+  assert.ok(read.endsWith('- This stage starts in a new session: the shared session of this am-auto:one task could not be continued. Before anything else, read .am/demo/solo-context.md, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.\n'));
   assert.ok(!read.includes('.am/demo-p1/solo-context.md'));
   assert.ok(instructions('commit', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('those two and .am/demo/solo-context.md (below) are the only files this session can write'));
   assert.ok(instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('only under .am/demo-p1/, .am/demo/solo-context.md (below) and the current-task mark'));
@@ -380,7 +380,7 @@ test('instructions: solo changes three sentences of the unattended rules (four i
 // The flag combinations of the subagent rules: push everywhere, fix in do, part in plan.
 const agentCombos = () => AGENT_STAGES.flatMap((stage) => [false, true].flatMap((push) => (stage === 'do' ? [false, true] : [false]).flatMap((fix) => (stage === 'plan' ? [false, true] : [false]).map((part) => ({ stage, push, fix, part, slug: part ? 'demo-p1' : 'demo' })))));
 
-test('agentRules: the stage rules for an am:lean subagent, with no session wording, the report in the reply file and the runId in the status line', () => {
+test('agentRules: the stage rules for an am-auto:agent subagent, with no session wording, the report in the reply file and the runId in the status line', () => {
   assert.deepEqual(AGENT_STAGES, STAGES);
   const runId = 'mgs1x2y3-a1b2c3';
   const ownRoot = path.join(REPO, 'auto');
@@ -400,9 +400,9 @@ test('agentRules: the stage rules for an am:lean subagent, with no session wordi
     assert.ok(text.includes(`repeat the card in ${reply}, and end with the status NEEDS_DECISION`), name);
     assert.ok(text.includes('with the line `<!-- am:card OPEN -->` right before each card and the line `<!-- am:card end -->` right after it'), `${name}: card marks`);
     assert.ok(text.includes('this stage runs again as a new subagent'), name);
-    assert.ok(text.startsWith('You are one stage of the am:auto-agent skill, a subagent the am:auto-agent driver started for this stage only. No human watches this stage'), name);
-    assert.ok(text.includes('- Running am:auto-agent is the user\'s request') && !text.includes('am:auto-multi') && !text.includes('am:auto-one'), name);
-    // The same mark and stop list as the stage sessions and am:auto (both pinned in the instructions test above).
+    assert.ok(text.startsWith('You are one stage of the am-auto:agent skill, a subagent the am-auto:agent driver started for this stage only. No human watches this stage'), name);
+    assert.ok(text.includes('- Running am-auto:agent is the user\'s request') && !text.includes('am-auto:multi') && !text.includes('am-auto:one'), name);
+    // The same mark and stop list as the stage sessions and am-auto:multi (both pinned in the instructions test above).
     assert.match(text, /the mark \(auto-decided\), translated into the plan's language \(\(자동 결정\) in a Korean plan\)/, name);
     for (const stop of stops) assert.ok(text.includes(stop), `${name}: ${stop}`);
     assert.equal(text.split(pushOk).length, push ? 2 : 1, `${name}: push confirmation`);
@@ -430,7 +430,7 @@ test('agentRules: the stage rules for an am:lean subagent, with no session wordi
     }
     const base = agentBase(stage, slug, { push, fix, part, owner: 'demo' });
     assert.equal(back, base, name);
-    // The base is the stage session's own text; for plan, plus the Parts rule (the session rules of am:solo's plan stage).
+    // The base is the stage session's own text; for plan, plus the Parts rule (the session rules of am-auto:one's plan stage).
     if (stage !== 'plan') assert.equal(base, instructions(stage, slug, { push, fix }).system, name);
     else assert.equal(base.replace(/\n- (If the Scale line says 2 or more|This is a part plan)[^\n]*/, '').replace(', .am/demo/solo-context.md (below)', ''), instructions('plan', slug, { push }).system, name);
   }
@@ -509,7 +509,7 @@ test('doKind: with solo the orchestrator is never looked up; a handed-over or la
     assert.match(doKind(LARGE, o).error, /Parts section/);
     assert.deepEqual(doKind(LARGE.replace('1. a.', '1. a. (완료)'), o), { kind: 'do' });
     assert.deepEqual(doKind(LARGE, { ...o, fix: true }), { kind: 'do' });
-    assert.match(doKind(handed, o).error, /handed to am-orchestrator: continue it with the am:auto-multi skill/);
+    assert.match(doKind(handed, o).error, /handed to am-orchestrator: continue it with the am-auto:multi skill/);
     assert.deepEqual(doKind(handed.replace('1. a.', '1. a. (done)'), o), { kind: 'do' });
     assert.match(doKind('# p\n## Steps\n1. a\n', o).error, /no Scale line/);
   }
@@ -531,7 +531,7 @@ test('solo: do --solo of a large plan ends `failed` with no session and no hand-
   assert.deepEqual(Object.keys(JSON.parse(stageLine('plan', 'demo', 'WAIT', ''))), Object.keys(PLAN_RESULT));
   // The session gets the solo rules: the owner's plan stage the Parts rule.
   const ownerSystem = readFileSync(path.join(planned, '.am', 'demo', 'stage-plan.system.md'), 'utf8');
-  assert.ok(ownerSystem.includes('am:auto-one skill') && ownerSystem.includes('## Parts'));
+  assert.ok(ownerSystem.includes('am-auto:one skill') && ownerSystem.includes('## Parts'));
 });
 
 test('solo: the plan stage of a part (--solo=<owner>) is told to plan only its part', async (t) => {
@@ -726,7 +726,7 @@ test('solo session: a record that cannot be saved leaves the result as it is and
   assert.equal(result.solo.sessionId, 'sess-1');
 });
 
-test('am:auto and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
+test('am-auto:multi and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
   const LINE = /`(- Hand-over: [^`\n]+)`/;
   const fromAuto = LINE.exec(AUTO);
   const fromStage = LINE.exec(instructions('handover', 'demo').system);
@@ -819,7 +819,7 @@ test('a plan stage runs one session and reports its marker, cost, reply and refu
   assert.match(readFileSync(path.join(dir, result.reply), 'utf8'), /Planned\./);
   // The session runs the same am copy as this script (here a development copy outside the plugin cache).
   assert.equal(flag(calls[0], '--plugin-dir'), path.join(REPO, 'plugin'));
-  // am:plan adds .am/.gitignore only when it creates .am/, which the am:auto session already did.
+  // am:plan adds .am/.gitignore only when it creates .am/, which the am-auto:multi session already did.
   assert.equal(readFileSync(path.join(dir, '.am', '.gitignore'), 'utf8'), '*\n');
 });
 
@@ -876,7 +876,7 @@ test('failures: no claude command is `unavailable`, a crash is `failed`, bad inp
   assert.equal((await run(dir, ['ship', 'demo'])).code, 1);
   assert.equal((await run(dir, ['do', '../x'])).code, 1);
   assert.equal((await run(dir, ['do', 'demo', '--force'])).code, 1);
-  // A missing plan or request is a result am:auto acts on, not a usage error.
+  // A missing plan or request is a result am-auto:multi acts on, not a usage error.
   const noPlan = await run(dir, ['do', 'other']);
   assert.equal(noPlan.code, 0);
   assert.match(noPlan.result.reason, /no \.am\/other\/plan\.md/);
@@ -2618,7 +2618,7 @@ test('solo memory: a part reads its owner\'s file; a plan stage that saved it ha
   writeFileSync(CONTEXT_FILE(part), '# memory\n');
   const p = await run(part, ['check', 'demo-p1', '--solo=demo']);
   const system = systemOf(part, 'check', 'demo-p1');
-  assert.ok(system.includes(`${READ_LINE}: the shared session of this am:auto-one task could not be continued. Before anything else, read .am/demo/solo-context.md`));
+  assert.ok(system.includes(`${READ_LINE}: the shared session of this am-auto:one task could not be continued. Before anything else, read .am/demo/solo-context.md`));
   assert.ok(!system.includes('.am/demo-p1/solo-context.md'));
   assert.ok(notes(part, 'demo-p1').includes(CONTEXT_NOTE));
   assert.equal(p.result.solo.context, true);
@@ -4345,13 +4345,13 @@ test('permissions: the commit stage only unstages; a hand-over switches only to 
   assert.match(text, /share no file, run \`git stash apply <oid>\`/);
   assert.match(text, /Never drop a stash\./);
   assert.ok(text.includes('switch to the start branch with `git switch <branch>`'));
-  assert.match(AUTO, /- Stash: <oid>, base <commit>/, 'am:auto step 4 keeps the same rule');
+  assert.match(AUTO, /- Stash: <oid>, base <commit>/, 'am-auto:multi step 4 keeps the same rule');
   assert.ok(AUTO.includes('switch to the start branch with `git switch <branch>`'));
   // A resumed hand-over whose merge is logged still puts back the stashes it has not put back.
   const resumed = instructions('handover', 'demo', { orchRoot: '/orch', resume: true }).system;
   assert.ok(resumed.includes('If the log also records the merge, skip the merge: only the push below and each `Stash:` line not yet logged as put back (the stash rule below) are left.'));
   assert.ok(!resumed.includes('only the push below is left'));
-  assert.ok(AUTO.includes('`git stash apply <oid>` and log it only when'), 'am:auto logs a stash it put back');
+  assert.ok(AUTO.includes('`git stash apply <oid>` and log it only when'), 'am-auto:multi logs a stash it put back');
   assert.ok(AUTO.includes('only pushes and puts back each `Stash:` line not yet logged as put back, by that rule.'));
   assert.ok(!AUTO.includes('whose merge is logged only pushes.'));
 });
@@ -4465,7 +4465,7 @@ test('otherRuns: a worker record or an orchestrator lease left untouched by a li
   assert.deepEqual(look(), ['am-orchestrator'], 'a lock of an older orchestrator, which is never touched, keeps the pid rule');
 });
 
-test('otherRuns: an am:lean stage.json times out a live stage by its start pid, after AGENT_STALE_MS', (t) => {
+test('otherRuns: an am-auto:agent stage.json times out a live stage by its start pid, after AGENT_STALE_MS', (t) => {
   assert.equal(AGENT_RECORD, 'stage.json');
   assert.equal(AGENT_STALE_MS, 20 * 60000);
   assert.ok(AGENT_STALE_MS > 600000, 'longer than one tool call');

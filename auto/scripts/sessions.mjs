@@ -1,11 +1,11 @@
-// am sessions report: which am:auto stage sessions run on this PC now, per working tree, printed once in Korean.
+// am sessions report: which am-auto:multi and am-auto:one stage sessions run on this PC now, per working tree, printed once in Korean.
 //   node sessions.mjs
 // Read-only: it writes, removes and stops nothing. It reads
 // - the working trees: this one (`git rev-parse --show-toplevel`, else the current folder), `git worktree list --porcelain`
 //   and the `repo` of every live record of this host;
 // - the record folder of memory-guard.mjs (<CLAUDE_CONFIG_DIR or ~/.claude>/am-orchestrator/sessions/): which records are
 //   live, the name rule and the host are memory-guard.mjs's own (liveRecords, RECORD_NAME, recordHeld, hostName), and
-//   only records named by this host are read; an am:auto `.gate` record (`phase`, `repo`, `where`, `startedAt`) with no
+//   only records named by this host are read; a stage runner `.gate` record (`phase`, `repo`, `where`, `startedAt`) with no
 //   worker gives a line of its own, the other records only add their working tree;
 // - per task folder .am/<slug>/ of each working tree: stage-worker.json (`pid`, `t`, `stage`, `fix`, `solo`; live while its pid
 //   is alive and it was touched within WORKER_STALE_MS), progress.jsonl (the last `start` since the record's `t`, a
@@ -18,7 +18,7 @@
 //   The lock pid's session records (`phase`, `where` = `.orchestrator/runs/<run>/<id>`, `startedAt`) give a task's
 //   session (or a split / answer session); with none, a running task is waiting for its stage. Its `.gate` records give
 //   a gate (on the one running task whose folder, `worktree` or the tree, is the record's `where`, else a line of its
-//   own) or a workspace setup line. A run whose `owner` is the pid of a live am:auto stage worker in any working tree
+//   own) or a workspace setup line. A run whose `owner` is the pid of a live am-auto:multi stage worker in any working tree
 //   goes under that task as a hand-over, else straight under its working tree.
 // A worker with no start since its record began is still waiting for its turn. Any read error skips that item.
 // Reads no environment variable itself (the command line passes env); every time value, the pid check, the host,
@@ -118,7 +118,7 @@ function workerTask(tree, slug, { now, alive }) {
   return { slug, pid: rec.pid, role, waiting, startedAt, done, news: newsOf(lastEvent(events)), solo: typeof rec.solo === 'string' && rec.solo !== '' };
 }
 
-// Whether the task's stage-worker.json, live or not, names a solo owner: the task runs under am:auto-one.
+// Whether the task's stage-worker.json, live or not, names a solo owner: the task runs under am-auto:one.
 const soloOf = (tree, slug) => {
   const solo = readJson(path.join(tree, '.am', slug, WORKER_FILES.record))?.solo;
   return typeof solo === 'string' && solo !== '';
@@ -253,7 +253,7 @@ export function collect({ cwd = process.cwd(), env = {}, now = Date.now, alive =
       if (task) tree.tasks.push(task);
     }
   }
-  // An am:auto stage whose worker is not seen (no record, or one gone stale) still holds its `.gate` record.
+  // A stage runner stage whose worker is not seen (no record, or one gone stale) still holds its `.gate` record.
   for (const r of records) {
     const m = r.gate ? /^am:auto (\S+)$/.exec(String(r.data.phase ?? '')) : null;
     if (!m || !STAGES.includes(m[1]) || typeof r.data.where !== 'string') continue;
@@ -263,7 +263,7 @@ export function collect({ cwd = process.cwd(), env = {}, now = Date.now, alive =
     const { events } = readFrom(path.join(tree.path, '.am', slug, 'progress.jsonl'), 0);
     tree.tasks.push({ slug, role: m[1], waiting: false, startedAt: Date.parse(r.data.startedAt), done: doneOf(tree.path, slug, m[1]), news: newsOf(lastEvent(events)), solo: soloOf(tree.path, slug) });
   }
-  // A live orchestrator run goes under the am:auto task whose stage worker handed it over, else under its working tree.
+  // A live orchestrator run goes under the am-auto:multi task whose stage worker handed it over, else under its working tree.
   const runs = [];
   for (const tree of trees) {
     const run = orchestratorRun(tree.path, { now, alive, records });
@@ -320,7 +320,7 @@ export function render(snapshot, { now = Date.now } = {}) {
     lines.push(`${tree.path}${tree.current ? ' (현재 작업 트리)' : ''}`);
     for (const task of tree.tasks) {
       const role = ROLE_NAMES[task.role] || task.role;
-      let line = `  ${task.solo ? 'am:auto-one' : 'am:auto-multi'} 작업 ${task.slug} — ${role} ${task.waiting ? '단계 대기 중' : '단계 세션'}, ${minutes(task.startedAt, t)}분째`;
+      let line = `  ${task.solo ? 'am-auto:one' : 'am-auto:multi'} 작업 ${task.slug} — ${role} ${task.waiting ? '단계 대기 중' : '단계 세션'}, ${minutes(task.startedAt, t)}분째`;
       if (task.role === 'do' && Number.isInteger(task.done)) line += ` · ${task.done}단계 완료`;
       lines.push(line + newsText(task.news, t));
       if (task.run) lines.push(`    └ 인계: ${runHead(task.run)}`, ...runLines(task.run, '      ', t));

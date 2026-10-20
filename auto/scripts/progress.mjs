@@ -1,5 +1,5 @@
 // am progress news: the event file of one task and the command that waits on it.
-// A long am command (a stage session of am:auto) appends one JSON line per piece of news to
+// A long am command (a stage session of am-auto:multi) appends one JSON line per piece of news to
 // .am/<slug>/progress.jsonl with appendEvent. The wait command prints the lines its consumer
 // has not seen yet, then one state line computed from the whole file, and ends by itself, so
 // a session can run it in the background next to the long command and report what it printed:

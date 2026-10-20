@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.67 (2026-10-20)
+
+- am 을 플러그인 셋으로 나눴다. am 에는 `am:plan`·`am:do`·`am:check`·`am:commit` 과 커밋 게이트, 2차 의견만 남는다. 자동 실행 명령과 세션 보기는 새 플러그인 am-auto(Claude Code 전용)로, land 는 새 플러그인 am-util(Claude Code·Codex)로 옮겼다.
+- 옛 이름 `am:auto-multi`·`am:auto-one`·`am:auto-agent`·`am:sessions`·`am:land` 는 없어졌다. 새 이름은 `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`·`am-util:land` 이고, 단계 에이전트(`/agents` 목록)는 `am-auto:stage-plan` 등으로 보인다. 동작은 그대로다.
+- am 만 업데이트하면 자동 실행 명령과 land 가 사라진다. 계속 쓰려면 `/plugin install am-auto@am-workflow`(설치하면 am 도 함께 깔린다)와 `/plugin install am-util@am-workflow` 로 설치한다. am-auto 는 am 0.1.67 이상을 요구하고, 그보다 옛 am 이면 단계를 시작하지 않고 am 업데이트를 안내한다.
+- Codex 에는 자동 실행이 없다. Codex 에서는 am 과 am-util(`codex plugin add am-util@am-workflow`, `$am-util:land`)만 쓰며, 이미 설치한 am 은 `codex plugin remove am@am-workflow` 뒤 `codex plugin add am@am-workflow` 로 다시 설치하면 정리된 명령 목록이 보인다.
+- `am-auto:sessions` 의 작업 줄은 `am-auto:multi 작업 …` 또는 `am-auto:one 작업 …` 으로 시작하고, 이어 가기 안내도 새 이름을 쓴다. 단계 규칙, 손넘김 훅의 거부 사유, 새로 만드는 사용자 설정 파일의 메모도 새 이름을 말한다.
+- 진행 중이던 작업은 새 이름에 slug 를 주면(`am-auto:multi <slug>` 등) 남은 단계부터 이어 간다. 작업 폴더(`.am/`)와 사용자 설정 파일(모델·설정)은 바꿀 것이 없다.
+
+## am-auto 0.1.0 (2026-10-20)
+
+- 새 플러그인. am 에서 옮긴 자동 실행 명령 `am-auto:multi`·`am-auto:one`·`am-auto:agent` 와 세션 보기 `am-auto:sessions`, 단계 에이전트 다섯, 단계 세션 스크립트와 그 훅을 담는다. Claude Code 전용이고 am(0.1.67 이상)이 함께 설치돼 있어야 한다.
+
+## am-util 0.1.0 (2026-10-20)
+
+- 새 플러그인. am 에서 옮긴 `am-util:land`(지금 브랜치를 대상 브랜치에 합쳐 push 한 뒤 합친 커밋으로 옮김)를 담는다. Claude Code·Codex 공용이고 am 없이도 쓸 수 있다.
+
+## am-orchestrator 0.9.12 (2026-10-20)
+
+- README 의 명령 이름을 am 0.1.67 의 새 이름(`am-auto:multi`·`am-auto:one`)으로 맞췄다. 동작은 그대로다.
+
 ## 0.1.66 (2026-10-19)
 
 - `am:land` 가 대상 브랜치에 합쳐 push 한 뒤, 마지막으로 지금 브랜치도 합친 커밋으로 옮긴다. 대상 쪽 변경은 작업 폴더에 들어오고 커밋하지 않은 변경은 그대로 남는다. 새 파일·무시된 파일을 포함해 내 변경을 덮어써야 한다면 옮기지 않고 겹친 파일을 알린 뒤 끝나며, 이미 성공한 push 는 유지한다. 스테이징한 변경이 대상에 이미 똑같이 있으면 옮기고 변경 목록에서 빠진 파일을 알린다(스테이징하지 않은 변경은 내용이 같아도 겹침으로 알린다). 지금 브랜치 자체는 push 하지 않는다.

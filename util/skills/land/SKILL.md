@@ -7,7 +7,7 @@ model: opus
 effort: high
 ---
 
-# am:land
+# am-util:land
 
 Target: $ARGUMENTS
 

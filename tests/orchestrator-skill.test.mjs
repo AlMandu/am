@@ -1,6 +1,6 @@
 // Run: node --test tests/orchestrator-skill.test.mjs
 // The am-orchestrator plugin (orchestrator/): its manifest, its one skill, and the parts of the am plugin its script relies on.
-// Also the other direction: what am:auto relies on when it hands a large task to the run skill.
+// Also the other direction: what am-auto:multi relies on when it hands a large task to the run skill.
 // And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows, the user models file reader.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,7 +23,7 @@ const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'c
 // A model alias and an effort, the form models.json's values take (tests/models.test.mjs checks the values where that file exists).
 const MODEL_EFFORT = "model: [a-z]+(?:\\[1m\\])?\\neffort: (?:low|medium|high|xhigh|max)";
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// The object status --json prints as run; am:auto and the stage runner read its fields.
+// The object status --json prints as run; am-auto:multi and the stage runner read its fields.
 const RUN = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
 
 /** What a hand-over reads from status --json and the commands and next values it names exist in the script and the skill. */
@@ -133,13 +133,13 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(SKILL, /edit nothing but `config\.json`, in step 3 `tasks\.json`, and in step 4 the plan\.md of a task blocked on a split choice/);
 });
 
-test('am:auto hands a large task to the run skill only through what is pinned here', () => {
+test('am-auto:multi hands a large task to the run skill only through what is pinned here', () => {
   const auto = autoSkill('multi');
   // Finding the run skill: the plugin id in `claude plugin list --json` and the skill's path under its installPath.
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
   assert.equal(market.plugins.find((p) => p.source === './orchestrator')?.name, 'am-orchestrator');
   assert.match(auto, /In Claude Code only, also run `claude plugin list --json`: if an `am-orchestrator@` entry has `enabled: true` and `<installPath>\/skills\/run\/SKILL\.md` exists/);
-  // am:auto reads the file rather than invoking the skill, so neither the plugin root placeholder nor $ARGUMENTS is replaced.
+  // am-auto:multi reads the file rather than invoking the skill, so neither the plugin root placeholder nor $ARGUMENTS is replaced.
   assert.match(SKILL, /If the placeholder was not replaced, the plugin root is the folder two levels above this SKILL\.md\./);
   assert.match(SKILL, /^1\. Request\. [^\n]*A path to an existing file: a new run with that document\./m);
   // A resumed hand-over enters the loop directly, which sends `doctor` back to the Prepare step.
@@ -151,10 +151,10 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   assert.match(auto, /if `split` ends with exit code 4, it is still running: run `split` again with no argument/);
   assert.match(auto, /once `split` has made the run \(`run\.id` present and not the noted one; otherwise stop and report\), log exactly this one line in the Change log, [^\n]*with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run\.id>, start branch <branch>`/);
   assert.match(auto, /check that `status --json` shows the same `run\.id` \(if not, stop and report\), then follow the run skill from its step 4\./);
-  // The step and the rule of the run skill that am:auto names.
+  // The step and the rule of the run skill that am-auto:multi names.
   const prepare = /^2\. Prepare\.[\s\S]*?(?=^3\. )/m.exec(SKILL);
   assert.ok(prepare, 'the run skill has a Prepare step 2');
-  // Exactly these questions: a new one would be auto-decided by am:auto unless it joins its stop list too.
+  // Exactly these questions: a new one would be auto-decided by am-auto:multi unless it joins its stop list too.
   const asks = /only about these:\n((?:[ \t]+- [^\n]*\n)+)/.exec(prepare[0]);
   assert.ok(asks, 'the Prepare step lists what it asks');
   const qs = ['there is no `am-gate.json`', 'uncommitted changes you did not make', 'the gate already fails before the run'];
@@ -162,7 +162,7 @@ test('am:auto hands a large task to the run skill only through what is pinned he
   assert.match(auto, /The run skill asks in its Prepare step \(no `am-gate\.json`, uncommitted changes you did not make, a gate that fails before the run\)/);
   assert.match(SKILL, /Never push or merge\./);
   assert.match(auto, /Its rule never to merge or push covers its own flow only/);
-  // What am:auto and the stage runner read from `status --json` and the commands and next values they name: one helper for both.
+  // What am-auto:multi and the stage runner read from `status --json` and the commands and next values they name: one helper for both.
   readsStatusLikeAuto(auto);
   assert.match(auto, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`/);
   // The scale line and the size of one implementation run, which matches the script's task size.
@@ -175,7 +175,7 @@ test('am:auto hands a large task to the run skill only through what is pinned he
 test('the am stage runner hands a large plan to the run skill only through what is pinned here', async () => {
   const { instructions, permissions } = await import('../auto/scripts/stage.mjs');
   const hook = read('auto', 'hooks', 'handover.mjs');
-  // Finding the run skill: the same plugin id and skill path as am:auto.
+  // Finding the run skill: the same plugin id and skill path as am-auto:multi.
   assert.match(hook, /startsWith\('am-orchestrator@'\) && p\.enabled === true/);
   assert.match(hook, /path\.join\(p\.installPath, 'skills', 'run', 'SKILL\.md'\)/);
   // The skill is called by slash: the plugin and skill names, a new run with the plan's path, an empty request to continue.
@@ -318,12 +318,12 @@ test('the lock pid the am stage runner reads is the detached worker, not the com
 });
 
 // Skipped on Windows for the same reason: SIGINT.
-test('the am sessions report puts a handed-over run and its implement session under the am:auto task that owns it', { skip: process.platform === 'win32' }, async () => {
+test('the am sessions report puts a handed-over run and its implement session under the am-auto:multi task that owns it', { skip: process.platform === 'win32' }, async () => {
   const { collect, render } = await import('../auto/scripts/sessions.mjs');
   const r = makeRepo({ scenario: { implement: { 't01-a': ['SLOW', 'DONE'] } } });
   assert.equal(r.orch('doctor').code, 0);
   assert.equal(r.orch('split', path.join(r.repo, 'docs', 'design.md')).code, 0);
-  // The am:auto task whose stage worker (this test process) handed the run over.
+  // The am-auto:multi task whose stage worker (this test process) handed the run over.
   const am = path.join(r.repo, '.am', 'x');
   mkdirSync(am, { recursive: true });
   const t = Date.now();

@@ -1,13 +1,13 @@
 ---
 name: agent
-description: "am:auto-multi 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 이 세션의 서브에이전트(단계 에이전트)를 띄워 진행만 맡고, 단계가 끝날 때마다 채팅에 한 줄만 남깁니다. 터미널을 닫으면 멈추고 기존 slug 를 주면 남은 단계부터 이어 가며, 맨 앞에 push 를 붙이면 push 까지 합니다."
+description: "am-auto:multi 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 이 세션의 서브에이전트(단계 에이전트)를 띄워 진행만 맡고, 단계가 끝날 때마다 채팅에 한 줄만 남깁니다. 터미널을 닫으면 멈추고 기존 slug 를 주면 남은 단계부터 이어 가며, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 model: opus
 effort: medium
 ---
 
-# am:auto-agent
+# am-auto:agent
 
 Request: $ARGUMENTS
 
@@ -43,8 +43,8 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md` (if the placeholder was not r
 - If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
 - After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (the do, check and commit stages) with Parts (below).
 <!-- am:shared:sibling-runs:end -->
-- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am:auto-multi skill.
-- Its section `## Stage sessions (Claude Code)` is replaced whole by `## Stage agents (Claude Code)` below. Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am:auto-agent skill.
+- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am-auto:multi skill.
+- Its section `## Stage sessions (Claude Code)` is replaced whole by `## Stage agents (Claude Code)` below. Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am-auto:agent skill.
 
 ## Stage agents (Claude Code)
 In Claude Code with the Agent and Bash tools, when `${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs` exists, steps 3 to 6 each run as a stage agent, a subagent of this session, and step 2 is skipped; otherwise (Codex, no such tool or file) follow that file's single-session flow, with Parts in this session. This session only drives: until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.

@@ -1,6 +1,6 @@
-// am:auto hand-over guard.
-// PreToolUse hook declared in the am:auto skill's frontmatter (Claude Code only), so
-// it runs only in sessions that invoked am:auto, for the rest of the session. It
+// am-auto:multi hand-over guard.
+// PreToolUse hook declared in the am-auto:multi skill's frontmatter (Claude Code only), so
+// it runs only in sessions that invoked am-auto:multi, for the rest of the session. It
 // blocks a file edit while this session's plan says the task is large (Scale above
 // 1 implementation run), the am-orchestrator run skill is installed,
 // and the plan was neither handed over (a hand-over line in its Change log) nor started. Shell commands are not checked.
@@ -20,7 +20,7 @@ const SCALE = /(?:Scale:\s*(\d+)\s+implementation runs?,\s*(\d+)\s+commits?|규�
 const DONE = /^\s*\d+\.\s.*\((?:done|완료)\)/im; // the am:do skill's mark on a step's first line
 const DONE_ALL = new RegExp(DONE.source, DONE.flags + 'g'); // a copy for counting: DONE itself stays without `g`, so its test() keeps no position
 const LOG_HEAD = /^(#{2,3})\s+(?:change\s?log|변경\s(?:기록|로그|이력))\s*$/i; // the plan's Change log section, older translated headings too
-const HANDED = /^\s*[-*]\s+(?:\d{4}-\d{2}-\d{2}:?\s+)?Hand-over: am-orchestrator run skill, run (\S+), start branch (\S+)/; // the line am:auto logs
+const HANDED = /^\s*[-*]\s+(?:\d{4}-\d{2}-\d{2}:?\s+)?Hand-over: am-orchestrator run skill, run (\S+), start branch (\S+)/; // the line am-auto:multi logs
 // Older hand-over lines: plugin, verb, start branch and run ID on one line, and no word of a stop.
 const OLD_HANDED = [/orchestrator|오케스트레이터/i, /넘김|넘겼|넘긴|went to|handed/i, /시작 브랜치|start branch/i, /\b\d{8}-\d{4}\b|(?:run\.id|run id|실행 ID):?\s+\S/i];
 const STOPPED = /BLOCKED|stopped|failed|멈춤|멈췄|막힘|막혀|실패/i;
@@ -106,7 +106,7 @@ export function findAm(list = pluginList) {
 }
 
 // The lowest am version am-auto relies on. Raise it in the am commit that changes a shared contract; never above am's plugin.json version.
-export const AM_MIN_VERSION = '0.1.66';
+export const AM_MIN_VERSION = '0.1.67';
 const OWN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = /^\d+(\.\d+)*$/;
 const UPDATE = 'run `claude plugin marketplace update am-workflow`, then `claude plugin update am@am-workflow`, and start a new session';
@@ -244,7 +244,7 @@ export function decide(raw, { stateDir = STATE_DIR, installed = orchestratorInst
 
   if (PLAN.test(rel)) {
     // The first plan the session reads is bound until it creates or edits one. A plan written or edited with a
-    // Scale line always takes over (a later am:auto in the same session); one without it (a task plan fixed by
+    // Scale line always takes over (a later am-auto:multi in the same session); one without it (a task plan fixed by
     // hand) only replaces a plan the session merely read.
     const rank = tool === 'Read' ? 'read' : tool === 'Write' && !existsSync(file) ? 'create' : 'edit';
     const written = [input.content, input.new_string, ...(Array.isArray(input.edits) ? input.edits.map((e) => e && e.new_string) : [])];
@@ -282,9 +282,9 @@ export function decide(raw, { stateDir = STATE_DIR, installed = orchestratorInst
     if (warned.includes(plan)) return ALLOW;
     state.missingScale = [...warned, plan];
     save();
-    return deny(`am:auto-multi hand-over check: ${which} has no Scale line. Add it to the plan's Summary as am:auto-multi step 3 says (\`Scale: N implementation runs, M commits\`, \`규모: 구현 N회, 커밋 M개\` in a Korean plan), then apply am:auto-multi step 4: above 1 implementation run, hand the plan to the am-orchestrator run skill instead of editing files here.`);
+    return deny(`am-auto:multi hand-over check: ${which} has no Scale line. Add it to the plan's Summary as am-auto:multi step 3 says (\`Scale: N implementation runs, M commits\`, \`규모: 구현 N회, 커밋 M개\` in a Korean plan), then apply am-auto:multi step 4: above 1 implementation run, hand the plan to the am-orchestrator run skill instead of editing files here.`);
   }
-  return deny(`am:auto-multi hand-over check: ${which} says ${info.scale[0]} implementation runs and ${info.scale[1]} commits, the am-orchestrator run skill is installed, and no step is marked done or hand-over logged. Follow am:auto-multi step 4: hand this plan over to the run skill instead of implementing it in this session. Do not lower the Scale line to get past this check; change it only if it is wrong, and say so in the final reply.`);
+  return deny(`am-auto:multi hand-over check: ${which} says ${info.scale[0]} implementation runs and ${info.scale[1]} commits, the am-orchestrator run skill is installed, and no step is marked done or hand-over logged. Follow am-auto:multi step 4: hand this plan over to the run skill instead of implementing it in this session. Do not lower the Scale line to get past this check; change it only if it is wrong, and say so in the final reply.`);
 }
 
 export async function main() {

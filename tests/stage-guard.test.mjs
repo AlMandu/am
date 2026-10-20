@@ -1,4 +1,4 @@
-// Tests for auto/hooks/stage-guard.mjs: the allow lists of the am:lean stage agents, the stage record lookup and
+// Tests for auto/hooks/stage-guard.mjs: the allow lists of the am-auto:agent stage agents, the stage record lookup and
 // binding, the heartbeat and the final-answer check. decide is called directly; time, pids and the plugin root are arguments.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -309,7 +309,7 @@ test('the record: none, the user decision C1, CLAUDE_PID, ended and dead pids', 
 
 test('the record: push is compared only for the commit stage', () => {
   const root = makeRepo();
-  // In push mode am:lean passes --push to every start; am-auto:stage-plan, -do and -check still find their record.
+  // In push mode am-auto:agent passes --push to every start; am-auto:stage-plan, -do and -check still find their record.
   for (const stage of ['plan', 'do', 'check']) {
     writeRecord(root, stage, { stage, push: true });
     assert.equal(findRecord(root, stage, false, { now, alive }).slug, stage, stage);

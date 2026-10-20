@@ -8,7 +8,7 @@ model: opus
 effort: medium
 ---
 
-# am:auto-multi
+# am-auto:multi
 
 Request: $ARGUMENTS
 

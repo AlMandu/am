@@ -111,7 +111,7 @@ test('(a) a do stage: elapsed from its start, done steps, latest news; its .gate
   record(sessions, `testhost~${LIVE}~1.gate.json`, { pid: LIVE, host: 'test host', repo, phase: 'am:auto do', where: dir, startedAt: iso(4) });
   assert.equal(
     report(opts),
-    `세션 보고 (${hhmm(T0)})\n${repo} (현재 작업 트리)\n  am:auto-multi 작업 t1 — 구현 단계 세션, 3분째 · 2단계 완료 · 마지막 소식: tests running (1분 전)\n`,
+    `세션 보고 (${hhmm(T0)})\n${repo} (현재 작업 트리)\n  am-auto:multi 작업 t1 — 구현 단계 세션, 3분째 · 2단계 완료 · 마지막 소식: tests running (1분 전)\n`,
   );
 });
 
@@ -131,11 +131,11 @@ test('(b) a hand-over shows no done count and the run news; a fix run shows its 
     events: [{ t: iso(5), ev: 'start', text: 'stage do started', pid: LIVE, stage: 'do' }],
   });
   const lines = report(opts).split('\n');
-  assert.ok(lines.includes('  am:auto-multi 작업 h1 — 인계 단계 세션, 9분째 · 마지막 소식: implement started (2분 전)'), lines.join('\n'));
-  assert.ok(lines.includes('  am:auto-multi 작업 f1 — 수정 단계 세션, 5분째 · 마지막 소식: stage do started (5분 전)'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:multi 작업 h1 — 인계 단계 세션, 9분째 · 마지막 소식: implement started (2분 전)'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:multi 작업 f1 — 수정 단계 세션, 5분째 · 마지막 소식: stage do started (5분 전)'), lines.join('\n'));
 });
 
-test('(c) a worker with no start since its record waits; an am:auto .gate record with no worker has its own line', () => {
+test('(c) a worker with no start since its record waits; a stage runner .gate record with no worker has its own line', () => {
   const { repo, sessions, opts } = makePc();
   task(repo, 'w1', {
     worker: { pid: LIVE, t: T0 - 2 * 60000, stage: 'plan' },
@@ -144,12 +144,12 @@ test('(c) a worker with no start since its record waits; an am:auto .gate record
   task(repo, 'w2', { worker: { pid: LIVE, t: T0 - 4 * 60000, stage: 'check' } });
   record(sessions, `testhost~${LIVE}~2.gate.json`, { pid: LIVE, repo, phase: 'am:auto check', where: path.join(repo, '.am', 'g1'), startedAt: iso(7) });
   const lines = report(opts).split('\n');
-  assert.ok(lines.includes('  am:auto-multi 작업 w1 — 계획 단계 대기 중, 2분째 · 마지막 소식: stage plan started (30분 전)'), lines.join('\n'));
-  assert.ok(lines.includes('  am:auto-multi 작업 w2 — 점검 단계 대기 중, 4분째'), lines.join('\n'));
-  assert.ok(lines.includes('  am:auto-multi 작업 g1 — 점검 단계 세션, 7분째'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:multi 작업 w1 — 계획 단계 대기 중, 2분째 · 마지막 소식: stage plan started (30분 전)'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:multi 작업 w2 — 점검 단계 대기 중, 4분째'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:multi 작업 g1 — 점검 단계 세션, 7분째'), lines.join('\n'));
 });
 
-test('a task line names the skill that runs it: am:auto-one when the worker record has a solo owner, else am:auto-multi', () => {
+test('a task line names the skill that runs it: am-auto:one when the worker record has a solo owner, else am-auto:multi', () => {
   const { repo, sessions, opts } = makePc();
   task(repo, 's1', {
     worker: { pid: LIVE, t: T0 - 2 * 60000, stage: 'do', solo: 's1' },
@@ -160,9 +160,9 @@ test('a task line names the skill that runs it: am:auto-one when the worker reco
   record(sessions, `testhost~${LIVE}~4.gate.json`, { pid: LIVE, repo, phase: 'am:auto check', where: path.join(repo, '.am', 'g2'), startedAt: iso(3) });
   record(sessions, `testhost~${LIVE}~5.gate.json`, { pid: LIVE, repo, phase: 'am:auto check', where: path.join(repo, '.am', 'g3'), startedAt: iso(5) });
   const lines = report(opts).split('\n');
-  assert.ok(lines.includes('  am:auto-one 작업 s1 — 구현 단계 세션, 2분째 · 마지막 소식: stage do started (2분 전)'), lines.join('\n'));
-  assert.ok(lines.includes('  am:auto-one 작업 g2 — 점검 단계 세션, 3분째'), lines.join('\n'));
-  assert.ok(lines.includes('  am:auto-multi 작업 g3 — 점검 단계 세션, 5분째'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:one 작업 s1 — 구현 단계 세션, 2분째 · 마지막 소식: stage do started (2분 전)'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:one 작업 g2 — 점검 단계 세션, 3분째'), lines.join('\n'));
+  assert.ok(lines.includes('  am-auto:multi 작업 g3 — 점검 단계 세션, 5분째'), lines.join('\n'));
 });
 
 test('(d) dead or stale workers and .gate records are left out', () => {
@@ -183,7 +183,7 @@ test('(e) a compaction in progress shows the compaction role', () => {
     plan: '1. one (done)\n',
     compact: true,
   });
-  assert.match(report(opts), /^ {2}am:auto-multi 작업 c1 — 압축 단계 세션, 1분째 · 마지막 소식: stage do started \(1분 전\)$/m);
+  assert.match(report(opts), /^ {2}am-auto:multi 작업 c1 — 압축 단계 세션, 1분째 · 마지막 소식: stage do started \(1분 전\)$/m);
 });
 
 test('(f) nothing running: exactly one line, also with no record folder', () => {
@@ -204,7 +204,7 @@ test('(g) a live record of another host adds neither a line nor a working tree',
   assert.equal(render(snap, opts), NONE);
 });
 
-test('(b) orchestrator hand-over: the run goes under the am:auto task whose worker owns it, with its running tasks', () => {
+test('(b) orchestrator hand-over: the run goes under the am-auto:multi task whose worker owns it, with its running tasks', () => {
   const { repo, sessions, opts } = makePc();
   task(repo, 'h2', {
     worker: { pid: LIVE, t: T0 - 10 * 60000, stage: 'do' },
@@ -226,7 +226,7 @@ test('(b) orchestrator hand-over: the run goes under the am:auto task whose work
     [
       `세션 보고 (${hhmm(T0)})`,
       `${repo} (현재 작업 트리)`,
-      '  am:auto-multi 작업 h2 — 인계 단계 세션, 9분째 · 마지막 소식: handed to the am-orchestrator run skill (9분 전)',
+      '  am-auto:multi 작업 h2 — 인계 단계 세션, 9분째 · 마지막 소식: handed to the am-orchestrator run skill (9분 전)',
       '    └ 인계: am-orchestrator 실행 R1',
       '      T01 first task — 구현 세션, 4분째 · 마지막 소식: tests running (1분 전)',
       '      T02 second task — 점검 단계 대기 중 · 마지막 소식: check started (3분 전)',
@@ -235,7 +235,7 @@ test('(b) orchestrator hand-over: the run goes under the am:auto task whose work
   );
 });
 
-test('(c) a run the user started goes straight under its working tree, also with no am:auto task; a split session', () => {
+test('(c) a run the user started goes straight under its working tree, also with no am-auto:multi task; a split session', () => {
   const { repo, sessions, opts } = makePc();
   orch(repo, { lock: LEASE, worker: { pid: LIVE }, tasks: TASKS, events: [{ t: iso(2), ev: 'note', text: 'splitting the design' }] });
   orchRecord(sessions, repo, 1, 'split', '.orchestrator/runs/R1/_split', 6);
@@ -243,11 +243,11 @@ test('(c) a run the user started goes straight under its working tree, also with
     report(opts),
     [`세션 보고 (${hhmm(T0)})`, `${repo} (현재 작업 트리)`, '  am-orchestrator 실행 R1', '    작업 나누기 세션, 6분째 · 마지막 소식: splitting the design (2분 전)', ''].join('\n'),
   );
-  // An owner that is no live am:auto task's worker keeps the run under its tree, after the tree's tasks.
+  // An owner that is no live am-auto:multi task's worker keeps the run under its tree, after the tree's tasks.
   task(repo, 'w9', { worker: { pid: LIVE, t: T0 - 60000, stage: 'plan' } });
   orch(repo, { lock: LEASE, worker: { pid: LIVE, owner: 77 }, tasks: TASKS, state: { tasks: { T03: { running: 'commit' } } } });
   const lines = report(opts).split('\n');
-  assert.deepEqual(lines.slice(2, 5), ['  am:auto-multi 작업 w9 — 계획 단계 대기 중, 1분째', '  am-orchestrator 실행 R1', '    작업 나누기 세션, 6분째 · 마지막 소식: splitting the design (2분 전)']);
+  assert.deepEqual(lines.slice(2, 5), ['  am-auto:multi 작업 w9 — 계획 단계 대기 중, 1분째', '  am-orchestrator 실행 R1', '    작업 나누기 세션, 6분째 · 마지막 소식: splitting the design (2분 전)']);
   assert.ok(lines.includes('    T03 third task — 커밋 단계 대기 중'), lines.join('\n'));
 });
 
@@ -373,7 +373,7 @@ test('a failing worktree lookup still reports the current folder', () => {
     throw new Error('no git');
   };
   for (const worktrees of [throwing, () => ({}), () => null]) {
-    assert.match(report({ ...opts, worktrees }), /^ {2}am:auto-multi 작업 x1 — 커밋 단계 세션, 1분째/m);
+    assert.match(report({ ...opts, worktrees }), /^ {2}am-auto:multi 작업 x1 — 커밋 단계 세션, 1분째/m);
   }
   const { root, list } = gitWorktrees(path.join(repo, '.am'));
   assert.equal(typeof root, 'string');

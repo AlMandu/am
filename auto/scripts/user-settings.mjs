@@ -2,7 +2,7 @@
 // File: <CLAUDE_CONFIG_DIR or ~/.claude>/am/settings.json, JSON (a leading BOM is allowed):
 //   { "minFreeMemoryMB": <number or null>, "stageMcpServers": <true, false or null> }
 // minFreeMemoryMB is null (or missing) for the built-in value (DEFAULT_MIN_FREE_MEMORY_MB), else a finite number of 0 or more.
-// stageMcpServers is true to let am:auto stage sessions start MCP servers; null, false or missing keeps them off.
+// stageMcpServers is true to let am-auto:multi and am-auto:one stage sessions start MCP servers; null, false or missing keeps them off.
 // Keys starting with `_` are notes, allowed at the top, and dropped from the result.
 // A broken file is an error (one English line `<file>: <problem>`), never a silent fallback.
 // Reads no environment variable itself (the caller passes env). Node only, no dependencies.

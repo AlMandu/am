@@ -1,12 +1,12 @@
 ---
 name: sessions
-description: "이 PC 에서 am:auto-multi·am:auto-one 과 am-orchestrator 가 띄운 백그라운드 세션이 작업 폴더별로 지금 무엇을 하는지 한 번 보여 줍니다. 사용자가 돌고 있는 세션의 상태를 묻거나 am:sessions 를 실행할 때 씁니다. 읽기만 하고 아무것도 바꾸거나 멈추지 않습니다."
+description: "이 PC 에서 am-auto:multi·am-auto:one 과 am-orchestrator 가 띄운 백그라운드 세션이 작업 폴더별로 지금 무엇을 하는지 한 번 보여 줍니다. 사용자가 돌고 있는 세션의 상태를 묻거나 am-auto:sessions 를 실행할 때 씁니다. 읽기만 하고 아무것도 바꾸거나 멈추지 않습니다."
 argument-hint: ""
 model: sonnet
 effort: low
 ---
 
-# am:sessions
+# am-auto:sessions
 
 <!-- am:common:start -->
 ## Working with the user
@@ -38,6 +38,6 @@ effort: low
    `node "${CLAUDE_PLUGIN_ROOT}/scripts/sessions.mjs"`
    If the placeholder was not replaced, the plugin root is the folder two levels above this SKILL.md. If it fails (a non-zero exit code, or `node` is missing), report the tail of its output and stop; do not read the record files yourself.
 2. Reply. When the script printed only `지금 돌고 있는 am 세션이 없습니다.`, that line is the whole reply. Otherwise:
-   - First line, a one-line conclusion: how many sessions are running (am:auto-multi and am:auto-one task lines plus orchestrator task, split, gate and workspace lines) and which lines need a look. A line whose last news is more than 15 minutes old (`(M분 전)` above 15), or a line with no news whose `N분째` is above 15, is "no recent news"; never say it has stopped or hung. 15 minutes is longer than the 10-minute gate limit and the 8-minute wait of the progress news, so a normal run is rarely flagged.
+   - First line, a one-line conclusion: how many sessions are running (am-auto:multi and am-auto:one task lines plus orchestrator task, split, gate and workspace lines) and which lines need a look. A line whose last news is more than 15 minutes old (`(M분 전)` above 15), or a line with no news whose `N분째` is above 15, is "no recent news"; never say it has stopped or hung. 15 minutes is longer than the 10-minute gate limit and the 8-minute wait of the progress news, so a normal run is rarely flagged.
    - Then the report exactly as printed, not wrapped in a code block and not reworded.
-3. Change, remove or stop nothing: do not edit any file, do not stop any process and do not run another am skill. If the user wants to stop or resume a session, say that this skill only reports, and point to the skill that the task's line names to resume it: the am:auto-multi skill (`am:auto-multi <slug>`) or the am:auto-one skill (`am:auto-one <slug>`).
+3. Change, remove or stop nothing: do not edit any file, do not stop any process and do not run another am skill. If the user wants to stop or resume a session, say that this skill only reports, and point to the skill that the task's line names to resume it: the am-auto:multi skill (`am-auto:multi <slug>`) or the am-auto:one skill (`am-auto:one <slug>`).

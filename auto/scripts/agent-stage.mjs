@@ -1,5 +1,5 @@
-// am:lean stage starter and ender (Claude Code only).
-// The am:lean driver runs each stage as a subagent of the user's session and calls this script around it, so that it
+// am-auto:agent stage starter and ender (Claude Code only).
+// The am-auto:agent driver runs each stage as a subagent of the user's session and calls this script around it, so that it
 // starts, ends and relays nothing by its own judgment:
 //   start <plan|do|check|commit> <slug> [--push] [--fix] [--part]
 //     Under the start lock .am/.admission.lock, waits while another unattended run of this working tree goes on
@@ -7,7 +7,7 @@
 //     WAIT_MS; then writes .am/<slug>/stage.json (this stage's record; its pid is CLAUDE_PID), skill-<stage>.md (the
 //     skill with its arguments filled in), rules-<stage>.md (agentRules of stage.mjs) and a `start` event. Prints one
 //     JSON line {agent, rules, skill, runId, model, effort, wait, note, error}: the Agent call to make, or why to wait or
-//     what failed (the other keys null). --part: the slug is <owner>-p<k>, a part of <owner> (as in am:solo).
+//     what failed (the other keys null). --part: the slug is <owner>-p<k>, a part of <owner> (as in am-auto:one).
 //   end <slug> <runId> <status>
 //     Under the start lock, ends the stage stage.json names when the runId matches and it is still open: an `end`
 //     event and stage.json's status and ended. A status the stage cannot give becomes `failed`. Prints {ended, status, reason}.

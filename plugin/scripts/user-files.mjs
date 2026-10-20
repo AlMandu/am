@@ -55,7 +55,7 @@ export function settingsTemplate() {
       '0 turns the wait off; a number applies on every OS, for example 6144.',
     ],
     _stageMcpServers: [
-      'Not set (the default), null or false: am:auto-multi and am:auto-one stage sessions start no MCP server.',
+      'Not set (the default), null or false: am-auto:multi and am-auto:one stage sessions start no MCP server.',
       'Add "stageMcpServers": true to give them the same MCP servers as your own sessions.',
       "The orchestrator's own sessions are not affected.",
     ],

@@ -64,7 +64,7 @@ test('지시문: 빌드 부작용은 세션이 git restore 로 되돌리고, 점
   assert.match(check, /must stay out of the commit\. Restore them before you finish with: git restore -- <paths>/);
 });
 
-test('구현은 am:do 로 부르고, 묻는 자리는 am:auto 와 같은 규칙으로 처리한다', () => {
+test('구현은 am:do 로 부르고, 묻는 자리는 am-auto:multi 와 같은 규칙으로 처리한다', () => {
   const r = prepared({ plan: planOf([task('T01', 't01-a')]), scenario: { autoDecide: ['t01-a'] } });
   const d = r.orch('doctor');
   assert.match(d.out, /\/am:plan, \/am:check, \/am:commit, \/am:do 사용 가능/);
