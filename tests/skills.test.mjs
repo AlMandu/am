@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { USER_EFFORTS } from '../plugin/scripts/user-models.mjs';
-import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
+import { common, flowNames, withoutCommon, withFlow, SLASH_NAME } from './helpers.mjs';
 import { BLOCKS, REPO as SKILLS_REPO, apply as skillsApply, check as skillsCheck, inputs as skillsInputs } from '../scripts/skills.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,6 +23,10 @@ const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', 's
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(skillDir(name), 'SKILL.md'), 'utf8');
+// A skill as it runs: its SKILL.md and the flow files it reads (auto/flow/, not a skill).
+const readFlow = (name) => withFlow(path.join(skillDir(name), 'SKILL.md'));
+const FLOW = path.join(AUTO, 'flow');
+const flowFile = (name) => readFileSync(path.join(FLOW, name), 'utf8');
 const frontmatter = (text) => {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
   assert.ok(m, 'frontmatter');
@@ -259,7 +263,7 @@ test('am-auto:multi declares the hand-over hook, and only am-auto:multi', () => 
 });
 
 test('am-auto:multi drives the stage runner and handles every status it prints', async () => {
-  const auto = read('multi');
+  const auto = readFlow('multi');
   const { MARKS, STAGES } = await import('../auto/scripts/stage.mjs');
   assert.ok(auto.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" <stage> <slug>`'));
   assert.match(auto, /## Stage sessions \(Claude Code\)\nIn Claude Code, when `\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/stage\.mjs` exists/);
@@ -277,10 +281,11 @@ test('am-auto:multi drives the stage runner and handles every status it prints',
   assert.ok(read('check').includes('the next step (the am:commit skill, or what to fix)'));
 });
 
-test('am-auto:one follows am-auto:multi\'s file with its own differences', async () => {
+test('am-auto:one follows the flow files with its own additions', async () => {
   const solo = withoutCommon(read('one'));
   const { PART_LINE } = await import('../auto/scripts/stage.mjs');
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', '`HANDED`', 'step 2', 'step 4', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '${CLAUDE_PLUGIN_ROOT}/flow/stage-sessions.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  for (const s of ['skills/multi/SKILL.md', '`HANDED`']) assert.ok(!solo.includes(s), s);
   // A part request's first line: a later run reads part folders written earlier and stops when it does not match.
   for (const s of ['`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(solo.includes(s), s);
   // The plan stage writes the Parts lines in this form; in a session with no stage sessions am-auto:one writes them itself.
@@ -293,17 +298,19 @@ test('am-auto:one follows am-auto:multi\'s file with its own differences', async
   assert.ok(!parts.find((l) => l.includes('In Codex, or after')).includes(push), 'push not on the Codex line');
 });
 
-test('am-auto:agent follows am-auto:multi\'s file and replaces its stage sessions with stage agents', async () => {
+test('am-auto:agent follows the shared flow and runs its stages as stage agents instead of stage sessions', async () => {
   const lean = withoutCommon(read('agent'));
   const { MARKS, PART_LINE } = await import('../auto/scripts/stage.mjs');
   const cmd = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs"';
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md', '`## Stage sessions (Claude Code)`', '\n## Stage agents (Claude Code)\n', '`HANDED`', 'step 2', 'step 4', 'step 7']) assert.ok(lean.includes(s), s);
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '\n## Stage agents (Claude Code)\n', 'step 7']) assert.ok(lean.includes(s), s);
+  for (const s of ['skills/multi/SKILL.md', 'stage-sessions.md', '`## Stage sessions (Claude Code)`', '`HANDED`']) assert.ok(!lean.includes(s), s);
   // The four commands of agent-stage.mjs, the keys of start's JSON line and the fixed prompt of the stage agent.
   for (const s of [`${cmd} start <stage> <slug>`, `${cmd} end <slug> <runId> failed`, `${cmd} end <slug> <runId> <status>`, `${cmd} card <slug>`, `${cmd} answer <slug> <that file>`]) assert.ok(lean.includes(`\`${s}\``), s);
   for (const k of ['agent', 'rules', 'skill', 'runId', 'model', 'effort', 'wait', 'note', 'error']) assert.ok(lean.includes(`\`${k}\``), k);
   assert.ok(lean.includes('exactly this prompt: `slug <slug>; stage <stage>; runId <runId>; rules file <rules>; SKILL.md <skill>`'));
   assert.ok(lean.includes('`AM_STAGE: <status> <runId>`'));
-  for (const status of [...new Set([...Object.values(MARKS).flat(), 'BLOCKED', 'failed'])]) assert.ok(lean.includes(`\`${status}\``), `status ${status}`);
+  // Every status but the hand-over's: am-auto:agent never hands over.
+  for (const status of [...new Set([...Object.values(MARKS).flat(), 'BLOCKED', 'failed'])].filter((s) => s !== 'HANDED')) assert.ok(lean.includes(`\`${status}\``), `status ${status}`);
   for (const f of ['--push', '--fix', '--part']) assert.ok(lean.includes(`\`${f}\``), f);
   // The driver stays independent of the stages' files; the user decisions allow only these Grep patterns and writes.
   assert.ok(lean.includes('until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.'));
@@ -338,19 +345,57 @@ test('am-auto:agent follows am-auto:multi\'s file and replaces its stage session
   }
 });
 
-test('am-auto:multi keeps the anchors am-auto:one and am-auto:agent refer to', () => {
-  const auto = read('multi');
-  for (const s of ['## Running without stops', '## Stage sessions (Claude Code)', '`HANDED`']) assert.ok(auto.includes(s), s);
-  const steps = auto.split('\n## Steps\n')[1];
+test('the flow files keep the anchors the skills refer to, and am-auto:multi adds its hand-over to steps 2, 4 and 7', () => {
+  const run = flowFile('run.md');
+  assert.ok(run.includes('\n## Running without stops\n'));
+  assert.ok(flowFile('stage-sessions.md').includes('\n## Stage sessions (Claude Code)\n'));
+  const steps = run.split('\n## Steps\n')[1];
   assert.ok(steps, 'the Steps section');
   const step = Object.fromEntries(('\n' + steps).split(/\n(?=\d+\. )/).filter((s) => /^\d+\. /.test(s)).map((s) => [Number(s.split('.')[0]), s]));
   for (const n of [2, 4, 7]) assert.ok(step[n], `step ${n}`);
-  assert.ok(step[2].includes('claude plugin list --json'), 'step 2');
   // Step 2 reads the four skills from the core am folder that this command prints.
   assert.ok(step[2].includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/stage.mjs" core`'), 'step 2: the core command');
   assert.match(readFileSync(path.join(AUTO, 'scripts', 'stage.mjs'), 'utf8'), /\nexport function coreCommand\(/);
-  assert.ok(step[4].includes('Hand-over:'), 'step 4');
-  assert.ok(step[7].includes('After a hand-over'), 'step 7');
+  // A hand-over at step 4 comes before the am:do skill.
+  assert.ok(step[4].startsWith('4. Do: if the skill that sent you here hands the task over at this step, its rule comes first.'), 'step 4');
+  assert.ok(step[7], 'step 7');
+  const hand = read('multi').split('\n## Hand-over (am-orchestrator)\n')[1];
+  assert.ok(hand, 'the Hand-over section of am-auto:multi');
+  const add = Object.fromEntries(('\n' + hand).split(/\n(?=- Step \d+: )/).filter((s) => /^- Step \d+: /.test(s)).map((s) => [Number(s.slice(7).split(':')[0]), s]));
+  assert.ok(add[2]?.includes('claude plugin list --json'), 'step 2');
+  assert.ok(add[4]?.startsWith('- Step 4: before the am:do skill, hand over (below) if'), 'step 4: first');
+  assert.ok(add[4].includes('Hand-over:'), 'step 4');
+  assert.ok(add[7]?.includes('After a hand-over'), 'step 7');
+  assert.ok(hand.includes('`HANDED`'));
+});
+
+test('auto/flow holds only flow files, no skill, and the skills name only flow files that exist', () => {
+  assert.ok(path.relative(path.join(AUTO, 'skills'), FLOW).startsWith('..'), 'auto/flow is outside auto/skills');
+  // Plain files only: no SKILL.md and no folder that could be read as a skill.
+  const names = readdirSync(FLOW);
+  assert.deepEqual(names.sort(), ['run.md', 'stage-sessions.md']);
+  for (const name of names) {
+    const text = flowFile(name);
+    assert.ok(!text.startsWith('---'), `${name}: no frontmatter`);
+    assert.ok(text.split('\n').length <= 80, `${name}: 80 lines`);
+    assert.doesNotMatch(text, SLASH_NAME, name);
+    assert.match(text.split('\n')[0], /^This file is not a skill: /, name);
+  }
+  const named = { multi: ['run.md', 'stage-sessions.md'], one: ['run.md', 'stage-sessions.md'], agent: ['run.md'] };
+  for (const [skill, want] of Object.entries(named)) {
+    assert.deepEqual(flowNames(read(skill)), want, skill);
+    readFlow(skill);
+  }
+});
+
+test('only am-auto:multi hands over: one and agent read no hand-over rule, multi reads every stage status', async () => {
+  for (const name of ['one', 'agent']) {
+    const text = readFlow(name);
+    for (const s of ['- Hand-over: am-orchestrator run skill', '`HANDED`', 'claude plugin list --json']) assert.ok(!text.includes(s), `${name}: ${s}`);
+  }
+  const { MARKS } = await import('../auto/scripts/stage.mjs');
+  const multi = readFlow('multi');
+  for (const status of [...new Set(Object.values(MARKS).flat()), 'failed', 'unavailable', 'WAIT']) assert.ok(multi.includes(`\`${status}\``), status);
 });
 
 test('am-auto:sessions runs the read-only report script once and the model may invoke it', () => {
@@ -365,7 +410,7 @@ test('am-auto:sessions runs the read-only report script once and the model may i
 });
 
 test('am-auto:multi starts the progress command next to every stage command', async () => {
-  const m = /## Stage sessions \(Claude Code\)\n([\s\S]*?)\n## Steps\n/.exec(read('multi'));
+  const m = /\n## Stage sessions \(Claude Code\)\n([\s\S]*)$/.exec(flowFile('stage-sessions.md'));
   assert.ok(m, 'the Stage sessions section');
   const section = m[1];
   assert.ok(section.includes('`node "${CLAUDE_PLUGIN_ROOT}/scripts/progress.mjs" <slug> --consumer main`'));
@@ -384,7 +429,7 @@ test('am-auto:multi starts the progress command next to every stage command', as
 });
 
 test('am-auto:multi gathers the choices the second opinion settled in its final reply', () => {
-  const auto = read('multi');
+  const auto = readFlow('multi');
   assert.ok(auto.includes('each choice the second opinion settled (from Defaults applied in plan.md: what had to be decided and the agreed option, and whether it overruled your own pick)'));
   assert.ok(auto.includes('`autoDecided` and `secondOpinions` lines join what you decided'));
 });
@@ -487,9 +532,9 @@ test('with Codex installed, the common rules have Codex answer the same brief an
   assert.match(block, /still split after that goes to the user as a decision card/);
   assert.match(block, /If one reviewer fails, in any round, the other's answer stands/);
   assert.match(readFileSync(AGENT, 'utf8'), /another reviewer's pick and reasons/);
-  const auto = read('multi');
+  const auto = readFlow('multi');
   assert.match(auto, /\n- The two reviewers of a technical choice still split on it after their rounds \(rules above\)\.\n/);
-  assert.match(auto, /In the first five cases, ask with a decision card/);
+  assert.match(auto, /In every case above but the last, ask with a decision card/);
 });
 
 test('without Codex, the common rules have two Claude reviewers debate the same way', () => {

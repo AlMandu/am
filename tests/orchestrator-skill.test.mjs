@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { common, withoutCommon, SLASH_NAME } from './helpers.mjs';
+import { common, withoutCommon, withFlow, SLASH_NAME } from './helpers.mjs';
 import { makeRepo, planOf, prepared, task } from './orchestrator-helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -16,8 +16,8 @@ const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
 const SKILL = read('orchestrator', 'skills', 'run', 'SKILL.md');
 const SCRIPT = read('orchestrator', 'scripts', 'orchestrator.mjs');
 const amSkill = (name) => read('plugin', 'skills', name, 'SKILL.md');
-// am-auto's skills (multi, one, agent, sessions).
-const autoSkill = (name) => read('auto', 'skills', name, 'SKILL.md');
+// am-auto's skills (multi, one, agent, sessions) as they run: the SKILL.md and the flow files it reads.
+const autoSkill = (name) => withFlow(path.join(REPO, 'auto', 'skills', name, 'SKILL.md'));
 // Orchestrator stages that run an am skill: a copy of STAGE_SKILLS of scripts/models.mjs, so this file needs no models.mjs.
 const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // A model alias and an effort, the form models.json's values take (tests/models.test.mjs checks the values where that file exists).
@@ -29,7 +29,8 @@ const RUN = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
 /** What a hand-over reads from status --json and the commands and next values it names exist in the script and the skill. */
 function readsStatusLikeAuto(text) {
   assert.ok(RUN, 'status --json builds run');
-  const fields = [...new Set([...text.matchAll(/\brun\.([a-z]+)\b/g)].map((m) => m[1]))].sort();
+  // A path such as flow/run.md is no field.
+  const fields = [...new Set([...text.matchAll(/(?<![/\w])run\.([a-z]+)\b/g)].map((m) => m[1]))].sort();
   assert.deepEqual(fields, ['branch', 'id', 'report']);
   for (const f of fields) assert.match(RUN[1], new RegExp(`\\b${f}:`), `run.${f}`);
   for (const field of ['autoDecided', 'secondOpinions']) assert.ok(text.includes(`\`${field}\``) && new RegExp(`\\b${field}: `).test(SCRIPT), field);

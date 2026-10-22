@@ -277,7 +277,7 @@ export function permissions(stage, { push = false, amRoot = OWN_ROOT, orchRoot =
 const MARK = (stage) => `End your final reply with exactly one line: ${MARKS[stage].map((m) => `AM_STAGE: ${m}`).join(' or ')}`;
 
 // The permission rules of most stages match one plain command only, so a chained command is refused whole.
-// Kept outside unattended(): that text is a copy of am-auto:multi's rules and changes only together with them.
+// Kept outside unattended(): that text is a copy of the rules in auto/flow/run.md and changes only together with them.
 const ONE_COMMAND = '- Run each shell command as its own call: one command per call, no echo, no pipes.';
 // Their git rules match the plain form only, and a refusal there reads as if the whole shell were off.
 export const GIT_PLAIN_STAGES = ['plan', 'commit', 'handover'];
@@ -285,7 +285,7 @@ export const GIT_PLAIN = '- This session already runs in the repository root. Ru
 // The do and check sessions cannot write outside the repository; the orchestrator's SCRATCH_NOTE says the same.
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
-/** The unattended rules of am-auto:multi's "Running without stops" section, written for one stage session. */
+/** The unattended rules of the "Running without stops" section of auto/flow/run.md, written for one stage session. */
 const unattended = (slug, stage, push, solo = false) => `${solo ? `You are one stage of the am-auto:one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model; when the conversation fills ${SOLO_CONTEXT_LIMIT} percent or more of the context window it is compacted first, and the stage starts in a new session when it still does.` : 'You are one stage of the am-auto:multi skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
 - Running ${solo ? 'am-auto:one' : 'am-auto:multi'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
 - A question about what the user sees or what is in scope: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, through its second opinion; never wait for the user on them, except a choice its two reviewers still split on after their rounds.
