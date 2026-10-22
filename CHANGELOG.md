@@ -14,6 +14,7 @@
 - `am-auto:one` 이 단계 사이에 같은 모델로 대화를 이어 쓸지 정하는 기준을 "10만 토큰"에서 "그 모델 맥락 창의 20%"로 바꿨다. sonnet 과 opus 의 창 크기 차이가 반영된다.
 - 20% 이상이면 바로 새 세션으로 바꾸지 않고 먼저 그 대화를 `/compact` 로 압축한 뒤 다시 잰다. 20% 미만이 되면 압축된 대화를 이어 쓰고, 그래도 넘거나 압축이 실패하면 지금처럼 기억 파일(`solo-context.md`)을 읽는 새 세션으로 시작한다. 압축 한 번의 비용이 더 든다.
 - 진행 소식에 `solo: context 23.4% of the window; compacting`, `… after compaction; continued the session` 같은 줄이 새로 보인다.
+- `am-auto:multi`·`am-auto:one`·`am-auto:agent` 가 함께 쓰는 진행 규칙을 am-auto 안의 `flow/` 글로 옮겨, 세 명령이 실행할 때 같은 글을 읽게 했다. `flow/` 는 명령 목록에 나타나지 않고, 동작은 그대로다.
 
 ## am-auto 0.1.0 (2026-10-20)
 

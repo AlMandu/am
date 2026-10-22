@@ -36,12 +36,8 @@ Request: $ARGUMENTS
 - Refer to other am skills by name, e.g. "the am:check skill"; the slash or $ prefix differs per tool.
 <!-- am:common:end -->
 
-<!-- am:shared:sibling-runs:start -->
 ## How this skill runs
-Read `${CLAUDE_PLUGIN_ROOT}/flow/run.md` (if the placeholder was not replaced, `flow/run.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it (inside the four skill files of its step 2, the folder that step names). If it cannot be read, change no file and stop. These additions apply:
-- If the whole request is a part slug (its `.am/<slug>/request.md` starts with `Part <k> of <N> of .am/<parent>/plan.md:`), resume the parent slug instead.
-- After the plan, and when you resume a plan, a Scale of 1 implementation run goes on as that file says; 2 or more replace its steps 4 to 6 (the do, check and commit stages) with Parts (below).
-<!-- am:shared:sibling-runs:end -->
+Read `${CLAUDE_PLUGIN_ROOT}/flow/run.md` (if the placeholder was not replaced, `flow/run.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it (inside the four skill files of its step 2, the folder that step names). If it cannot be read, change no file and stop. Read `${CLAUDE_PLUGIN_ROOT}/flow/parts.md` the same way (if the placeholder was not replaced, `flow/parts.md` under the plugin root) and follow it too; the `## Parts` section below adds to its loop. These additions apply:
 - If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am-auto:multi skill.
 - Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am-auto:agent skill.
 
@@ -59,16 +55,10 @@ In Claude Code with the Agent and Bash tools, when `${CLAUDE_PLUGIN_ROOT}/script
   - `BLOCKED` or `failed` (any stage): stop with the stage and its status.
 - Step 7: only now read plan.md, check.md and `.am/<slug>/reply-*.md`, and reply by step 7 of `flow/run.md`.
 
-<!-- am:shared:sibling-parts:start -->
 ## Parts
-A plan of 2 or more implementation runs is never implemented whole; each part runs as a task of its own.
-- The plan holds a section headed exactly `## Parts` right after the Summary, with one line per part in exactly this form: `- Part <k>: Steps <a>-<b> — <the part's scope in one line>`. The parts take consecutive Steps in order and together cover every Step, each at most one implementation run; the lines never start with a number and never carry a done mark.
-<!-- am:shared:sibling-parts:end -->
 - The plan stage writes the `## Parts` section; in the single-session flow write it yourself.
-- From the first Part line with no `- Part <k> done:` line in the parent's Change log (Grep `^- Part [0-9]+ done: `), in order:
-  1. Tell the user in one plain line `Part <k>/<N>: <slug>-p<k>` and the part's scope.
-  2. If `.am/<slug>-p<k>/request.md` is missing, write exactly `Part <k> of <N> of .am/<slug>/plan.md: <that Part line>. Plan only this part; the parent plan holds the whole design and its decisions.` as a new file; if the folder's request.md does not start with `Part <k> of <N> of .am/<slug>/plan.md:`, stop.
-  3. Run the stage flow above with exactly `<slug>-p<k>` as the slug and `--part` on every `start` (its resume rule included). In push mode each part's commit stage pushes.
-  4. When its commit stage ends `COMMITTED` or `NOTHING` (single-session flow: when the am:commit skill commits or finds nothing to commit), log the part with exactly this command from the repository root and go to the next part; an exit code other than 0 stops: `node -e 'const fs=require("fs"),[f,l]=process.argv.slice(1),t=fs.readFileSync(f,"utf8"),n=t.includes("\r\n")?"\r\n":"\n",a=t.split(n);if(a.includes(l))process.exit(0);const c=a.indexOf("## Change log");if(c<0)process.exit(1);let i=a.findIndex((x,j)=>j>c&&x.startsWith("## "));if(i<0)i=a.length;while(i>c+1&&a[i-1]==="")i--;a.splice(i,0,l);fs.writeFileSync(f,a.join(n))' .am/<slug>/plan.md '- Part <k> done: <slug>-p<k>'`. A part that stops stops this skill with its reason.
+- Loop start: find the first Part line with no done line by Grep `^- Part [0-9]+ done: `.
+- Loop step 3: the stage flow is the stage agents' flow above, with `--part` on every `start`.
+- Loop step 4: log the part with exactly this command from the repository root; an exit code other than 0 stops: `node -e 'const fs=require("fs"),[f,l]=process.argv.slice(1),t=fs.readFileSync(f,"utf8"),n=t.includes("\r\n")?"\r\n":"\n",a=t.split(n);if(a.includes(l))process.exit(0);const c=a.indexOf("## Change log");if(c<0)process.exit(1);let i=a.findIndex((x,j)=>j>c&&x.startsWith("## "));if(i<0)i=a.length;while(i>c+1&&a[i-1]==="")i--;a.splice(i,0,l);fs.writeFileSync(f,a.join(n))' .am/<slug>/plan.md '- Part <k> done: <slug>-p<k>'`
 - In the single-session flow, run the same loop in this session with the am:plan, am:do, am:check and am:commit skills.
 - When every part is done, reply by step 7 with each part's check verdict and commits. If you stopped, the way to continue is this skill with the parent slug (`push <slug>` in push mode).

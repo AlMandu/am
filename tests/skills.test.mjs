@@ -54,43 +54,45 @@ test('scripts/skills.mjs writes a changed block back, stops on a broken marker p
     const get = (file) => readFileSync(at(file), 'utf8');
     const all = () => Object.fromEntries(skillsInputs(base).map((f) => [f, get(f)]));
     assert.deepEqual(skillsApply(base), { problems: [], changed: [] });
-    const target = BLOCKS['sibling-parts'].targets[0];
+    const target = BLOCKS.common.targets[0];
     const original = get(target);
     // One character changed inside a block: only that file differs, and apply puts it back.
-    writeFileSync(at(target), original.replace('never implemented whole', 'never implemented Whole'));
-    assert.deepEqual(skillsCheck(base), [`${target}: sibling-parts 블록이 shared/sibling-parts.md 와 다릅니다`]);
+    writeFileSync(at(target), original.replace('Ask at most 3 questions', 'Ask at most 3 Questions'));
+    assert.deepEqual(skillsCheck(base), [`${target}: common 블록이 shared/common.md 와 다릅니다`]);
     assert.deepEqual(skillsApply(base), { problems: [], changed: [target] });
     assert.equal(get(target), original);
     // An end marker twice is a problem, and nothing is written, not even another file's drift.
-    const other = BLOCKS.common.targets[0];
+    const other = BLOCKS.common.targets[1];
     writeFileSync(at(other), get(other).replace('Ask at most 3 questions', 'Ask at most 4 questions'));
-    writeFileSync(at(target), `${original}${BLOCKS['sibling-parts'].end}\n`);
+    writeFileSync(at(target), `${original}${BLOCKS.common.end}\n`);
     let before = all();
     let r = skillsApply(base);
     assert.equal(r.problems.length, 1);
-    assert.match(r.problems[0], new RegExp(`^${target}: sibling-parts .*\\(시작 표시 1번, 끝 표시 2번\\)$`));
+    assert.match(r.problems[0], new RegExp(`^${target}: common .*\\(시작 표시 1번, 끝 표시 2번\\)$`));
     assert.deepEqual(r.changed, []);
     assert.deepEqual(all(), before);
     writeFileSync(at(target), original);
     assert.deepEqual(skillsApply(base), { problems: [], changed: [other] });
     // A CRLF target keeps CRLF in the rewritten block.
     const crlf = original.replace(/\n/g, '\r\n');
-    writeFileSync(at(target), crlf.replace('never implemented whole', 'never implemented Whole'));
+    writeFileSync(at(target), crlf.replace('Ask at most 3 questions', 'Ask at most 3 Questions'));
     assert.deepEqual(skillsApply(base), { problems: [], changed: [target] });
     assert.equal(get(target), crlf);
     writeFileSync(at(target), original);
     // A source saved without its last newline still leaves the end marker on a line of its own.
-    const source = BLOCKS['sibling-parts'].source;
+    const source = BLOCKS.common.source;
     const sourceText = get(source);
     writeFileSync(at(source), sourceText.replace(/\n$/, ''));
     assert.deepEqual(skillsApply(base), { problems: [], changed: [] });
     writeFileSync(at(source), sourceText);
-    // A block whose markers enclose another block's markers is a problem, not overwritten.
-    const runs = BLOCKS['sibling-runs'];
-    const nested = original.replace(`${runs.start}\n`, '').replace(BLOCKS.common.start, `${runs.start}\n${BLOCKS.common.start}`);
+    // A marker inside a block (here of an unknown name) is a problem, not overwritten.
+    const nested = original.replace(`${BLOCKS.common.start}\n`, `${BLOCKS.common.start}\n<!-- am:shared:nope:start -->\n`);
     writeFileSync(at(target), nested);
     r = skillsApply(base);
-    assert.deepEqual(r, { problems: [`${target}: sibling-runs 블록 안에 다른 블록의 표시가 있습니다`], changed: [] });
+    assert.equal(r.problems.length, 2);
+    assert.match(r.problems[0], new RegExp(`^${target}: 모르는 블록 이름 "nope"`));
+    assert.equal(r.problems[1], `${target}: common 블록 안에 다른 블록의 표시가 있습니다`);
+    assert.deepEqual(r.changed, []);
     assert.equal(get(target), nested);
     writeFileSync(at(target), original);
     // A marker in a SKILL.md that is not on the block's target list, or an unknown block name, stops the script.
@@ -283,18 +285,21 @@ test('am-auto:multi drives the stage runner and handles every status it prints',
 
 test('am-auto:one follows the flow files with its own additions', async () => {
   const solo = withoutCommon(read('one'));
+  const flow = withoutCommon(readFlow('one'));
   const { PART_LINE } = await import('../auto/scripts/stage.mjs');
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '${CLAUDE_PLUGIN_ROOT}/flow/stage-sessions.md', '`--solo`', '--solo=', '## Parts', '- Part <k> done:', '`solo`', '`context`', 'step 7', 'consecutive Steps', 'done mark']) assert.ok(solo.includes(s), s);
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '${CLAUDE_PLUGIN_ROOT}/flow/parts.md', '${CLAUDE_PLUGIN_ROOT}/flow/stage-sessions.md', '`--solo`', '--solo=', '`solo`', '`context`', 'step 7']) assert.ok(solo.includes(s), s);
+  for (const s of ['## Parts', '- Part <k> done:', 'consecutive Steps', 'done mark']) assert.ok(flow.includes(s), s);
   for (const s of ['skills/multi/SKILL.md', '`HANDED`']) assert.ok(!solo.includes(s), s);
   // A part request's first line: a later run reads part folders written earlier and stops when it does not match.
-  for (const s of ['`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(solo.includes(s), s);
+  for (const s of ['`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(flow.includes(s), s);
   // The plan stage writes the Parts lines in this form; in a session with no stage sessions am-auto:one writes them itself.
-  assert.ok(solo.includes(PART_LINE), 'PART_LINE');
+  assert.ok(flow.includes(PART_LINE), 'PART_LINE');
   assert.ok(!solo.includes('skills/run/SKILL.md'));
-  // Push mode belongs to the stage flow of each part, not only to the Codex loop.
-  const parts = solo.split('\n## Parts\n')[1].split('\n## ')[0].split('\n');
+  // Push mode belongs to the stage flow of each part (loop step 3 of parts.md), not only to the Codex loop.
   const push = "In push mode each part's commit stage pushes.";
-  assert.ok(parts.find((l) => l.startsWith('  3. ')).includes(push), 'push on part step 3');
+  const loop = flowFile('parts.md').split('\n## Parts\n')[1].split('\n');
+  assert.ok(loop.find((l) => l.startsWith('  3. ')).includes(push), 'push on loop step 3');
+  const parts = solo.split('\n## Parts\n')[1].split('\n## ')[0].split('\n');
   assert.ok(!parts.find((l) => l.includes('In Codex, or after')).includes(push), 'push not on the Codex line');
 });
 
@@ -316,8 +321,10 @@ test('am-auto:agent follows the shared flow and runs its stages as stage agents 
   assert.ok(lean.includes('until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.'));
   for (const s of ['`^(- )?(Scale: [0-9]+ implementation run|규모: 구현 [0-9]+회)`', '`^- Part [0-9]+: Steps`', '`^- Part [0-9]+ done: `', '`.am/<slug>.answer-<n>.md`', 'Continue the existing plan in .am/<slug>/plan.md.']) assert.ok(lean.includes(s), s);
   for (const s of ['`"ev":"end"`', 'stage: "handover"']) assert.ok(lean.includes(s), s);
-  assert.ok(lean.includes(PART_LINE), 'PART_LINE');
-  for (const s of ['- Part <k> done:', '`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(lean.includes(s), s);
+  const flow = readFlow('agent');
+  assert.ok(flow.includes(PART_LINE), 'PART_LINE');
+  for (const s of ['## Parts', '- Part <k> done:', '`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(flow.includes(s), s);
+  assert.ok(lean.includes('${CLAUDE_PLUGIN_ROOT}/flow/parts.md'), 'reads flow/parts.md');
   // It copies the Parts rules instead of reading am-auto:one, and runs neither the orchestrator nor stage sessions.
   for (const s of ['skills/one/SKILL.md', 'skills/run/SKILL.md', 'scripts/stage.mjs', 'progress.mjs', '--solo']) assert.ok(!lean.includes(s), s);
   // The fixed command that logs a part as done, run as written on copies of a parent plan.
@@ -373,7 +380,7 @@ test('auto/flow holds only flow files, no skill, and the skills name only flow f
   assert.ok(path.relative(path.join(AUTO, 'skills'), FLOW).startsWith('..'), 'auto/flow is outside auto/skills');
   // Plain files only: no SKILL.md and no folder that could be read as a skill.
   const names = readdirSync(FLOW);
-  assert.deepEqual(names.sort(), ['run.md', 'stage-sessions.md']);
+  assert.deepEqual(names.sort(), ['parts.md', 'run.md', 'stage-sessions.md']);
   for (const name of names) {
     const text = flowFile(name);
     assert.ok(!text.startsWith('---'), `${name}: no frontmatter`);
@@ -381,10 +388,23 @@ test('auto/flow holds only flow files, no skill, and the skills name only flow f
     assert.doesNotMatch(text, SLASH_NAME, name);
     assert.match(text.split('\n')[0], /^This file is not a skill: /, name);
   }
-  const named = { multi: ['run.md', 'stage-sessions.md'], one: ['run.md', 'stage-sessions.md'], agent: ['run.md'] };
+  const named = { multi: ['run.md', 'stage-sessions.md'], one: ['run.md', 'parts.md', 'stage-sessions.md'], agent: ['run.md', 'parts.md'] };
   for (const [skill, want] of Object.entries(named)) {
     assert.deepEqual(flowNames(read(skill)), want, skill);
     readFlow(skill);
+  }
+});
+
+test('the Loop step lines of am-auto:one and am-auto:agent name steps of the parts.md loop', () => {
+  const loop = flowFile('parts.md').split('\n## Parts\n')[1];
+  const numbers = [...loop.matchAll(/\n {2}(\d+)\. /g)].map((m) => Number(m[1]));
+  assert.deepEqual(numbers, [1, 2, 3, 4]);
+  for (const name of ['one', 'agent']) {
+    const parts = read(name).split('\n## Parts\n')[1];
+    assert.ok(parts, `${name}: the Parts section`);
+    const steps = [...parts.matchAll(/\n- Loop step (\d+): /g)].map((m) => Number(m[1]));
+    for (const n of steps) assert.ok(numbers.includes(n), `${name}: loop step ${n}`);
+    assert.ok(steps.includes(3), `${name}: loop step 3`);
   }
 });
 

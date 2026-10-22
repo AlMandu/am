@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Run from anywhere: node scripts/skills.mjs [--check]
 // The files under shared/ at the repository root are the one source of the text several SKILL.md files share: the
-// common rules block of every skill and the lines am-auto:one and am-auto:agent have in common. No plugin reads shared/ at
-// runtime (it is not shipped): this script writes each source between its markers in every SKILL.md that carries it.
+// common rules block of every skill (the am-auto skills' shared flow is read at run time from auto/flow/ instead).
+// No plugin reads shared/ at runtime (it is not shipped): this script writes each source between its markers in every SKILL.md that carries it.
 // Without arguments it rewrites those files; with --check it only lists what differs and exits 1.
 // Every target must hold its marker pair exactly once, and a marker in a file that is not a target of its block stops
 // the script, so a copied block that nobody listed is caught instead of drifting. With any problem nothing is written.
@@ -21,18 +21,6 @@ export const BLOCKS = {
     start: '<!-- am:common:start -->',
     end: '<!-- am:common:end -->',
     targets: [...['plan', 'do', 'check', 'commit'].map(am), ...['multi', 'one', 'agent', 'sessions'].map(auto), skill('util')('land'), 'orchestrator/skills/run/SKILL.md'],
-  },
-  'sibling-runs': {
-    source: 'shared/sibling-runs.md',
-    start: '<!-- am:shared:sibling-runs:start -->',
-    end: '<!-- am:shared:sibling-runs:end -->',
-    targets: [auto('one'), auto('agent')],
-  },
-  'sibling-parts': {
-    source: 'shared/sibling-parts.md',
-    start: '<!-- am:shared:sibling-parts:start -->',
-    end: '<!-- am:shared:sibling-parts:end -->',
-    targets: [auto('one'), auto('agent')],
   },
 };
 // Every SKILL.md under these folders is scanned for markers, targets or not (a missing folder is skipped).

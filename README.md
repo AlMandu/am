@@ -279,7 +279,7 @@ Claude Code 에서는 `am-auto:multi` 가 진행만 맡고 네 단계를 각각 
 
 am-auto 플러그인의 명령입니다(Claude Code 전용).
 
-`am-auto:one` 는 실행할 때 `am-auto:multi` 의 규칙을 읽어 그대로 따르고, 다음만 다릅니다.
+`am-auto:one` 는 실행할 때 `am-auto:multi` 와 같은 진행 규칙(am-auto 의 `flow/` 글)을 읽어 따르고, 다음만 다릅니다.
 
 - 오케스트레이터를 찾지도 쓰지도 않고, `am-auto:multi` 의 넘김 훅도 붙지 않습니다. 이미 오케스트레이터에 넘긴 계획(계획 Change log 칸의 넘김 줄)이면 멈추고 `am-auto:multi` 로 이어 가라고 알립니다.
 - Claude Code 에서는 단계 명령마다 `--solo` 를 붙여, 네 단계가 새 세션 대신 한 세션을 이어 씁니다. 이어 쓰는 세션과 그 단계가 돈 모델은 `.am/<slug>/solo-session.json` 에 기록됩니다.
@@ -305,7 +305,7 @@ am-auto 플러그인의 명령입니다(Claude Code 전용).
 
 am-auto 플러그인의 명령입니다(Claude Code 전용).
 
-`am-auto:agent` 은 실행할 때 `am-auto:multi` 의 규칙을 읽어 그대로 따르고, 다음만 다릅니다.
+`am-auto:agent` 은 실행할 때 `am-auto:multi` 와 같은 진행 규칙(am-auto 의 `flow/` 글)을 읽어 따르고, 다음만 다릅니다.
 
 - Claude Code 에서는 단계마다 별도 `claude` 세션 대신 지금 세션 안에 단계 에이전트(서브에이전트)를 띄웁니다. 지금 세션은 진행만 맡아, 단계가 끝날 때마다 채팅에 한 줄(단계와 상태)을 남기고 다음 단계를 고릅니다. 마지막 단계가 끝나기 전에는 단계가 쓴 문서(계획 문서, 점검 결과, 단계 보고)를 읽지 않으므로 지금 세션의 대화가 짧게 유지됩니다. 끝에는 `am-auto:multi` 와 같은 마지막 답을 줍니다.
 - 단계 에이전트는 지금 세션 안에서 돌기 때문에 터미널을 닫으면 함께 멈춥니다. 같은 명령에 slug 를 주면(`am-auto:agent <slug>`) 마지막으로 끝난 단계 다음부터 이어 갑니다.
@@ -508,7 +508,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 - 스킬을 부른 그 차례에만 적용됩니다. 그 차례에는 세션에서 고른 모델보다 우선하고, 다음 입력부터는 세션의 모델과 effort 로 돌아갑니다. 그래서 `am:plan` 의 질문에 답한 뒤나 `am-auto:multi` 가 멈췄다가 답을 받은 뒤의 차례는 세션 값으로 돕니다.
 - Sonnet 세션에서 쓰던 경우 Sonnet 으로 정한 스킬(`am:commit`·`am-auto:sessions`) 밖의 스킬을 부른 차례는 Opus 로 돌아 비용이 오르고, Opus 세션에서도 그 스킬을 부른 차례는 Sonnet 으로 돕니다. Opus 를 쓸 수 없는 계정에서 스킬이 어떻게 되는지는 Claude Code 문서에 없고 확인하지 못했습니다.
 - 커밋과 단계 사이 압축 세션은 정해진 규칙을 따르고 게이트나 기계 검사가 결과를 지키는 일이라 Sonnet 으로 둡니다. `am-auto:multi` 와 오케스트레이터의 단계 세션은 아래 사용자 설정 파일의 `commit`·`compact` 키로 다시 Opus 로 돌릴 수 있고, 손으로 부른 스킬의 차례는 그 파일로 바꿀 수 없습니다. `am-auto:sessions` 는 스크립트 하나를 돌리고 그 결과를 전하는 일이라 Sonnet·`low` 로 둡니다.
-- 세션마다 늘 드는 비용과 스킬 호출 한 번의 토큰은 `claude plugin details am` 으로 확인할 수 있습니다. 자동 실행 명령은 `claude plugin details am-auto` 로 봅니다. `am-auto:multi` 는 스킬 파일을 읽지 않는 대신, 단계마다 새 세션이 프로젝트를 처음부터 다시 읽습니다.
+- 세션마다 늘 드는 비용과 스킬 호출 한 번의 토큰은 `claude plugin details am` 으로 확인할 수 있습니다. 자동 실행 명령은 `claude plugin details am-auto` 로 봅니다. `am-auto:multi` 는 시작할 때 `flow/` 의 진행 규칙 글을 읽고, 단계마다 새 세션이 프로젝트를 처음부터 다시 읽습니다.
 - Codex 에는 스킬별 모델 지정이 없어 이 값을 쓰지 않습니다. Codex 세션의 모델 그대로 돕니다.
 
 <details>
@@ -620,14 +620,14 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 저장소 루트가 마켓플레이스이고, 플러그인 넷이 각자의 폴더에 있습니다. 설치하면 플러그인마다 따로 복사되므로, 여러 플러그인이 쓰는 파일은 폴더마다 사본을 둡니다.
 
 - `plugin/`(am): 스킬 넷(`plan`·`do`·`check`·`commit`), 2차 의견 서브에이전트(`agents/second-opinion.md`), 커밋 게이트 훅(`hooks/hook.mjs`·`gate.mjs`·`hooks.json`), Codex 2차 의견 스크립트(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)과 PC 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트(`user-models.mjs`·`user-settings.mjs`), 두 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트(`user-files.mjs`).
-- `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 넷(`multi`·`one`·`agent`·`sessions`), 단계 에이전트 다섯(`agents/stage-*.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`)과 오케스트레이터 넘김 훅(`handover.mjs`), 단계 세션 스크립트(`stage.mjs`), 단계 에이전트 시작·끝 스크립트(`agent-stage.mjs`), 진행 소식(`progress.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 남은 메모리 확인(`memory-guard.mjs`), 남은 프로세스 정리(`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
+- `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 넷(`multi`·`one`·`agent`·`sessions`), 세 실행 명령이 실행 중에 읽는 진행 규칙 글(`flow/`, 스킬이 아니라 명령 목록에 나오지 않음), 단계 에이전트 다섯(`agents/stage-*.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`)과 오케스트레이터 넘김 훅(`handover.mjs`), 단계 세션 스크립트(`stage.mjs`), 단계 에이전트 시작·끝 스크립트(`agent-stage.mjs`), 진행 소식(`progress.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 남은 메모리 확인(`memory-guard.mjs`), 남은 프로세스 정리(`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
 - `util/`(am-util): 스킬 `land`.
 - `orchestrator/`(am-orchestrator): 아래 오케스트레이터 플러그인.
 - 사본: `plugin/` 의 게이트·2차 의견·사용자 설정 파일 스크립트를 `auto/`·`util/` 에 복사해 둡니다. `plugin/` 원본만 고치고 `node scripts/sync-shared.mjs` 로 반영합니다(`--check` 는 어긋난 사본만 알려 줍니다).
 
 플러그인을 고치는 사람은 저장소 주소 대신 로컬 경로(예: `C:\Projects\am`)로 설치하면, 커밋하지 않은 수정도 바로 시험할 수 있습니다.
 
-여러 SKILL.md 가 함께 쓰는 문구(공통 규칙 블록, `am-auto:one`·`am-auto:agent` 의 공유 블록)는 저장소 루트 `shared/` 의 원본만 고치고 `node scripts/skills.mjs` 로 반영합니다(`node scripts/skills.mjs --check` 는 어긋난 파일만 알려 줍니다).
+모든 SKILL.md 가 함께 쓰는 공통 규칙 블록은 저장소 루트 `shared/common.md` 원본만 고치고 `node scripts/skills.mjs` 로 반영합니다(`node scripts/skills.mjs --check` 는 어긋난 파일만 알려 줍니다). 세 실행 명령이 함께 쓰는 진행 규칙은 `auto/flow/` 의 글을 바로 고칩니다.
 
 커밋 전 확인 명령(테스트·`claude plugin validate`)은 [CLAUDE.md](CLAUDE.md) 의 "Before committing" 에 있습니다.
 
