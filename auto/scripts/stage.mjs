@@ -48,11 +48,13 @@
 // on, and a BLOCKED or failed end of it starts a new session instead (a note). Otherwise the record's `model` (the model the last stage ran on) is compared with this stage's model (the user
 // models file's value, else the skill's frontmatter alias, as strings): when they differ or either is unknown (an older
 // record without the field), the stage starts in a new session without a measurement. On the same model, a /context
-// call (that model, the compaction session's environment and time limit, no tool) reads how many tokens the conversation
-// holds: below SOLO_CONTEXT_TOKEN_LIMIT (100,000) the stage continues the session ID it returns (strict form, else the
-// one before), recorded at once; at or above it, or when the count cannot be read, the stage starts in a new session and
-// that call's reported cost is added. Every choice is a note. With no record, an unreadable one, or a continued call that
-// ends with an error other than a time-out, it runs once in a new session and writes a note; after a failed continued
+// call (that model, the compaction session's environment and time limit, no tool) reads the share of the context window
+// in use: below SOLO_CONTEXT_LIMIT (20 percent) the stage continues the session ID it returns (strict form, else the one
+// before), recorded at once; when it cannot be read, the stage starts in a new session; at or above it a /compact call
+// (same model, limits and no tool) compacts the conversation, its session ID is recorded at once and /context measures
+// again: below the limit the stage continues, while a failed compaction, an unreadable or a still too large share starts
+// a new session. A dropped conversation's last reported cost is added. Every choice is a note. With no record, an
+// unreadable one, or a continued call that ends with an error other than a time-out, it runs once in a new session and writes a note; after a failed continued
 // call, the dropped conversation's last reported cost is added. When the stage has a session ID, it rewrites the record
 // with it, the stage's model and the end status. Every solo stage is told to rewrite .am/<owner>/solo-context.md, the
 // shared session's memory, before its final reply; a stage that starts in a new session while that file exists gets a
@@ -284,7 +286,7 @@ export const GIT_PLAIN = '- This session already runs in the repository root. Ru
 const scratch = (slug) => `- Helper files: create helper scripts and temporary files (a script for regex or backslash work, a one-off test script and the like) with the Write tool under .am/${slug}/scratch/ and run them from there. This overrides any scratchpad or temporary folder (%TEMP%, /tmp) named elsewhere, in the user's instructions or the system prompt: writing outside the repository is refused in this session. You need not delete them; .am/ is never committed.`;
 
 /** The unattended rules of am-auto:multi's "Running without stops" section, written for one stage session. */
-const unattended = (slug, stage, push, solo = false) => `${solo ? `You are one stage of the am-auto:one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model or the conversation holds ${SOLO_CONTEXT_TOKEN_LIMIT} tokens or more; then the stage starts in a new session.` : 'You are one stage of the am-auto:multi skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
+const unattended = (slug, stage, push, solo = false) => `${solo ? `You are one stage of the am-auto:one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model; when the conversation fills ${SOLO_CONTEXT_LIMIT} percent or more of the context window it is compacted first, and the stage starts in a new session when it still does.` : 'You are one stage of the am-auto:multi skill, started in a fresh session by the am stage runner.'} No human is present in this session and nobody can answer a question, so never wait for input and never use a question tool. The plan is .am/${slug}/plan.md; only the files in .am/${slug}/ carry information between the stages, so write down there whatever a later stage needs. Follow the skill you are given; where it says to ask the user, or to stop and offer something, do what the rules below say instead.
 - Running ${solo ? 'am-auto:one' : 'am-auto:multi'} is the user's request for every stage, including the commits${push ? ' and the push' : ''}.
 - A question about what the user sees or what is in scope: take your recommendation, record it under Decisions in plan.md with a one-line reason and the mark (auto-decided), translated into the plan's language ((자동 결정) in a Korean plan), and go on. Technical choices are settled the way the skill says, through its second opinion; never wait for the user on them, except a choice its two reviewers still split on after their rounds.
 - A decision under Decisions that is marked as the user's answer is final; apply it.
@@ -1082,25 +1084,28 @@ export const SOLO_CONTEXT = 'solo-context.md';
 // Sessions may write under .am/ and a session ID becomes a --resume argument that may pass through cmd.exe; one starting
 // with `-` would be read as another claude option, so only a strict form is used.
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-// Between stages on the same model a solo session is continued only while it holds fewer than SOLO_CONTEXT_TOKEN_LIMIT
-// tokens in use (the used count of /context), read with Claude Code's /context command (a local command, no model turn),
-// run on the stage's model so that its window counts.
-export const SOLO_CONTEXT_TOKEN_LIMIT = 100000;
+// Between stages on the same model a solo session is continued only while it fills less than SOLO_CONTEXT_LIMIT percent
+// of the context window, read with Claude Code's /context command (a local command, no model turn), run on the stage's
+// model so that its window counts; at or above it the conversation is compacted with SOLO_COMPACT_PROMPT and measured again.
+export const SOLO_CONTEXT_LIMIT = 20;
 export const SOLO_CONTEXT_PROMPT = '/context';
-// That call only runs /context: no tool.
-const SOLO_CONTEXT_PERM = { mode: 'dontAsk', allow: [], deny: ['AskUserQuestion'] };
+export const SOLO_COMPACT_PROMPT = '/compact Keep what the next stage of this am-auto:one task needs: the slugs, the parts and stages done and their end lines, the decisions made and why, open issues. The task files under .am/ hold the details.';
+// Those calls only run /context or /compact: no tool.
+const SOLO_SIDE_PERM = { mode: 'dontAsk', allow: [], deny: ['AskUserQuestion'] };
 
 /**
- * The tokens in use, read from the result text of /context, or null when they cannot be read.
- * Assumed form (Claude Code 2.1): a line `**Tokens:** 24.5k / 1m (2%)`: the used count with an optional k or m suffix;
- * the total and the percent in parentheses are ignored. Bold marks, commas and spaces are ignored.
+ * The share of the context window in use (0-100), read from the result text of /context, or null when it cannot be read.
+ * Assumed form (Claude Code 2.1): a line `**Tokens:** 24.5k / 1m (2%)`: the used and total counts with an optional k or m
+ * suffix; the rounded percent in parentheses is ignored. Bold marks, commas and spaces are ignored; a total of 0 is unreadable.
  */
-export function contextTokens(text) {
+export function contextShare(text) {
   // The suffix stays on the number's line and ends the word, so a later line never lends its first letter.
   const num = '(\\d+(?:\\.\\d+)?)[ \\t]*([km]?)(?![a-z])';
   const m = String(text ?? '').replace(/\*/g, '').replace(/,/g, '').match(new RegExp(`Tokens\\s*:?\\s*${num}\\s*/\\s*${num}`, 'i'));
   if (!m) return null;
-  return Number(m[1]) * ({ k: 1e3, m: 1e6 }[m[2].toLowerCase()] ?? 1);
+  const count = (n, s) => Number(n) * ({ k: 1e3, m: 1e6 }[s.toLowerCase()] ?? 1);
+  const total = count(m[3], m[4]);
+  return total > 0 ? (count(m[1], m[2]) / total) * 100 : null;
 }
 
 /** The owner's session record, or null when it is missing, broken or names no usable session ID. */
@@ -1553,32 +1558,64 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
       result.solo.fresh = `model change (${typeof rec.model === 'string' ? rec.model : 'unknown'} -> ${nextModel || 'unknown'})`;
       event({ ev: 'note', text: `solo: ${result.solo.fresh}; started a new session` });
     } else if (rec) {
-      // One /context call that continues the session before the stage, with the compaction session's environment and time
-      // limit. Its cost is not added when the stage continues (that call reports the whole conversation); when the
-      // conversation is dropped instead, it is.
-      writeMcpConfig(cwd, mcpConfig);
-      const r = await exec(bin, [...pre, ...claudeArgs(SOLO_CONTEXT_PERM, { prompt: SOLO_CONTEXT_PROMPT, resume: rec.sessionId, pluginDir, model: measureModel, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
-      report('context', r.cleaned);
-      if (r.spawnError) return done({ status: 'unavailable', reason: `could not start ${bin}: ${r.spawnError}` });
-      const parsed = parseResult(r.stdout);
-      const failed = problem({ r, parsed }, limits.compact);
-      const first = { parsed, id: parsed && !failed && typeof parsed.session_id === 'string' && SESSION_ID.test(parsed.session_id) ? parsed.session_id : rec.sessionId };
-      const tokens = failed ? null : contextTokens(parsed.result);
-      kept = cost(first);
-      if (tokens !== null && tokens < SOLO_CONTEXT_TOKEN_LIMIT) {
-        event({ ev: 'note', text: `solo: context ${Math.round(tokens)} tokens; continued the session` });
-        sessionResume = first.id;
-        if (first.id !== rec.sessionId) {
-          // Recorded at once, so a stage that ends without a session ID never sends the next one back to an older conversation.
-          const err = writeSoloSession(cwd, solo.owner, { sessionId: first.id, slug, stage: kind, model: nextModel, status: 'failed', t: new Date(now()).toISOString() });
-          if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
-        }
-      } else {
-        result.solo.fresh = tokens === null ? `context use could not be read (${failed ? firstLine(failed) : 'no token count in its output'})` : `context ${Math.round(tokens)} tokens`;
-        event({ ev: 'note', text: `solo: ${result.solo.fresh}; started a new session` });
-        // The dropped conversation's cost, as the /context call reported it.
-        dropped = cost(first) ?? 0;
+      // /context and /compact calls continue the session before the stage, on the stage's model with the compaction
+      // session's environment and time limit. Their cost is not added when the stage continues (the stage reports the
+      // whole conversation); when the conversation is dropped instead, its last reported cost is.
+      const side = async (p, id) => {
+        writeMcpConfig(cwd, mcpConfig);
+        const r = await exec(bin, [...pre, ...claudeArgs(SOLO_SIDE_PERM, { prompt: p, resume: id, pluginDir, model: measureModel, mcpConfig })], { cwd, env: sessionEnv('compact', env), timeoutMs: limits.compact * 60000, track });
+        report(p === SOLO_CONTEXT_PROMPT ? 'context' : 'solo /compact', r.cleaned);
+        const parsed = parseResult(r.stdout);
+        const failed = r.spawnError ? null : problem({ r, parsed }, limits.compact);
+        return { r, parsed, failed, id: parsed && !failed && typeof parsed.session_id === 'string' && SESSION_ID.test(parsed.session_id) ? parsed.session_id : id };
+      };
+      const measure = async (id) => {
+        const x = await side(SOLO_CONTEXT_PROMPT, id);
+        return { ...x, share: x.r.spawnError || x.failed ? null : contextShare(x.parsed.result), why: x.failed ? firstLine(x.failed) : 'no token count in its output' };
+      };
+      const unavailable = (x) => done({ status: 'unavailable', reason: `could not start ${bin}: ${x.r.spawnError}` });
+      // Rounded down, so a share just under the limit never shows as 20.0%.
+      const pct = (p) => `${(Math.floor(p * 10) / 10).toFixed(1)}%`;
+      let recorded = rec.sessionId;
+      // Recorded at once, so a stage that ends without a session ID never sends the next one back to an older conversation.
+      const record = (id) => {
+        if (id === recorded) return;
+        recorded = id;
+        const err = writeSoloSession(cwd, solo.owner, { sessionId: id, slug, stage: kind, model: nextModel, status: 'failed', t: new Date(now()).toISOString() });
+        if (err) event({ ev: 'note', text: `solo: the session record could not be saved (${firstLine(err)})` });
+      };
+      // The dropped conversation's cost: the last call that reported one.
+      const drop = (why, ...calls) => {
+        result.solo.fresh = why;
+        event({ ev: 'note', text: `solo: ${why}; started a new session` });
+        dropped = calls.map(cost).find((c) => c !== null) ?? 0;
         result.costUsd += dropped;
+      };
+      const first = await measure(rec.sessionId);
+      if (first.r.spawnError) return unavailable(first);
+      kept = cost(first);
+      if (first.share === null) drop(`context use could not be read (${first.why})`, first);
+      else if (first.share < SOLO_CONTEXT_LIMIT) {
+        event({ ev: 'note', text: `solo: context ${pct(first.share)} of the window; continued the session` });
+        sessionResume = first.id;
+        record(first.id);
+      } else {
+        event({ ev: 'note', text: `solo: context ${pct(first.share)} of the window; compacting` });
+        const c = await side(SOLO_COMPACT_PROMPT, first.id);
+        if (c.r.spawnError) return unavailable(c);
+        if (c.failed) drop(`compaction failed (${firstLine(c.failed)})`, c, first);
+        else {
+          record(c.id);
+          const after = await measure(c.id);
+          if (after.r.spawnError) return unavailable(after);
+          if (after.share === null) drop(`context use after compaction could not be read (${after.why})`, after, c, first);
+          else if (after.share < SOLO_CONTEXT_LIMIT) {
+            event({ ev: 'note', text: `solo: context ${pct(after.share)} of the window after compaction; continued the session` });
+            sessionResume = after.id;
+            record(after.id);
+            kept = [after, c, first].map(cost).find((x) => x !== null) ?? null;
+          } else drop(`context ${pct(after.share)} of the window after compaction`, after, c, first);
+        }
       }
     }
   }

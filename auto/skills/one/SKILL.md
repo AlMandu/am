@@ -1,6 +1,6 @@
 ---
 name: one
-description: "am-auto:multi 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰되 다음 단계의 모델이 바뀌거나 맥락이 10만 토큰 이상이면 그 단계는 새 세션으로 시작하며, 큰 작업도 am-orchestrator 에 넘기지 않고 부분으로 나눠 그 세션에서 차례로 돕니다. 세션 이어 쓰기는 Claude Code 에서만 합니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
+description: "am-auto:multi 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰되 다음 단계의 모델이 바뀌면 그 단계는 새 세션으로 시작하고, 대화가 맥락 창의 20% 이상이면 먼저 압축한 뒤 그래도 넘을 때만 새 세션으로 시작하며, 큰 작업도 am-orchestrator 에 넘기지 않고 부분으로 나눠 그 세션에서 차례로 돕니다. 세션 이어 쓰기는 Claude Code 에서만 합니다. 기존 slug 를 주면 남은 단계부터 이어 가고, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 model: opus
@@ -45,7 +45,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/multi/SKILL.md` (if the placeholder was not r
 <!-- am:shared:sibling-runs:end -->
 - If the plan's Change log already has a `Hand-over:` line, stop and tell the user to continue with the am-auto:multi skill.
 - Add `--solo` to every `stage.mjs` command of this task (`--solo=<slug>` for a part, below), next to `--push` and `--fix`, also when a stage runs again after `WAIT` or `NEEDS_DECISION` and when you resume.
-- Read "a fresh session" for each stage as: the stages continue one session; between stages the runner starts the stage in a new session when it runs on another model than the last stage or the conversation holds 100,000 tokens or more, or the same stage last ended BLOCKED or failed (its result then says why). "Run this skill again" means the am-auto:one skill.
+- Read "a fresh session" for each stage as: the stages continue one session; between stages the runner starts the stage in a new session when it runs on another model than the last stage, the conversation still fills 20 percent or more of the context window after the runner compacted it, or the same stage last ended BLOCKED or failed (its result then says why). "Run this skill again" means the am-auto:one skill.
 
 <!-- am:shared:sibling-parts:start -->
 ## Parts

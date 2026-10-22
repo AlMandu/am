@@ -9,6 +9,12 @@
 - `am-auto:sessions` 의 작업 줄은 `am-auto:multi 작업 …` 또는 `am-auto:one 작업 …` 으로 시작하고, 이어 가기 안내도 새 이름을 쓴다. 단계 규칙, 손넘김 훅의 거부 사유, 새로 만드는 사용자 설정 파일의 메모도 새 이름을 말한다.
 - 진행 중이던 작업은 새 이름에 slug 를 주면(`am-auto:multi <slug>` 등) 남은 단계부터 이어 간다. 작업 폴더(`.am/`)와 사용자 설정 파일(모델·설정)은 바꿀 것이 없다.
 
+## am-auto 0.1.1 (2026-10-22)
+
+- `am-auto:one` 이 단계 사이에 같은 모델로 대화를 이어 쓸지 정하는 기준을 "10만 토큰"에서 "그 모델 맥락 창의 20%"로 바꿨다. sonnet 과 opus 의 창 크기 차이가 반영된다.
+- 20% 이상이면 바로 새 세션으로 바꾸지 않고 먼저 그 대화를 `/compact` 로 압축한 뒤 다시 잰다. 20% 미만이 되면 압축된 대화를 이어 쓰고, 그래도 넘거나 압축이 실패하면 지금처럼 기억 파일(`solo-context.md`)을 읽는 새 세션으로 시작한다. 압축 한 번의 비용이 더 든다.
+- 진행 소식에 `solo: context 23.4% of the window; compacting`, `… after compaction; continued the session` 같은 줄이 새로 보인다.
+
 ## am-auto 0.1.0 (2026-10-20)
 
 - 새 플러그인. am 에서 옮긴 자동 실행 명령 `am-auto:multi`·`am-auto:one`·`am-auto:agent` 와 세션 보기 `am-auto:sessions`, 단계 에이전트 다섯, 단계 세션 스크립트와 그 훅을 담는다. Claude Code 전용이고 am(0.1.67 이상)이 함께 설치돼 있어야 한다.

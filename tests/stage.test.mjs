@@ -9,16 +9,18 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_TOKEN_LIMIT, SOLO_CONTEXT_PROMPT, contextTokens, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand } from '../auto/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_LIMIT, SOLO_CONTEXT_PROMPT, SOLO_COMPACT_PROMPT, contextShare, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand } from '../auto/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../auto/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../auto/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
 import { readUserSettings, userSettingsFile } from '../plugin/scripts/user-settings.mjs';
 import { BUILTIN_MODELS, ensureUserFiles, modelsTemplate, settingsTemplate } from '../plugin/scripts/user-files.mjs';
 import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostName, liveRecords, memoryShortMB, recordHeld, sessionsDirOf } from '../auto/scripts/memory-guard.mjs';
+import { withFlow } from './helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const AUTO = readFileSync(path.join(REPO, 'auto', 'skills', 'multi', 'SKILL.md'), 'utf8');
+// am-auto:multi as it runs: its SKILL.md and the flow files it reads.
+const AUTO = withFlow(path.join(REPO, 'auto', 'skills', 'multi', 'SKILL.md'));
 
 // A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
@@ -325,7 +327,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
 
 test('instructions: solo changes three sentences of the unattended rules (four in the commit stage) and adds the Parts rule to the plan stage', () => {
   const swaps = [
-    ['You are one stage of the am-auto:multi skill, started in a fresh session by the am stage runner.', 'You are one stage of the am-auto:one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model or the conversation holds 100000 tokens or more; then the stage starts in a new session.'],
+    ['You are one stage of the am-auto:multi skill, started in a fresh session by the am stage runner.', 'You are one stage of the am-auto:one skill, run by the am stage runner in the one session that the stages of this task continue; between stages the runner continues it unless the next stage runs on another model; when the conversation fills 20 percent or more of the context window it is compacted first, and the stage starts in a new session when it still does.'],
     ['- Running am-auto:multi is the user\'s request', '- Running am-auto:one is the user\'s request'],
     ['this stage starts again in a new session.', 'this stage continues in this same session.'],
   ];
@@ -444,16 +446,21 @@ test('agentRules: the stage rules for an am-auto:agent subagent, with no session
   assert.throws(() => applySwaps(changed, agentSwaps('do', 'demo', { runId }).swaps), /Another session runs/);
 });
 
-test('contextTokens: reads the used token count of /context, ignoring the total and the percent; null when it is not there', () => {
+test('contextShare: reads the share of the window from the two token counts of /context, ignoring the percent; null when it is not there', () => {
   const cases = [
-    ['## Context Usage\n\n**Model:** claude-opus-5-5  \n**Tokens:** 24.5k / 1m (2%)\n\n| Free space | 942.5k | 94.2% |', 24500],
-    ['**Tokens:** 1.2m / 2m (60%)', 1200000],
-    ['**Tokens:** 120k / 1m (12%)', 120000],
-    ['Tokens: 15,200 / 200,000 (7.6 %)', 15200],
-    ['tokens:15.2K/200K', 15200],
-    ['**Tokens:** 50k / 1M', 50000],
-    ['Tokens: 300000 / 1m', 300000],
-    ['Tokens: 24500 / 200000\nMessages: 3k', 24500],
+    ['## Context Usage\n\n**Model:** claude-opus-5-5  \n**Tokens:** 24.5k / 1m (2%)\n\n| Free space | 942.5k | 94.2% |', 2.45],
+    ['**Tokens:** 1.2m / 2m (60%)', 60],
+    ['**Tokens:** 120k / 1m (12%)', 12],
+    // The rounded percent in parentheses is not what counts: 39.9k of 200k is 19.95, under the limit.
+    ['**Tokens:** 39.9k / 200k (20%)', 19.95],
+    ['**Tokens:** 40k / 200k (19%)', 20],
+    ['Tokens: 15,200 / 200,000 (7.6 %)', 7.6],
+    ['tokens:15.2K/200K', 7.6],
+    ['**Tokens:** 50k / 1M', 5],
+    ['Tokens: 300000 / 1m', 30],
+    ['Tokens: 24500 / 200000\nMessages: 3k', 12.25],
+    ['Tokens: 24500 / 0 (0%)', null],
+    ['Tokens: 24500 (12%)', null],
     ['No context data', null],
     ['| Free space | 942.5k | 94.2% |', null],
     ['Context: (12%)', null],
@@ -461,15 +468,18 @@ test('contextTokens: reads the used token count of /context, ignoring the total 
     [undefined, null],
   ];
   for (const [text, want] of cases) {
-    const got = contextTokens(text);
+    const got = contextShare(text);
     if (want === null) assert.equal(got, null, String(text));
-    else assert.ok(Math.abs(got - want) < 1e-6, `${text}: ${got}`);
+    else assert.ok(Math.abs(got - want) < 1e-9, `${text}: ${got}`);
   }
-  assert.equal(SOLO_CONTEXT_TOKEN_LIMIT, 100000);
+  assert.equal(SOLO_CONTEXT_LIMIT, 20);
+  assert.ok(contextShare('**Tokens:** 39.9k / 200k (20%)') < SOLO_CONTEXT_LIMIT && !(contextShare('**Tokens:** 40k / 200k (19%)') < SOLO_CONTEXT_LIMIT));
 });
 
-test('solo session: the /context prompt passes through cmd.exe', () => {
+test('solo session: the /context and /compact prompts pass through cmd.exe', () => {
   assert.doesNotThrow(() => cmdExeArgs(['-p', SOLO_CONTEXT_PROMPT]));
+  assert.doesNotThrow(() => cmdExeArgs(['-p', SOLO_COMPACT_PROMPT]));
+  assert.ok(SOLO_COMPACT_PROMPT.startsWith('/compact '));
 });
 
 test('doKind: hand over a large new plan only when the run skill is installed', () => {
@@ -549,9 +559,9 @@ const SOLO_FILE = (dir, owner = 'demo') => path.join(dir, '.am', owner, 'solo-se
 const soloRecord = (dir, owner = 'demo') => JSON.parse(readFileSync(SOLO_FILE(dir, owner), 'utf8'));
 const notes = (dir, slug = 'demo') => events(dir, slug).filter((e) => e.ev === 'note').map((e) => e.text);
 const RECORDED = { sessionId: 'sess-0', slug: 'demo', stage: 'plan', model: 'opus', status: 'READY', t: '2026-10-15T00:00:00.000Z' };
-// Result texts of /context below and above the solo limit (HIGH: a low percent of a large window, still over the token limit).
+// Result texts of /context below and above the solo limit (20 percent of the window).
 const LOW = '## Context Usage\n\n**Tokens:** 10k / 200k (5%)\n';
-const HIGH = '## Context Usage\n\n**Tokens:** 120k / 1m (12%)\n';
+const HIGH = '## Context Usage\n\n**Tokens:** 120k / 200k (60%)\n';
 
 test('solo session: without a record the stage starts a new session and records it', async (t) => {
   const dir = makeRepo(t, { fake: PLANNED });
@@ -2359,7 +2369,7 @@ test('a user value equal to COMPACT_MODEL leaves no note; without a compaction t
 const DO_MODEL = skillDefaults(path.join(REPO, 'plugin'), 'do');
 const SOLO_LOW = [LOW, 'Done.\nAM_STAGE: DONE'];
 
-test('solo session choice: below the token limit the stage continues the measured session, measured with no tool on the stage\'s model', async (t) => {
+test('solo session choice: below the window limit the stage continues the measured session, measured with no tool on the stage\'s model', async (t) => {
   for (const [sessions, id] of [[['sess-0'], 'sess-0'], [['sess-m'], 'sess-m'], [[null], 'sess-0'], [['-bad'], 'sess-0']]) {
     const what = JSON.stringify(sessions);
     const dir = makeRepo(t, { plan: SMALL, fake: { replies: SOLO_LOW, sessions } });
@@ -2380,7 +2390,7 @@ test('solo session choice: below the token limit the stage continues the measure
     assert.equal(flag(s, '--resume'), id, what);
     assert.equal(s[s.indexOf('--resume') + 2], '--append-system-prompt-file', what);
     assert.equal(flag(s, '--permission-mode'), 'acceptEdits', what);
-    assert.ok(notes(dir).includes('solo: context 10000 tokens; continued the session'), what);
+    assert.ok(notes(dir).includes('solo: context 5.0% of the window; continued the session'), what);
     assert.equal(result.status, 'DONE', what);
     assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-1', fresh: null, context: false }, what);
     // Only the stage call's cost: it reports the whole conversation.
@@ -2390,23 +2400,77 @@ test('solo session choice: below the token limit the stage continues the measure
   }
 });
 
-test('solo session choice: at or above the token limit the stage starts in a new session, adds the measured cost and reads the memory', async (t) => {
-  for (const [reply, n] of [['**Tokens:** 100k / 200k (50%)', 100000], [HIGH, 120000]]) {
-    const dir = makeRepo(t, { plan: SMALL, fake: { replies: [reply, 'Done.\nAM_STAGE: DONE'], sessions: ['sess-0', 'sess-n'] } });
+const kinds = (calls) => calls.map((a) => (flag(a, '-p') === SOLO_CONTEXT_PROMPT ? 'context' : flag(a, '-p') === SOLO_COMPACT_PROMPT ? 'compact' : 'stage'));
+
+test('solo session choice: at or above the window limit the session is compacted on the stage\'s model with no tool, then continued when it fits', async (t) => {
+  // The same 120k tokens fill 60 percent of a 200k window but 12 percent of a 1m one.
+  const small = makeRepo(t, { plan: SMALL, fake: { replies: ['**Tokens:** 120k / 1m (12%)', 'Done.\nAM_STAGE: DONE'] } });
+  writeFileSync(SOLO_FILE(small), JSON.stringify(RECORDED));
+  const s = await run(small, ['do', 'demo', '--solo']);
+  assert.deepEqual(kinds(s.calls), ['context', 'stage']);
+  assert.ok(notes(small).includes('solo: context 12.0% of the window; continued the session'));
+
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', LOW, 'Done.\nAM_STAGE: DONE'], sessions: ['sess-0', 'sess-c', 'sess-c', 'sess-n'] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  writeFileSync(CONTEXT_FILE(dir), '# memory\n');
+  const { result, calls } = await run(dir, ['do', 'demo', '--solo'], { env: cleanEnv(t) });
+  assert.deepEqual(kinds(calls), ['context', 'compact', 'context', 'stage']);
+  const c = calls[1];
+  assert.equal(flag(c, '--resume'), 'sess-0');
+  assert.deepEqual([flag(c, '--model'), flag(c, '--effort')], [DO_MODEL.model, DO_MODEL.effort]);
+  assert.equal(flag(c, '--permission-mode'), 'dontAsk');
+  assert.ok(!c.includes('--allowedTools') && !c.includes('--append-system-prompt-file'));
+  assert.equal(flag(c, '--disallowedTools'), 'AskUserQuestion');
+  assert.equal(flag(c, '--mcp-config'), '.am/demo/stage-mcp.json');
+  assert.deepEqual(cacheEnv(dir), ['1', '1', '1', '1']);
+  assert.equal(flag(calls[2], '--resume'), 'sess-c');
+  assert.equal(flag(calls[3], '--resume'), 'sess-c');
+  assert.deepEqual(notes(dir).filter((n) => n.startsWith('solo:')), ['solo: context 60.0% of the window; compacting', 'solo: context 5.0% of the window after compaction; continued the session']);
+  assert.ok(!systemOf(dir, 'do').includes(READ_LINE));
+  assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-n', fresh: null, context: false });
+  // Only the stage call's cost: it reports the whole conversation.
+  assert.equal(result.costUsd, 1);
+  assert.equal(soloRecord(dir).sessionId, 'sess-n');
+});
+
+test('solo session choice: the compacted session is recorded before it is measured again', async (t) => {
+  // The second measurement runs out of time and the new session reports no ID: the record still names the compacted session.
+  const dir = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', 'x', 'Done.\nAM_STAGE: DONE'], hang: [3], sessions: ['sess-0', 'sess-c', 'sess-z', null] } });
+  writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
+  const { calls } = await run(dir, ['do', 'demo', '--solo'], { timeoutMin: { compact: 0.005 } });
+  assert.deepEqual(kinds(calls), ['context', 'compact', 'context', 'stage']);
+  const { t: at, ...rec } = soloRecord(dir);
+  assert.deepEqual(rec, { sessionId: 'sess-c', slug: 'demo', stage: 'do', model: 'opus', status: 'failed' });
+  assert.ok(notes(dir).some((n) => n.startsWith('solo: context use after compaction could not be read (no end within')));
+});
+
+test('solo session choice: a compaction that fails, an unreadable second measurement or a share still at the limit starts a new session with the memory', async (t) => {
+  const cases = [
+    // Still too large: the second measurement's 0.75 is the dropped conversation's cost, plus the stage's 1.
+    [{ replies: [HIGH, 'Compacted.', HIGH, 'Done.\nAM_STAGE: DONE'] }, 'context 60.0% of the window after compaction', 4, 1.75],
+    [{ replies: [HIGH, 'Compacted.', '**Tokens:** 40k / 200k (19%)', 'Done.\nAM_STAGE: DONE'] }, 'context 20.0% of the window after compaction', 4, 1.75],
+    [{ replies: [HIGH, 'Compacted.', 'No data', 'Done.\nAM_STAGE: DONE'] }, 'context use after compaction could not be read (no token count in its output)', 4, 1.75],
+    [{ replies: [HIGH, 'x', 'Done.\nAM_STAGE: DONE'], errors: [2] }, 'compaction failed (claude ended with an error (error_during_execution)', 3, 1.25],
+    // A crashed compaction reports no cost: the first measurement's 0.25 stands.
+    [{ replies: [HIGH, 'x', 'Done.\nAM_STAGE: DONE'], crashes: [2] }, 'compaction failed (unreadable output', 3, 1],
+  ];
+  for (const [fake, why, n, cost] of cases) {
+    const what = JSON.stringify(fake);
+    const dir = makeRepo(t, { plan: SMALL, fake });
     writeFileSync(SOLO_FILE(dir), JSON.stringify(RECORDED));
     writeFileSync(CONTEXT_FILE(dir), '# memory\n');
     const { result, calls } = await run(dir, ['do', 'demo', '--solo']);
-    assert.equal(calls.length, 2, reply);
-    assert.equal(flag(calls[0], '-p'), SOLO_CONTEXT_PROMPT, reply);
-    assert.ok(!calls[1].includes('--resume'), reply);
-    assert.equal(flag(calls[1], '-p'), '/am:do demo', reply);
-    assert.ok(notes(dir).includes(`solo: context ${n} tokens; started a new session`), reply);
-    assert.ok(notes(dir).includes(CONTEXT_NOTE), reply);
-    assert.ok(systemOf(dir, 'do').includes(READ_LINE), reply);
-    assert.deepEqual(result.solo, { owner: 'demo', sessionId: 'sess-n', fresh: `context ${n} tokens`, context: true }, reply);
-    // The new session's 0.5 plus the dropped conversation's 0.25, as the /context call reported it.
-    assert.equal(result.costUsd, 0.75, reply);
-    assert.deepEqual([soloRecord(dir).sessionId, soloRecord(dir).model], ['sess-n', 'opus'], reply);
+    assert.equal(calls.length, n, what);
+    assert.deepEqual(kinds(calls).slice(0, 2), ['context', 'compact'], what);
+    assert.ok(!calls[n - 1].includes('--resume'), what);
+    assert.equal(flag(calls[n - 1], '-p'), '/am:do demo', what);
+    assert.ok(result.solo.fresh.startsWith(why), `${what}: ${result.solo.fresh}`);
+    assert.ok(notes(dir).includes(`solo: ${result.solo.fresh}; started a new session`), what);
+    assert.ok(notes(dir).includes(CONTEXT_NOTE), what);
+    assert.ok(systemOf(dir, 'do').includes(READ_LINE), what);
+    assert.equal(result.solo.context, true, what);
+    assert.equal(result.status, 'DONE', what);
+    assert.equal(result.costUsd, cost, what);
   }
 });
 
@@ -2547,7 +2611,7 @@ test('solo session choice: a whole solo run continues one session and starts a n
   assert.deepEqual(rec, { sessionId: 'sess-n', slug: 'demo-p1', stage: 'commit', model: 'sonnet', status: 'COMMITTED' });
   assert.ok(!existsSync(SOLO_FILE(dir, 'demo-p1')));
   const said = notes(dir, 'demo-p1').filter((n) => n.startsWith('solo:'));
-  assert.deepEqual(said, ['solo: context 10000 tokens; continued the session', 'solo: context 10000 tokens; continued the session', 'solo: context 10000 tokens; continued the session', 'solo: model change (opus -> sonnet); started a new session']);
+  assert.deepEqual(said, ['solo: context 5.0% of the window; continued the session', 'solo: context 5.0% of the window; continued the session', 'solo: context 5.0% of the window; continued the session', 'solo: model change (opus -> sonnet); started a new session']);
 });
 
 // ------------------------------------------------------------------ solo memory file for a new session
@@ -2572,14 +2636,14 @@ test('solo memory: a stage with no recorded session is told to read the saved me
   }
 });
 
-test('solo memory: a session over the token limit or a continued stage that ends with an error gives the new session the memory', async (t) => {
-  // Over the token limit: the stage starts in a new session at once.
-  const failed = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Done.\nAM_STAGE: DONE'], sessions: ['sess-0', 'sess-2'] } });
+test('solo memory: a session still over the window limit after compaction or a continued stage that ends with an error gives the new session the memory', async (t) => {
+  // Still over the limit after compaction: the stage starts in a new session.
+  const failed = makeRepo(t, { plan: SMALL, fake: { replies: [HIGH, 'Compacted.', HIGH, 'Done.\nAM_STAGE: DONE'], sessions: ['sess-0', 'sess-c', 'sess-c', 'sess-2'] } });
   writeFileSync(SOLO_FILE(failed), JSON.stringify(RECORDED));
   writeFileSync(CONTEXT_FILE(failed), '# memory\n');
   const a = await run(failed, ['do', 'demo', '--solo']);
-  assert.equal(a.calls.length, 2);
-  assert.ok(!a.calls[1].includes('--resume'));
+  assert.equal(a.calls.length, 4);
+  assert.ok(!a.calls[3].includes('--resume'));
   assert.ok(systemOf(failed, 'do').includes(READ_LINE));
   assert.ok(notes(failed).includes(CONTEXT_NOTE));
   assert.equal(a.result.solo.context, true);

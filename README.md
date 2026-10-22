@@ -15,7 +15,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 이 네 단계를 한 번에 맡기려면 am-auto 플러그인(Claude Code 전용, 따로 설치)의 `am-auto:multi` 를 씁니다. 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 가고, 대신 정한 것은 마지막 답에서 알려 줍니다.
 
-`am-auto:one` 도 같은 일을 하되, Claude Code 에서 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰며(다음 단계의 모델이 바뀌거나 대화가 10만 토큰 이상이면 그 단계는 새 세션으로 시작), 큰 작업도 오케스트레이터에 넘기지 않고 부분으로 나눠 차례로 돕니다.
+`am-auto:one` 도 같은 일을 하되, Claude Code 에서 단계마다 새 세션을 띄우는 대신 한 세션을 이어 쓰며(다음 단계의 모델이 바뀌면 그 단계는 새 세션으로 시작하고, 대화가 맥락 창의 20% 이상이면 먼저 압축한 뒤 그래도 넘을 때만 새 세션으로 시작), 큰 작업도 오케스트레이터에 넘기지 않고 부분으로 나눠 차례로 돕니다.
 
 `am-auto:agent` 도 같은 일을 하되, Claude Code 에서 단계마다 별도 `claude` 세션 대신 지금 세션의 서브에이전트(단계 에이전트)를 띄우고, 단계가 끝날 때마다 채팅에 한 줄(단계와 상태)만 남깁니다. 큰 작업은 `am-auto:one` 처럼 부분으로 나눠 돕니다.
 
@@ -284,9 +284,9 @@ am-auto 플러그인의 명령입니다(Claude Code 전용).
 - 오케스트레이터를 찾지도 쓰지도 않고, `am-auto:multi` 의 넘김 훅도 붙지 않습니다. 이미 오케스트레이터에 넘긴 계획(계획 Change log 칸의 넘김 줄)이면 멈추고 `am-auto:multi` 로 이어 가라고 알립니다.
 - Claude Code 에서는 단계 명령마다 `--solo` 를 붙여, 네 단계가 새 세션 대신 한 세션을 이어 씁니다. 이어 쓰는 세션과 그 단계가 돈 모델은 `.am/<slug>/solo-session.json` 에 기록됩니다.
 - 단계 사이에는 먼저 다음 단계의 모델을 앞 단계의 모델과 비교합니다. 다르면(기본값으로는 커밋 단계와 그 다음 단계) 재지 않고 새 세션으로 시작합니다. 모델이 바뀌면 이어 써도 캐시를 다시 쓰지 못해 비용만 들기 때문입니다. 업데이트 전에 남은 기록처럼 모델을 모르면 바뀐 것으로 보고 한 번 새 세션으로 시작합니다.
-- 모델이 같으면 Claude Code 의 `/context` 로 그 세션이 쓴 토큰 수를 재고(단계가 돌 모델로, 모델 호출 없음), 100,000 토큰 미만이면 그대로 이어 쓰고, 이상이거나 읽지 못하면 새 세션으로 시작합니다. 단계 사이에 대화를 압축하지는 않습니다.
+- 모델이 같으면 Claude Code 의 `/context` 로 그 세션이 맥락 창을 얼마나 채웠는지 재고(단계가 돌 모델로, 모델 호출 없음; 쓴 토큰 수 ÷ 창 크기라 sonnet·opus 의 창 크기 차이가 반영됨), 20% 미만이면 그대로 이어 씁니다. 20% 이상이면 그 대화에 `/compact` 를 보내 압축하고(같은 모델, 도구 없음) 다시 재서, 20% 미만이 되면 압축된 대화를 이어 쓰고, 그래도 20% 이상이거나 압축이 실패하면 새 세션으로 시작합니다. 사용량을 읽지 못하면 압축하지 않고 바로 새 세션으로 시작합니다. 압축 한 번은 큰 대화를 통째로 읽으므로 그만큼 비용이 듭니다.
 - 세션을 띄울 수 없는 PC 에서는 `am-auto:multi` 처럼 원래 대화 한 세션으로 진행합니다.
-- 기억 파일: 단계마다 끝 답 직전에 그 세션의 기억(결정과 이유, 남은 문제, 작업 파일에 없는 내용)을 `.am/<slug>/solo-context.md` 에 덮어씁니다. 단계가 새 세션으로 시작하면(기록된 세션이 없음, 모델 변경, 10만 토큰 이상, 이어 연 단계의 오류 등) 그 새 세션이 이 파일을 먼저 읽고 이어 갑니다. 같은 단계가 지난번에 `BLOCKED` 나 `failed` 로 끝났다면, 멈추게 한 결론이 이어지지 않도록 재지 않고 이 파일을 읽는 새 세션으로 다시 시작합니다. 이 파일은 지우지 않고, `.am/` 아래라 커밋되지 않습니다.
+- 기억 파일: 단계마다 끝 답 직전에 그 세션의 기억(결정과 이유, 남은 문제, 작업 파일에 없는 내용)을 `.am/<slug>/solo-context.md` 에 덮어씁니다. 단계가 새 세션으로 시작하면(기록된 세션이 없음, 모델 변경, 압축 뒤에도 맥락 창의 20% 이상, 이어 연 단계의 오류 등) 그 새 세션이 이 파일을 먼저 읽고 이어 갑니다. 같은 단계가 지난번에 `BLOCKED` 나 `failed` 로 끝났다면, 멈추게 한 결론이 이어지지 않도록 재지 않고 이 파일을 읽는 새 세션으로 다시 시작합니다. 이 파일은 지우지 않고, `.am/` 아래라 커밋되지 않습니다.
 
 #### 큰 작업은 부분으로 나눔
 
@@ -297,7 +297,7 @@ am-auto 플러그인의 명령입니다(Claude Code 전용).
 
 #### 진행 소식과 마지막 답
 
-- `am-auto:multi` 의 진행 소식에 더해 다음 줄이 나옵니다: `solo: context N tokens; continued the session`(10만 토큰 미만이라 이어 감), `solo: model change (a -> b); started a new session`(모델이 바뀌어 새 세션), `solo: context N tokens; started a new session`(10만 토큰 이상이라 새 세션), `solo: context use could not be read (…); started a new session`(사용량을 읽지 못해 새 세션), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
+- `am-auto:multi` 의 진행 소식에 더해 다음 줄이 나옵니다: `solo: context P of the window; continued the session`(맥락 창의 20% 미만이라 이어 감), `solo: model change (a -> b); started a new session`(모델이 바뀌어 새 세션), `solo: context P of the window; compacting`(20% 이상이라 압축), `solo: context P of the window after compaction; continued the session`(압축 뒤 20% 미만이라 이어 감), `solo: context P of the window after compaction; started a new session`(압축 뒤에도 20% 이상이라 새 세션), `solo: compaction failed (…); started a new session`(압축이 실패해 새 세션), `solo: context use after compaction could not be read (…); started a new session`(압축 뒤 사용량을 읽지 못해 새 세션), `solo: context use could not be read (…); started a new session`(사용량을 읽지 못해 새 세션), `solo: no recorded session; started a new one`(기록된 세션이 없어 새로 시작), `solo: could not continue the recorded session (…); started a new session`(기록된 세션을 이어받지 못해 새로 시작), `solo: the new session reads .am/<slug>/solo-context.md`(새 세션에 저장된 기억을 읽게 함).
 - 마지막 답에는 부분별 점검 판정과 커밋, 그리고 새 세션으로 바꾼 단계가 있으면 그 이유(`model change (opus -> sonnet)`, `context N tokens` 등)와 저장된 기억 파일을 받았는지가 나옵니다.
 - 중간에 멈추면 원인을 고치거나 질문에 답한 뒤 `am-auto:one <slug>` 로 이어 갑니다.
 
