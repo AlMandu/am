@@ -46,7 +46,7 @@ const HISTORY = new Set(['commit', 'push', 'reset', 'switch', 'checkout']);
 const SESSION_BINS = new Set(['claude', 'codex']);
 // Files of .am/<slug>/ the plan stage may not write: the stage record, its claim, the event file and the files agent-stage writes.
 const RECORD_FILES = [/^stage\.json$/i, /^stage-claim\.json$/i, /^progress\.jsonl$/i, /^rules-.*\.md$/i, /^skill-.*\.md$/i];
-const COMMIT_FILES = ['commits.md', 'handoff.md', 'reply-commit.md', COMMIT_MESSAGE];
+const COMMIT_FILES = ['commits.md', 'reply-commit.md', COMMIT_MESSAGE];
 
 const slash = (p) => p.split(path.sep).join('/');
 

@@ -228,14 +228,9 @@ test('am:commit records its commits outside am-orchestrator', () => {
   assert.ok(orch.includes("'You are running inside am-orchestrator, an unattended batch run."));
 });
 
-test('the workflow skills keep a handoff document, also in am-orchestrator, and mark the current task outside it', () => {
-  // One sentence, word for word in each skill that rewrites the whole document.
-  const handoff = 'Handoff: rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.';
-  for (const name of ['plan', 'do', 'check', 'commit']) {
-    assert.ok(read(name).includes(handoff), name);
-    // Sessions am-orchestrator started keep the document too.
-    assert.ok(!read(name).includes('Handoff: unless'), name);
-  }
+test('the workflow skills keep no handoff document and mark the current task outside am-orchestrator', () => {
+  // Progress lives in plan.md and do-result.md; no skill writes or reads handoff.md any more.
+  for (const name of ['plan', 'do', 'check', 'commit']) assert.ok(!/handoff/i.test(read(name)), name);
   // The mark is written by plan and do, and only listed first as current, never followed on its own.
   for (const name of ['plan', 'do']) assert.match(read(name), /unless your instructions say you are running inside am-orchestrator, write the slug as one line to `\.am\/\.active`/i, name);
   for (const name of ['do', 'commit']) assert.ok(read(name).includes('the one named on the first line of `.am/.active` first and marked as current (only when that folder exists)'), name);

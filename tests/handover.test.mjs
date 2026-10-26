@@ -329,7 +329,7 @@ test('findAm gives every enabled am with the Codex script; findOrchestrator only
 });
 
 // A fake core am in dir: manifest (an object, or a raw string for a broken file) and the plan skill.
-function core(dir, manifest = { name: 'am', version: '0.1.67' }, plan = true) {
+function core(dir, manifest = { name: 'am', version: '0.1.68' }, plan = true) {
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
   writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), typeof manifest === 'string' ? manifest : JSON.stringify(manifest));
   if (plan) {
@@ -356,8 +356,8 @@ test('findCore: a dev sibling wins without reading the list; one installed am fr
   assert.deepEqual(r, { root: dev, source: 'dev', version: '0.1.70' });
 
   const { auto, cache } = installedAuto();
-  const one = core(path.join(cache, '0.1.67'));
-  assert.deepEqual(findCore(auto, { list: () => [{ id: 'am@am-workflow', enabled: true, installPath: one }] }), { root: one, source: 'list', version: '0.1.67' });
+  const one = core(path.join(cache, '0.1.68'));
+  assert.deepEqual(findCore(auto, { list: () => [{ id: 'am@am-workflow', enabled: true, installPath: one }] }), { root: one, source: 'list', version: '0.1.68' });
   // Two entries for the same folder count as one (letter case too on Windows).
   const same = process.platform === 'win32' ? one.toUpperCase() : `${one}${path.sep}`;
   const two = [{ id: 'am@a', enabled: true, installPath: one }, { id: 'am@b', enabled: true, installPath: same }];
@@ -366,7 +366,7 @@ test('findCore: a dev sibling wins without reading the list; one installed am fr
 
 test('findCore: install, enable and keep-one errors from the list', () => {
   const { auto, cache } = installedAuto();
-  const a = core(path.join(cache, '0.1.67'));
+  const a = core(path.join(cache, '0.1.68'));
   const b = core(path.join(auto, '..', '..', 'other-am'));
   const off = findCore(auto, { list: () => [{ id: 'am@am-workflow', enabled: false, installPath: a }] });
   assert.match(off.error, /claude plugin enable am@am-workflow/);
@@ -384,7 +384,7 @@ test('findCore: install, enable and keep-one errors from the list', () => {
 
 test('findCore: without the list, the highest cache sibling not marked orphaned; else an error', () => {
   const { auto, cache } = installedAuto();
-  core(path.join(cache, '0.1.67'));
+  core(path.join(cache, '0.1.68'));
   const best = core(path.join(cache, '0.1.100'), { name: 'am', version: '0.1.100' });
   const orphan = core(path.join(cache, '0.2.0'), { name: 'am', version: '0.2.0' });
   writeFileSync(path.join(orphan, '.orphaned_at'), '1');
@@ -400,10 +400,10 @@ test('findCore: the minimum version, and a version that cannot be read', () => {
     const root = core(path.join(cache, 'x'), manifest);
     return { root, r: findCore(auto, { list: () => [{ id: 'am@am-workflow', enabled: true, installPath: root }] }) };
   };
-  const low = at({ name: 'am', version: '0.1.66' });
-  assert.ok(low.r.error.includes('0.1.66') && low.r.error.includes(low.root) && low.r.error.includes(AM_MIN_VERSION), low.r.error);
+  const low = at({ name: 'am', version: '0.1.67' });
+  assert.ok(low.r.error.includes('0.1.67') && low.r.error.includes(low.root) && low.r.error.includes(AM_MIN_VERSION), low.r.error);
   assert.match(low.r.error, /claude plugin marketplace update am-workflow.*claude plugin update am@am-workflow/);
-  assert.equal(at({ name: 'am', version: '0.1.67' }).r.version, '0.1.67');
+  assert.equal(at({ name: 'am', version: '0.1.68' }).r.version, '0.1.68');
   assert.equal(at({ name: 'am', version: '0.1.100' }).r.version, '0.1.100');
   assert.ok(versionKey('0.1.100') > versionKey('0.1.67'));
   assert.match(at({ name: 'am' }).r.error, /version unreadable/);

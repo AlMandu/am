@@ -129,18 +129,19 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.ok(commit.allow.includes('Bash(git commit *)') && commit.deny.includes('Bash(git push *)') && !commit.allow.includes('Bash(git push *)'));
   const pushed = permissions('commit', { push: true });
   assert.ok(pushed.allow.includes('Bash(git push *)') && !pushed.deny.includes('Bash(git push *)'));
-  // The commit stage may write only the task's commit record and handoff document, and only when it knows the slug.
+  // The commit stage may write only the task's commit record, and only when it knows the slug.
   assert.ok(!commit.allow.some((r) => r.startsWith('Edit')));
   const recorded = permissions('commit', { slug: 'demo' });
-  assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)', 'Edit(/.am/demo/handoff.md)', 'Edit(.am/demo/handoff.md)']);
+  assert.deepEqual(recorded.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo/commits.md)', 'Edit(.am/demo/commits.md)']);
   assert.deepEqual(recorded.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
   assert.deepEqual(recorded.deny, commit.deny);
   // A solo commit stage may also write its owner's memory file; the rest stays as it is.
   const solo = permissions('commit', { slug: 'demo-p1', soloOwner: 'demo' });
-  assert.deepEqual(solo.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo-p1/commits.md)', 'Edit(.am/demo-p1/commits.md)', 'Edit(/.am/demo-p1/handoff.md)', 'Edit(.am/demo-p1/handoff.md)', 'Edit(/.am/demo/solo-context.md)', 'Edit(.am/demo/solo-context.md)']);
+  assert.deepEqual(solo.allow.filter((r) => r.startsWith('Edit')), ['Edit(/.am/demo-p1/commits.md)', 'Edit(.am/demo-p1/commits.md)', 'Edit(/.am/demo/solo-context.md)', 'Edit(.am/demo/solo-context.md)']);
   assert.deepEqual(solo.allow.filter((r) => !r.startsWith('Edit')), commit.allow);
   assert.deepEqual(solo.deny, commit.deny);
-  assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says, and after the last one update \.am\/demo\/handoff\.md as the skill says; those are the only files this session can write/);
+  assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says; it is the only file this session can write/);
+  assert.ok(!/handoff/i.test(instructions('commit', 'demo').system));
   // The plan stage may also write the current-task mark, which its .am/ allowance already covers.
   assert.match(instructions('plan', 'demo').system, /only under \.am\/demo\/ and the current-task mark \.am\/\.active with the Write or Edit tool/);
   const hand = permissions('handover', { orchRoot: '/orch' });
@@ -344,7 +345,7 @@ test('instructions: solo changes three sentences of the unattended rules (four i
     }
     // Only these sentences, the plan's Parts line, the commit stage's writable files and the memory save rule differ from the rules without solo.
     if (s === 'plan') back = back.replace(/\n- If the Scale line says 2 or more implementation runs, add a section headed exactly `## Parts`[^\n]*/, '');
-    if (s === 'commit') back = back.replace('those two and .am/demo/solo-context.md (below) are the only files', 'those are the only files');
+    if (s === 'commit') back = back.replace('that file and .am/demo/solo-context.md (below) are the only files', 'it is the only file');
     const save = back.match(/\n- Before your final reply, also when you stop, rewrite \.am\/demo\/solo-context\.md whole with the Write tool[^\n]*/);
     assert.ok(save && back.endsWith(`${save[0]}\n`), `${s}: the save rule ends the rules`);
     back = back.replace(save[0], '');
@@ -372,7 +373,7 @@ test('instructions: solo changes three sentences of the unattended rules (four i
   assert.ok(read.includes('rewrite .am/demo/solo-context.md whole with the Write tool, in the plan\'s language and in about 60 lines or fewer'));
   assert.ok(read.endsWith('- This stage starts in a new session: the shared session of this am-auto:one task could not be continued. Before anything else, read .am/demo/solo-context.md, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.\n'));
   assert.ok(!read.includes('.am/demo-p1/solo-context.md'));
-  assert.ok(instructions('commit', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('those two and .am/demo/solo-context.md (below) are the only files this session can write'));
+  assert.ok(instructions('commit', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('that file and .am/demo/solo-context.md (below) are the only files this session can write'));
   assert.ok(instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('only under .am/demo-p1/, .am/demo/solo-context.md (below) and the current-task mark'));
   assert.ok(!instructions('plan', 'demo', { solo: { owner: 'demo' } }).system.includes('(below) and the current-task mark'));
   // soloRead without solo changes nothing.
@@ -418,7 +419,7 @@ test('agentRules: the stage rules for an am-auto:agent subagent, with no session
     if (stage === 'do') assert.equal(text.includes('Read .am/demo/check.md first'), fix, name);
     if (stage === 'commit') {
       // The stage hook refuses shell characters in a commit command, so the message goes through a file (stage-guard.mjs).
-      assert.ok(text.includes(`those, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write`), name);
+      assert.ok(text.includes(`that file, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write`), name);
       assert.ok(text.includes(`write the commit message to .am/${slug}/commit-message.txt with the Write tool and commit with \`git commit -F .am/${slug}/commit-message.txt\``), name);
       assert.ok(!text.includes('several -m flags'), name);
     }

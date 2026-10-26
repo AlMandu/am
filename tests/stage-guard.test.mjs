@@ -247,7 +247,8 @@ test('file writes by stage', () => {
   plan.done();
 
   const commit = setup('commit');
-  for (const f of ['commits.md', 'handoff.md', 'reply-commit.md', 'commit-message.txt']) assert.equal(commit.write(`.am/task/${f}`), 'allow', f);
+  for (const f of ['commits.md', 'reply-commit.md', 'commit-message.txt']) assert.equal(commit.write(`.am/task/${f}`), 'allow', f);
+  assert.equal(commit.write('.am/task/handoff.md'), 'deny');
   assert.equal(commit.write('.am/task/plan.md'), 'deny');
   assert.equal(commit.write('src/x.js'), 'deny');
   commit.done();

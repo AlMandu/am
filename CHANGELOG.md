@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.68 (2026-10-26)
+
+- `am:plan`·`am:do`·`am:check`·`am:commit` 이 단계마다 진행 요약 파일(`.am/<slug>/handoff.md`)을 다시 쓰던 일을 없앴다. 새 작업 폴더에는 이 파일이 생기지 않는다.
+- 진행 상태는 지금처럼 계획 문서(`plan.md`)의 완료 표시와 변경 기록, 구현 결과 문서(`do-result.md`), 점검 결과(`check.md`), 커밋 기록(`commits.md`)으로 이어진다. `am:do` 를 다시 부르면 남은 단계부터 이어 간다.
+- 이미 있는 `handoff.md` 는 지우지 않고 그대로 둔다. 더는 아무도 읽거나 고치지 않으니 지워도 된다.
+
+## am-orchestrator 0.9.13 (2026-10-26)
+
+- 커밋 세션이 그 작업의 `handoff.md` 를 쓸 수 있던 권한과 그 지시를 없앴다. 커밋 세션은 이제 어떤 파일도 쓰지 않는다.
+- am 0.1.68 과 함께 업데이트한다. 옛 am(0.1.67 이하)과 함께 쓰면 커밋 세션이 `handoff.md` 를 쓰려다 거부되어 보고서에 권한 거부 한 줄이 남을 수 있지만, 커밋은 그대로 된다.
+
 ## 0.1.67 (2026-10-20)
 
 - am 을 플러그인 셋으로 나눴다. am 에는 `am:plan`·`am:do`·`am:check`·`am:commit` 과 커밋 게이트, 2차 의견만 남는다. 자동 실행 명령과 세션 보기는 새 플러그인 am-auto(Claude Code 전용)로, land 는 새 플러그인 am-util(Claude Code·Codex)로 옮겼다.
@@ -15,6 +26,7 @@
 - 20% 이상이면 바로 새 세션으로 바꾸지 않고 먼저 그 대화를 `/compact` 로 압축한 뒤 다시 잰다. 20% 미만이 되면 압축된 대화를 이어 쓰고, 그래도 넘거나 압축이 실패하면 지금처럼 기억 파일(`solo-context.md`)을 읽는 새 세션으로 시작한다. 압축 한 번의 비용이 더 든다.
 - 진행 소식에 `solo: context 23.4% of the window; compacting`, `… after compaction; continued the session` 같은 줄이 새로 보인다.
 - `am-auto:multi`·`am-auto:one`·`am-auto:agent` 가 함께 쓰는 진행 규칙을 am-auto 안의 `flow/` 글로 옮겨, 세 명령이 실행할 때 같은 글을 읽게 했다. `flow/` 는 명령 목록에 나타나지 않고, 동작은 그대로다.
+- 커밋 단계가 `handoff.md` 를 쓰지 않는다. 그 파일 쓰기 권한도 없앴다(`commits.md` 만 쓴다). am 0.1.68 이상이 필요하고, 그보다 옛 am 이면 단계를 시작하지 않고 am 업데이트를 안내한다.
 
 ## am-auto 0.1.0 (2026-10-20)
 

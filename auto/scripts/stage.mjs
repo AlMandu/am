@@ -249,10 +249,9 @@ export function permissions(stage, { push = false, amRoot = OWN_ROOT, orchRoot =
     case 'check':
       return { mode: 'acceptEdits', allow: sh([...read, 'Edit', 'Bash']), deny: sh([...noHuman, ...noHistory]) };
     case 'commit':
-      // It may write only the task's commit record and its handoff document (in solo mode also
-      // its owner's memory file). Restore only unstages (a plain restore would throw away
+      // It may write only the task's commit record (in solo mode also its owner's memory file). Restore only unstages (a plain restore would throw away
       // the user's changes in this tree); after `--` git reads only paths, so no `--worktree` slips in. Bash only: PowerShell might eat the `--`.
-      return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? ['commits.md', 'handoff.md'].flatMap((f) => [`Edit(/.am/${slug}/${f})`, `Edit(.am/${slug}/${f})`]) : []), ...(soloOwner ? [`Edit(/.am/${soloOwner}/${SOLO_CONTEXT})`, `Edit(.am/${soloOwner}/${SOLO_CONTEXT})`] : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
+      return { mode: 'dontAsk', allow: [...sh([...read, ...gitRead, ...(slug ? [`Edit(/.am/${slug}/commits.md)`, `Edit(.am/${slug}/commits.md)`] : []), ...(soloOwner ? [`Edit(/.am/${soloOwner}/${SOLO_CONTEXT})`, `Edit(.am/${soloOwner}/${SOLO_CONTEXT})`] : []), 'Bash(git add *)', 'Bash(git commit *)', ...(push ? pushRules : [])]), 'Bash(git restore --staged -- *)'], deny: sh([...noHuman, ...(push ? [] : pushRules)]) };
     case 'compact':
       // Shortens only the picked task files before a stage (plain `.md` names, nothing that widens a path); nothing else. The
       // request is denied too, which wins should it ever be picked.
@@ -304,7 +303,7 @@ const soloPlanRule = (slug, solo) => !solo ? '' : solo.owner === slug
 
 // Every solo stage saves the shared session's memory for a stage that cannot continue it (SOLO_CONTEXT); only a stage
 // that starts in a new session while that file exists is told to read it.
-const soloSaveRule = (owner) => `\n- Before your final reply, also when you stop, rewrite .am/${owner}/${SOLO_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the memory of this task's shared session that a stage starting in a new session would need: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Point to plan.md, check.md and handoff.md instead of copying them. The am stage runner gives this file to a stage that has to start in a new session.`;
+const soloSaveRule = (owner) => `\n- Before your final reply, also when you stop, rewrite .am/${owner}/${SOLO_CONTEXT} whole with the Write tool, in the plan's language and in about 60 lines or fewer: the memory of this task's shared session that a stage starting in a new session would need: the slugs and parts, the stages done with their end lines, the decisions made and why, open issues and suspect spots, and what you learned that the task files do not hold. Point to plan.md and check.md instead of copying them. The am stage runner gives this file to a stage that has to start in a new session.`;
 const soloReadRule = (owner) => `\n- This stage starts in a new session: the shared session of this am-auto:one task could not be continued. Before anything else, read .am/${owner}/${SOLO_CONTEXT}, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.`;
 
 const STAGE_RULES = {
@@ -339,7 +338,7 @@ ${scratch(slug)}
   commit: (slug, { push, solo }) => `This is the commit stage for .am/${slug}/, with the am:commit skill. The ${solo ? 'am-auto:one' : 'am-auto:multi'} run asks for this commit on the user's behalf; that counts as the user asking.${push ? ' Push mode is on: push after committing by the skill\'s rules.' : ' Do not push.'}
 - A file you cannot tell belongs to this task: leave it out of the commit and name it in your reply.
 - To leave a staged file out of the commit, unstage it with \`git restore --staged -- <paths>\` with the Bash tool; no other restore form is allowed.
-- After each commit, record it in .am/${slug}/commits.md as the skill says, and after the last one update .am/${slug}/handoff.md as the skill says; ${solo ? `those two and .am/${solo.owner}/${SOLO_CONTEXT} (below) are` : 'those are'} the only files this session can write.
+- After each commit, record it in .am/${slug}/commits.md as the skill says; ${solo ? `that file and .am/${solo.owner}/${SOLO_CONTEXT} (below) are the only files` : 'it is the only file'} this session can write.
 - If the gate could not run (status \`error\`, or \`node\` missing), commit but do not push, and say why.
 - If a hook rejects the commit, do not bypass it and do not retry another way; copy what it printed into your reply.
 - A commit that is blocked or fails: leave the files as they are, say why, and end with AM_STAGE: BLOCKED.
@@ -438,7 +437,7 @@ export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' }
   if (stage === 'commit') swaps.push(
     ['The am-auto:multi run asks for this commit', 'The am-auto:agent run asks for this commit'],
     ['leave it out of the commit and name it in your reply.', `leave it out of the commit and name it in ${reply}.`],
-    ['those are the only files this session can write.', `those, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write.`],
+    ['it is the only file this session can write.', `that file, .am/${slug}/commit-message.txt (below) and ${reply} are the only files this stage can write.`],
     ['copy what it printed into your reply.', `copy what it printed into ${reply}.`],
     ['say why, and end with AM_STAGE: BLOCKED.', 'say why, and end with the status BLOCKED.'],
     ['; use several -m flags for several paragraphs.', `; write the commit message to .am/${slug}/commit-message.txt with the Write tool and commit with \`git commit -F .am/${slug}/commit-message.txt\` (the am stage hook refuses shell characters such as parentheses in a -m message).`],

@@ -1094,7 +1094,7 @@ export function codexOpinionRules(amRoot) {
   return WIN ? rules.flatMap((r) => [r, r.replace(/^Bash/, 'PowerShell')]) : rules;
 }
 
-export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json', amRoot = '', slug = '' }) {
+export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'json', amRoot = '' }) {
   const profile = PROFILE[phase] || phase;
   const perm = cfg.permissions[profile];
   const args = ['-p', prompt, '--output-format', format];
@@ -1102,9 +1102,7 @@ export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'j
   args.push('--permission-mode', perm.mode);
   // amRoot 는 am 폴더 하나 또는 여러 개(am 이 여러 곳에 켜져 있을 때)
   const opinions = profile === 'plan' ? [...new Set([amRoot].flat().flatMap(codexOpinionRules))] : [];
-  // 커밋 세션은 그 작업의 인계 문서 하나만 고칠 수 있다(설정이 commit 권한을 바꿔도 남는다)
-  const handoff = profile === 'commit' && slug ? [`Edit(/${AM_DIR}/${slug}/handoff.md)`, `Edit(${AM_DIR}/${slug}/handoff.md)`] : [];
-  const allow = [...(perm.allow || []), ...opinions, ...handoff];
+  const allow = [...(perm.allow || []), ...opinions];
   if (allow.length) args.push('--allowedTools', allow.join(','));
   if (perm.deny?.length) args.push('--disallowedTools', perm.deny.join(','));
   // extraArgs 에 같은 플래그가 있으면 그쪽이 정한다(두 번 넘기지 않는다).
@@ -1119,7 +1117,7 @@ export function claudeArgs(cfg, phase, { prompt, resume, systemFile, format = 'j
 }
 
 /** claude 를 한 번 부른다. 프롬프트·시스템 지시·원본 출력을 dir 에 번호 붙여 남긴다. */
-async function runClaude(ctx, phase, { dir, prompt, system, resume, slug }) {
+async function runClaude(ctx, phase, { dir, prompt, system, resume }) {
   mkdirSync(dir, { recursive: true });
   const seq = String(readdirSync(dir).filter((f) => /^\d\d-.*\.out\.json$/.test(f)).length + 1).padStart(2, '0');
   const base = path.join(dir, `${seq}-${phase}`);
@@ -1147,7 +1145,7 @@ async function runClaude(ctx, phase, { dir, prompt, system, resume, slug }) {
   let r;
   try {
     // 모든 세션이 프롬프트 캐시를 5분 보관으로 쓴다: 요청 간격이 대개 5분 안이라 1시간 저장보다 싸다
-    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot, slug })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, env: { ...process.env, FORCE_PROMPT_CACHING_5M: '1' }, track: createTracker });
+    r = await exec(bin, [...pre, ...claudeArgs(ctx.cfg, phase, { prompt, resume, systemFile, amRoot: ctx.amRoots || ctx.pluginRoot })], { cwd: ctx.repo, timeoutMs: ctx.cfg.timeoutMin[phase] * 60000, env: { ...process.env, FORCE_PROMPT_CACHING_5M: '1' }, track: createTracker });
   } finally {
     release();
   }
@@ -1186,7 +1184,7 @@ async function step(ctx, name, opts, marker, values) {
   let mark = lastMarker(r.text, marker, values);
   if (!mark && r.sessionId) {
     const ask = `Reply with exactly one line and nothing else: ${values.map((v) => `${marker}: ${v}`).join(' or ')}`;
-    const again = await runClaude(ctx, name, { dir: opts.dir, prompt: ask, resume: r.sessionId, slug: opts.slug });
+    const again = await runClaude(ctx, name, { dir: opts.dir, prompt: ask, resume: r.sessionId });
     mark = lastMarker(again.text, marker, values);
   }
   return { ...r, mark };
@@ -1414,7 +1412,6 @@ This is task ${t.id}, slug ${t.slug}. The orchestrator asks for this commit on t
 - The commit gate runs the build while you commit, and the build may rewrite tracked files. A file that becomes modified only after your first git commit is the gate's doing: leave it alone, the orchestrator restores it.
 - Command shape: the permission rules of this session allow only plain "git add ...", "git commit ..." and "git restore -- ..." commands, plus read-only git commands (status, diff, log). Run each one as its own command from the repository root. No "git -C", no cd, no pipes, no "&&" or ";" chains, no output filters such as head or tail, no heredoc and no command substitution. For a message with several paragraphs use several -m flags.
 - A command refused by the permission rules is a problem with the shape of the command, not with the gate: run it again in the plain form above.
-- After the last commit, update ${AM_DIR}/${t.slug}/handoff.md as the skill says, with the Write or Edit tool; it is the only file this session can write.
 - Never push. If a hook rejects the commit (the am commit gate, or a pre-commit check of this repository), do not bypass it, do not use --no-verify and do not retry another way. Copy what the hook printed into your final reply, word for word: the orchestrator hands it to the implementing session to fix.
 - End your final reply with exactly one line: ORCH_STATUS: COMMITTED, ORCH_STATUS: BLOCKED or ORCH_STATUS: NOTHING`,
 };
@@ -2159,14 +2156,14 @@ async function runTask(ctx, t) {
       }
       const marks = ['COMMITTED', 'BLOCKED', 'NOTHING'];
       const snap = snapshot(repo); // 커밋 직전의 작업 트리
-      let r = noteDenied('commit', await step(ctx, 'commit', { dir, system: SYSTEM.commit(ctx, t), prompt: skillPrompt(ctx, 'commit', `task ${t.id} ${t.slug}`, dir), slug: t.slug }, 'ORCH_STATUS', marks));
+      let r = noteDenied('commit', await step(ctx, 'commit', { dir, system: SYSTEM.commit(ctx, t), prompt: skillPrompt(ctx, 'commit', `task ${t.id} ${t.slug}`, dir) }, 'ORCH_STATUS', marks));
       s.sessions.commit = r.sessionId;
       let made = commitsSince(repo, s.commitBase);
       let deniedLast = r.denials;
       if (!made.length && r.denials && r.sessionId) {
         // 게이트가 아니라 권한 규칙에 걸려 커밋을 못 한 경우: 명령 모양을 알려 주고 같은 세션에서 한 번만 다시 시킨다
         log(ctx, '    커밋 명령이 권한 규칙에 걸림: 단순한 명령으로 다시 요청');
-        r = noteDenied('commit(재시도)', await step(ctx, 'commit', { dir, prompt: COMMIT_RETRY, resume: r.sessionId, slug: t.slug }, 'ORCH_STATUS', marks));
+        r = noteDenied('commit(재시도)', await step(ctx, 'commit', { dir, prompt: COMMIT_RETRY, resume: r.sessionId }, 'ORCH_STATUS', marks));
         made = commitsSince(repo, s.commitBase);
         deniedLast = r.denials;
       }
@@ -3690,7 +3687,7 @@ function dryRun(ctx) {
   for (const t of rest) say(`  ${t.id}  ${t.title}  → 지금은 못 함: ${openDecisions(ctx.plan, t).map((d) => `결정 ${d.id}`).join(', ') || STATUS_KO[ctx.state.tasks[t.id].status] || '의존 작업 대기'}`);
   const t = order[0];
   if (!t) return;
-  const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>`, amRoot: ctx.pluginRoot, slug: t.slug })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
+  const show = (name, prompt) => say(`\n[${name}]\n${[...ctx.cfg.claudeCommand, ...claudeArgs(ctx.cfg, name, { prompt, systemFile: `<${name}.system.md>`, amRoot: ctx.pluginRoot })].map((a) => (/^[\w\-./:=]+$/.test(a) ? a : `"${a}"`)).join(' ')}`);
   say(`\n첫 작업 ${t.id} 에서 실행할 명령 (inline 방식이면 프롬프트가 SKILL.md 를 채운 파일을 가리킵니다)`);
   show('plan', `/am:plan Plan task ${t.id} described in ${AM_DIR}/${t.slug}/brief.md (slug ${t.slug})`);
   show('implement', `/am:do ${t.slug}`);

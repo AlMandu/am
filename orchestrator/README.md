@@ -187,7 +187,7 @@ node orchestrator.mjs sessions 2             # 이 PC 에서 모든 실행을 �
 | `permissions` | 단계별 | 단계별 `--permission-mode`, 허용·거부 규칙 |
 | `extraArgs` | 없음 | 단계별로 덧붙일 플래그. 예: `{ "implement": ["--max-budget-usd", "20"] }`. `all` 은 모든 단계에 붙고, `fix`·`answer` 는 `model` 과 같은 방식으로 물려받음 |
 
-단계별 기본 권한: 분할과 계획은 읽기와 `.orchestrator/`·`.am/` 쓰기만(규칙은 저장소 루트 기준이라 세션이 하위 폴더로 `cd` 해도 유효), 구현과 점검은 파일 수정과 셸 명령 허용(커밋·push·reset·checkout·브랜치 전환과 변경을 숨기는 stash 는 거부. `git stash list` 와 `git restore` 는 됨), 커밋은 `git add`·`git commit`·`git restore` 와 그 작업의 `.am/<slug>/handoff.md` 쓰기만 허용합니다(`permissions` 로 커밋 권한을 바꿔도 이 쓰기 규칙은 남음). 질문 도구는 모든 단계에서 뺍니다.
+단계별 기본 권한: 분할과 계획은 읽기와 `.orchestrator/`·`.am/` 쓰기만(규칙은 저장소 루트 기준이라 세션이 하위 폴더로 `cd` 해도 유효), 구현과 점검은 파일 수정과 셸 명령 허용(커밋·push·reset·checkout·브랜치 전환과 변경을 숨기는 stash 는 거부. `git stash list` 와 `git restore` 는 됨), 커밋은 `git add`·`git commit`·`git restore` 만 허용합니다. 질문 도구는 모든 단계에서 뺍니다.
 
 ## 모델과 effort
 
@@ -384,7 +384,7 @@ tests/orchestrator-follow.test.mjs        분리된 작업, 따라가기, 종료
   progress.jsonl                     진행 소식(한 줄에 하나)
   progress.<소비자>.cursor           소비자마다 읽은 위치
   <작업 ID>/NN-<단계>.out.json       claude 원본 출력, 덧붙인 지시문, 게이트 결과
-.am/<slug>/brief.md, plan.md, check.md, handoff.md
+.am/<slug>/brief.md, plan.md, check.md
 
 이 PC 에 생기는 것 (<Claude 설정 폴더> 는 CLAUDE_CONFIG_DIR, 없으면 ~/.claude)
 <Claude 설정 폴더>/am/settings.json                남은 메모리 기준(am 이 기본값으로 만들어 두는 파일, am 과 함께 씀)

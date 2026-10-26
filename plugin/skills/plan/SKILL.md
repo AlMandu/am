@@ -37,7 +37,7 @@ Request: $ARGUMENTS
 <!-- am:common:end -->
 
 ## Existing plan
-If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from scratch. Record it in `.am/.active` as in step 4, ask its open decisions or apply the requested changes and record them in plan.md, update handoff.md as in step 7, then finish as in step 8: implement only if the user said go, otherwise point to the am:do skill.
+If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from scratch. Record it in `.am/.active` as in step 4, ask its open decisions or apply the requested changes and record them in plan.md, then finish as in step 8: implement only if the user said go, otherwise point to the am:do skill.
 
 ## Steps
 1. Restate the goal in 1-3 lines from the user's point of view. Ask first only if two reasonable readings lead to different results.
@@ -60,7 +60,5 @@ If the argument names a slug whose `.am/<slug>/plan.md` exists, do not plan from
    ## Change log
    ## Next         one line
    ```
-
-   Then write the handoff document. Handoff: rewrite `.am/<slug>/handoff.md` whole, in the language of plan.md and in about 40 lines or fewer: the goal; status (done, in progress, left); files changed and the gist of each; settled decisions not to reopen; open issues and suspect spots; the next concrete action. Point to plan.md for details instead of copying it.
 
 8. In the reply, name in plain words any technical choice where the second opinion overruled your own pick, then ask the open decisions (rules above). End with one line saying you will record the answers and stop, and that adding "go" to the answer continues straight into implementation. Record the answers under Decisions and reopen any settled choice they conflict with (rules above). If the user said go, read the am:do skill file (`${CLAUDE_PLUGIN_ROOT}/skills/do/SKILL.md`; if the placeholder was not replaced, `skills/do/SKILL.md` under the plugin root, the folder two levels above this SKILL.md) and follow its Steps for this slug; if you cannot read it, implement by the rules at the top of plan.md. Otherwise stop with the summary and the next step (the am:do skill).
