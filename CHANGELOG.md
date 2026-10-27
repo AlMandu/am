@@ -1,5 +1,12 @@
 # Changelog
 
+## am-art 0.1.0 (2026-10-27)
+
+- 아트 작업용 새 플러그인 am-art 를 추가했다(Claude Code 전용, 아트 PC 에만 설치). `/plugin install am-art@am-workflow` 로 설치한다.
+- 명령 넷: `am-art:ad-review`(AD 패키지 검수 한 바퀴, `자동` 반복과 실제 문서를 건드리지 않는 `시험 <폴더>`), `am-art:pipe-apply`(파치·Spine·Unity 반영과 세 곳 누락 확인 표, 파일을 바꾸지 않는 `점검`), `am-art:log-compare`(이미지 비교 HTML 의 로컬 보기·공유용, 별표 최종본 내보내기), `am-art:log-resume`(작업 기억·학습·회상).
+- 회사 경로는 저장소에 넣지 않고 PC마다 `~/.claude/am/art.json` 에 둔다. 값이 없으면 처음 쓸 때 하나씩 물어 채운다.
+- 비교 HTML 생성기는 Python 으로 돌고, 공유용은 Pillow 가 필요하다. 손으로 만든 기존 페이지와 원본 이미지는 바꾸지 않는다.
+
 ## 0.1.68 (2026-10-26)
 
 - `am:plan`·`am:do`·`am:check`·`am:commit` 이 단계마다 진행 요약 파일(`.am/<slug>/handoff.md`)을 다시 쓰던 일을 없앴다. 새 작업 폴더에는 이 파일이 생기지 않는다.

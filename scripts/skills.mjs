@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run from anywhere: node scripts/skills.mjs [--check]
 // The files under shared/ at the repository root are the one source of the text several SKILL.md files share: the
-// common rules block of every skill (the am-auto skills' shared flow is read at run time from auto/flow/ instead).
+// common rules block of every am skill and the owner rules of the am-art skills (the am-auto skills' shared flow is read at run time from auto/flow/ instead).
 // No plugin reads shared/ at runtime (it is not shipped): this script writes each source between its markers in every SKILL.md that carries it.
 // Without arguments it rewrites those files; with --check it only lists what differs and exits 1.
 // Every target must hold its marker pair exactly once, and a marker in a file that is not a target of its block stops
@@ -14,6 +14,7 @@ export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const skill = (dir) => (name) => `${dir}/skills/${name}/SKILL.md`;
 const am = skill('plugin');
 const auto = skill('auto');
+const art = skill('art');
 // Block name -> its source, its marker lines (each on a line of its own) and the SKILL.md files that carry it.
 export const BLOCKS = {
   common: {
@@ -22,9 +23,16 @@ export const BLOCKS = {
     end: '<!-- am:common:end -->',
     targets: [...['plan', 'do', 'check', 'commit'].map(am), ...['multi', 'one', 'agent', 'sessions'].map(auto), skill('util')('land'), 'orchestrator/skills/run/SKILL.md'],
   },
+  // am-art's skills carry their own owner rules instead of the common block (its chat rules conflict with theirs).
+  art: {
+    source: 'shared/art.md',
+    start: '<!-- am:shared:art:start -->',
+    end: '<!-- am:shared:art:end -->',
+    targets: ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'].map(art),
+  },
 };
 // Every SKILL.md under these folders is scanned for markers, targets or not (a missing folder is skipped).
-const SKILL_DIRS = ['plugin/skills', 'util/skills', 'auto/skills', 'orchestrator/skills'];
+const SKILL_DIRS = ['plugin/skills', 'util/skills', 'auto/skills', 'orchestrator/skills', 'art/skills'];
 const MARKER = /<!-- am:(?:common|shared:([^\s>]*?)):(?:start|end) -->/g;
 
 const readText = (file) => readFileSync(file, 'utf8').replace(/^﻿/, '');

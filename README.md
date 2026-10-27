@@ -60,7 +60,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 저장소는 GitHub 공개 저장소 [AlMandu/am](https://github.com/AlMandu/am) 입니다. 아래 명령을 Claude Code 나 Codex 안에서 그대로 입력하면 됩니다.
 
-같은 마켓플레이스에 플러그인이 넷 있고, 필요한 것만 설치합니다.
+같은 마켓플레이스에 플러그인이 다섯 있고, 필요한 것만 설치합니다.
 
 | 플러그인 | 담긴 명령 | 도구 |
 |---|---|---|
@@ -68,6 +68,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 | `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
 | `am-util` | `am-util:land` | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
+| `am-art` | `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`(아래 "아트 작업") | Claude Code 전용, 아트 PC 에만 |
 
 **Claude Code**
 
@@ -475,6 +476,25 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 자세한 내용은 [orchestrator/README.md](orchestrator/README.md) 에 있습니다.
 
+## 아트 작업 (`am-art`, 별도 플러그인)
+
+아트 작업(AD 패키지 검수, 게임 반영, 이미지 비교, 작업 기록)용 명령 넷입니다. 개발 워크플로와는 상관없고 am 없이도 돌며, 아트 작업을 하는 PC 에만 설치합니다. "검수", "기억해둬" 처럼 흔한 말에도 불리기 때문입니다.
+
+```
+/plugin install am-art@am-workflow
+```
+
+- `am-art:ad-review`: AD 패키지에서 AD 역할로 한 바퀴를 돕니다. 피드백 채널의 새 완료보고·질문을 검수하고 FB·다음 지시서·상태 대장 줄을 쓴 뒤 표 하나로 보고합니다. 새 문서가 없으면 "검수할 문서 없음" 한 줄로 끝나므로 `/loop 5m` 으로 `자동` 인자와 함께 반복해 돌릴 수 있습니다. 세부 규칙은 스킬에 복사하지 않고 그때그때 패키지 문서를 읽습니다.
+- `am-art:pipe-apply`: 확정 이미지를 파치 → Spine → Unity 에 반영하고, 슬롯마다 세 곳을 실제 파일로 확인한 표를 보여 줍니다. 한 칸이라도 비면 완료라고 하지 않고, 커밋·업로드는 하지 않습니다.
+- `am-art:log-compare`: 이미지 여러 장을 한 화면에서 비교하는 HTML 을 만듭니다. 원본을 가리키는 로컬 보기와, 이미지를 파일 안에 넣어 다른 사람에게 보낼 수 있는 공유용이 있습니다. 별표로 최종본을 고르고 목록을 내보낼 수 있습니다. 생성기는 Python 이고, 공유용은 Pillow 가 필요합니다(없으면 어디에 설치할지 묻습니다). 어떤 이미지를 어떻게 늘어놓을지는 프로젝트마다 `compare.json` 에 둡니다.
+- `am-art:log-resume`: "기억해둬"는 진행 지점은 상태 대장, 규칙은 프로젝트 문서, 자료 위치만 메모리에 나눠 적고, "학습해"는 수정본과 원본의 차이를 숫자로 재서 규칙으로 남기며, "어디까지 했어"는 상태 대장·git·대화 기록을 차례로 찾아 근거 파일과 함께 답합니다.
+
+**PC별 설정(`art.json`)**: 저장소가 공개라 회사 경로는 스킬에 넣지 않습니다. `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/art.json` 에 PC마다 두고, 값이 없으면 스킬이 처음 쓸 때 하나씩 물어 채웁니다. 키는 `adCodexRoot`(AD 패키지들이 든 폴더), `spineRoot`(Spine 저장소), `python`(패키지 도구와 비교 생성기를 돌릴 파이썬), `deployTools`(반영 도구 이름 → 스크립트 경로, 예: `무기`·`캐릭터`·`spine-unity`·`펫`), `browserSmoke`(선택, 비교 페이지를 브라우저로 확인할 스크립트)입니다. 스킬은 이 파일을 플러그인의 `art-settings.mjs` 로만 읽고 씁니다. 손으로 고쳐도 되지만 모르는 키나 깨진 JSON 이 있으면 스킬이 값을 쓰지 않고 멈춥니다. 반영 도구가 없는 종류(배경·아이콘 등)는 묻지 않고 "반영 도구 없음"이라고 보고합니다.
+
+**실제 파일을 바꾸지 않는 시험**: `am-art:ad-review 시험 <폴더>` 는 FB·지시서·상태 대장 줄을 모두 그 폴더에만 쓰고 정본으로 옮기지 않으므로, 과거 문서로 결과를 실제 문서와 비교해 볼 수 있습니다. `am-art:pipe-apply 점검` 은 사전 점검과 세 곳 확인 표까지만 하고 파일을 바꾸지 않습니다.
+
+Claude Code 전용입니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). Codex 에는 이 플러그인을 넣지 마세요. 넣으면 실무자(Codex) 세션에서 AD 명령이 불릴 수 있습니다.
+
 ## 모델과 effort 기본값
 
 Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모델과 effort 로 돕니다. 설치만 하면 적용되고 따로 설정할 것은 없습니다. `am-auto:multi` 와 오케스트레이터가 띄우는 세션과 두 2차 의견은 아래 사용자 설정 파일로 바꿀 수 있습니다.
@@ -492,6 +512,10 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-auto:agent` | `opus` | `medium` |
 | `am-auto:sessions` | `sonnet` | `low` |
 | `am-util:land` | `opus` | `high` |
+| `am-art:ad-review` | `opus` | `high` |
+| `am-art:pipe-apply` | `opus` | `medium` |
+| `am-art:log-compare` | `sonnet` | `medium` |
+| `am-art:log-resume` | `opus` | `high` |
 | 단계 사이 맥락 압축 세션(`am-auto:multi`·`am-auto:one`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
 | `am-auto:agent` 계획 단계 에이전트(`am-auto:stage-plan`) | `opus` | `high` |

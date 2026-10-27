@@ -19,6 +19,11 @@
       "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land(Claude Code·Codex 공용)"
     },
     {
+      "name": "am-art",
+      "source": "./art",
+      "description": "아트 작업용 스킬 넷: AD 검수 한 바퀴, 파치·Spine·Unity 반영 확인, 이미지 비교 HTML, 작업 기억·학습·회상(Claude Code 전용)"
+    },
+    {
       "name": "am-orchestrator",
       "source": "./orchestrator",
       "description": "큰 설계 문서를 작은 작업으로 나눠 작업마다 am 의 plan → do → check → commit 을 별도 세션으로 돌리는 오케스트레이터(Claude Code 전용, am 필요)"

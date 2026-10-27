@@ -15,10 +15,13 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, sessions: 80 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120 };
+// am-art's skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
+const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
+const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/skills/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto' };
-const PLUGIN_FOLDERS = ['plugin', 'util', 'auto'];
+const SKILL_HOME = { land: 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART.map((n) => [n, 'art'])) };
+const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
@@ -36,9 +39,17 @@ const frontmatter = (text) => {
   }));
 };
 
-test('every skill carries the same common rules block', () => {
-  const blocks = Object.keys(LIMITS).map((n) => common(read(n)));
+test('every am, am-auto and am-util skill carries the same common rules block, and the am-art skills the art block instead', () => {
+  const commonSkills = Object.keys(LIMITS).filter((n) => !ART.includes(n));
+  for (const n of commonSkills) assert.ok(BLOCKS.common.targets.includes(skillPath(n)), n);
+  assert.ok(BLOCKS.common.targets.includes('orchestrator/skills/run/SKILL.md'));
+  const blocks = commonSkills.map((n) => common(read(n)));
   for (const b of blocks.slice(1)) assert.equal(b, blocks[0]);
+  assert.deepEqual(BLOCKS.art.targets, ART.map(skillPath));
+  for (const n of ART) {
+    assert.ok(!read(n).includes(BLOCKS.common.start), n);
+    assert.ok(read(n).includes(BLOCKS.art.start), n);
+  }
 });
 
 // Shared blocks are written from shared/ by scripts/skills.mjs; a block edited in a SKILL.md alone fails here.
@@ -109,8 +120,17 @@ test('scripts/skills.mjs writes a changed block back, stops on a broken marker p
   }
 });
 
+// The one slash name kept: ad-review's /loop command line, which the owner types as it is.
+const LOOP_LINE = '`/loop 5m /am-art:ad-review 자동`';
 test('am skills refer to other skills by name, not with a slash prefix', () => {
-  for (const name of Object.keys(LIMITS)) assert.doesNotMatch(withoutCommon(read(name)), SLASH_NAME, name);
+  for (const name of Object.keys(LIMITS)) {
+    let text = withoutCommon(read(name));
+    if (name === 'ad-review') {
+      assert.equal(text.split(LOOP_LINE).length, 2, LOOP_LINE);
+      text = text.replace(LOOP_LINE, '');
+    }
+    assert.doesNotMatch(text, SLASH_NAME, name);
+  }
 });
 
 test('skills stay within their line limits and name themselves after their folder', () => {
@@ -146,9 +166,10 @@ test('every skill folder of every plugin folder is a skill with limits, in its o
 });
 
 // Each plugin is installed on its own; only am-auto depends on am (it runs am's skills).
-test('am and am-util declare no dependencies, and am-auto depends on am alone', () => {
+test('am, am-util and am-art declare no dependencies, and am-auto depends on am alone', () => {
   const market = JSON.parse(readFileSync(path.join(REPO_ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
-  for (const name of ['am', 'am-util']) {
+  assert.equal(market.plugins.find((p) => p.name === 'am-art')?.source, './art');
+  for (const name of ['am', 'am-util', 'am-art']) {
     const entry = market.plugins.find((p) => p.name === name);
     assert.ok(entry, name);
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, entry.source, '.claude-plugin', 'plugin.json'), 'utf8'));
@@ -159,7 +180,7 @@ test('am and am-util declare no dependencies, and am-auto depends on am alone', 
   assert.deepEqual(JSON.parse(readFileSync(path.join(REPO_ROOT, 'auto', '.claude-plugin', 'plugin.json'), 'utf8')).dependencies, ['am']);
 });
 
-test('the skills checked here and the common block targets are every SKILL.md of the plugin folders', () => {
+test('the skills checked here and the common and art block targets are every SKILL.md of the plugin folders', () => {
   const actual = [];
   for (const folder of PLUGIN_FOLDERS) {
     const dir = path.join(REPO_ROOT, folder, 'skills');
@@ -170,7 +191,9 @@ test('the skills checked here and the common block targets are every SKILL.md of
   }
   actual.sort();
   assert.deepEqual(Object.keys(LIMITS).map((n) => `${SKILL_HOME[n] ?? 'plugin'}/skills/${n}/SKILL.md`).sort(), actual);
-  assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual, 'orchestrator/skills/run/SKILL.md'].sort());
+  const art = ART.map(skillPath);
+  assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual.filter((f) => !art.includes(f)), 'orchestrator/skills/run/SKILL.md'].sort());
+  assert.deepEqual([...BLOCKS.art.targets].sort(), art.sort());
 });
 
 // A copy moved to another plugin folder must still find what it imports; a static check would miss a lost export name.
@@ -503,7 +526,7 @@ test('plugin/agents holds only the reviewer, and auto/agents only the stage agen
 // purpose (history, inputs), and plugin/hooks/hooks.json is frozen byte for byte (tests/gate.test.mjs).
 const OLD_NAME = /am:(?:auto\b|sessions\b|land\b|stage-|solo\b|lean\b)/;
 const OLD_PATH = /plugin\/(?:scripts\/(?:stage|agent-stage|progress|sessions|claude-opinion|memory-guard|proc-tree)\.mjs|hooks\/(?:handover|stage-guard|stage-hook)\.mjs|agents\/stage-|skills\/(?:multi|one|agent|sessions|land|auto|solo|lean)\b)|skills\/auto-(?:multi|one|agent)\b/;
-const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'orchestrator/README.md', 'CLAUDE.md'];
+const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'art/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'orchestrator/README.md', 'CLAUDE.md'];
 const OLD_SKIP = ['plugin/hooks/hooks.json'];
 // The only places an old name stays: the stored .gate phase (written and read) and the README's notice of the rename.
 const OLD_KEPT = {

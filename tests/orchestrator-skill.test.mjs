@@ -40,7 +40,7 @@ function readsStatusLikeAuto(text) {
 
 test('the marketplace lists every plugin and each source holds a manifest with that name', () => {
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
-  assert.deepEqual(market.plugins.map((p) => p.name), ['am', 'am-auto', 'am-util', 'am-orchestrator']);
+  assert.deepEqual(market.plugins.map((p) => p.name), ['am', 'am-auto', 'am-util', 'am-art', 'am-orchestrator']);
   for (const p of market.plugins) {
     const manifest = JSON.parse(read(p.source, '.claude-plugin', 'plugin.json'));
     assert.equal(manifest.name, p.name);
