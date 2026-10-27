@@ -320,6 +320,8 @@ const COMPANY = [
   ['Notion URL', /notion\.(?:so|com)/i],
   ['32-digit hex ID', /\b[0-9a-f]{32}\b/i],
   ['UUID', /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
+  // A personal account must never be named (am-art:ad-execute asks the operator instead).
+  ['mail address', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/],
 ];
 // The README's generic examples (a placeholder user folder, the developer's own checkout), built so this file holds no hit.
 const DRIVE = (rest) => `C${':'}${rest}`;
@@ -346,9 +348,9 @@ test('art: no company value in the art plugin, its shared block, the docs or thi
   });
   assert.deepEqual(found, []);
   // The patterns themselves catch what they are for (each sample is built from pieces, so this file stays clean).
-  const samples = [`D${':'}/git/x`, DRIVE('\\Spine'), `collection${':'}//x`, `www.notion${'.'}so/x`, 'a'.repeat(32), ['0e0c1a3b', '1111', '2222', '3333', '444455556666'].join('-')];
-  assert.equal(companyHits(samples.join('\n')).length, 6);
-  assert.deepEqual(companyHits('file:///<encoded path> https://github.com <adCodexRoot>/_공통/'), []);
+  const samples = [`D${':'}/git/x`, DRIVE('\\Spine'), `collection${':'}//x`, `www.notion${'.'}so/x`, 'a'.repeat(32), ['0e0c1a3b', '1111', '2222', '3333', '444455556666'].join('-'), `someone${'@'}example.com`];
+  assert.equal(companyHits(samples.join('\n')).length, 7);
+  assert.deepEqual(companyHits('file:///<encoded path> https://github.com <adCodexRoot>/_공통/ `codex plugin add am-art@am-workflow`'), []);
 });
 
 test('art settings: the command line prints Korean paths as UTF-8', () => {

@@ -1,6 +1,6 @@
 ---
 name: ad-review
-description: "아트 AD 패키지(AD_Codex_*)에서 AD 역할로 한 바퀴를 돕니다: 피드백 채널 확인 → 실무자 완료보고·질문 검수 → FB 작성 → 다음 지시서 발행 → 상태 대장 기록 → 오너 보고. 아트 작업 중 ‘검수’, ‘검수 ㄱㄱ’, ‘검수할게 있나?’, ‘검수나 완료가 있어?’, ‘완료보고 읽어’, ‘피드백 확인해’, ‘실무자1 검수’, ‘실무자2 검수’, ‘질문파일 보고 질문해봐’, ‘검수하고 질문해’, ‘지시서 ㄱㄱ’, ‘다음 작업 추천’ 이라고 하거나 피드백/.../NNN_..._완료보고.md 경로만 붙여 넣으면 씁니다. 이미지 생성·게임 반영·커밋은 하지 않습니다."
+description: "아트 AD 패키지(AD_Codex_*)에서 AD 역할로 한 바퀴를 돕니다: 피드백 채널 확인 → 실무자 완료보고·질문 검수 → FB 작성 → 다음 지시서 발행 → 상태 대장 기록 → 오너 보고. 아트 작업 중 ‘검수’, ‘검수 ㄱㄱ’, ‘검수할게 있나?’, ‘검수나 완료가 있어?’, ‘완료보고 읽어’, ‘피드백 확인해’, ‘실무자1 검수’, ‘실무자2 검수’, ‘질문파일 보고 질문해봐’, ‘검수하고 질문해’, ‘지시서 ㄱㄱ’, ‘다음 작업 추천’ 이라고 하거나 피드백/.../NNN_..._완료보고.md 경로만 붙여 넣으면 씁니다. 이미지 생성·게임 반영·커밋은 하지 않습니다. Claude Code 전용입니다."
 argument-hint: "[실무자1|실무자2|<문서 경로>|자동|시험 <폴더>]"
 model: opus
 effort: high
@@ -9,6 +9,7 @@ effort: high
 # am-art:ad-review
 
 Argument: $ARGUMENTS
+If you are not Claude Code (for example Codex): answer exactly one line, `이 스킬은 Claude Code AD 용입니다(실무자는 am-art:ad-execute 스킬).`, and stop; read and change nothing.
 
 One run is one round as AD (Claude): feedback channel → review the worker's (Codex's) reports and questions → FB → next instruction → status ledger → owner report. Repetition happens outside the skill: `/loop 5m /am-art:ad-review 자동`.
 

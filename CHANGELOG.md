@@ -1,5 +1,12 @@
 # Changelog
 
+## am-art 0.1.1 (2026-10-27)
+
+- am-art 를 Claude Code·Codex 겸용으로 바꿨다. Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치한다(아트 PC 의 실무자 세션에만).
+- 새 명령 `am-art:ad-execute`(Codex 전용): AD 패키지에서 실무자로 한 바퀴를 돈다. 매번 공통 계약 문서를 직접 다시 읽고, 환경·계정을 확인한 뒤 내 지시서를 찾아(보류·다른 실무자 배정·이미 완료보고·다른 실무자가 먼저 착수한 대상, AD 가 아직 답하지 않은 내 질문이 걸린 대상은 건너뜀) 착수 표시 → 생성(imagegen 스킬) → 자가검수 → 완료보고 → 상태 대장 순으로 마치고, 승인받은 뒤에만 커밋한다. 할 지시서가 없으면 "지시서 대기" 한 줄로 끝난다. `대기 <N>분 [<M>시간]` 으로 반복할 수 있다(지시서가 없거나 질문으로 끝난 바퀴 뒤에 N분 쉼, 최대 시간 기본 8시간).
+- 계정 확인: 세션의 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 한 번 묻는다. 아니라고 하거나 계정을 알 수 없고 확인도 없으면 생성하지 않는다. 계정 주소는 저장소·설정 파일 어디에도 적지 않는다.
+- `am-art:ad-review` 는 Claude Code 전용으로, Codex 에서 불리면 한 줄 안내 후 멈춘다. `am-art:ad-execute` 는 Claude Code 에서 자동으로 불리지 않고 직접 불러도 한 줄 안내 후 멈춘다. `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` 은 Claude Code 에서 그대로이고, Codex 에서는 자동으로 불리지 않는다.
+
 ## am-art 0.1.0 (2026-10-27)
 
 - 아트 작업용 새 플러그인 am-art 를 추가했다(Claude Code 전용, 아트 PC 에만 설치). `/plugin install am-art@am-workflow` 로 설치한다.

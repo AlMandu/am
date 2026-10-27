@@ -68,7 +68,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 | `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
 | `am-util` | `am-util:land` | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
-| `am-art` | `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`(아래 "아트 작업") | Claude Code 전용, 아트 PC 에만 |
+| `am-art` | `am-art:ad-review`(Claude Code)·`am-art:ad-execute`(Codex)·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
 
 **Claude Code**
 
@@ -92,7 +92,7 @@ codex plugin add am@am-workflow
 codex plugin add am-util@am-workflow
 ```
 
-Codex 에는 자동 실행(am-auto)이 없습니다. am-util 은 land 가 필요할 때만 설치합니다.
+Codex 에는 자동 실행(am-auto)이 없습니다. am-util 은 land 가 필요할 때만, am-art 는 아트 PC 의 실무자 세션에만(`codex plugin add am-art@am-workflow`, 아래 "아트 작업") 설치합니다.
 
 Codex 는 플러그인 훅을 사용자가 신뢰해야 실행합니다. 설치 뒤 Codex 를 시작하면 나오는 훅 검토 화면에서 "Trust all and continue" 를 고르거나, 세션 중 훅 목록에서 `t` 를 누르세요. 신뢰하기 전에도 스킬은 동작하지만 커밋 게이트는 돌지 않습니다. 플러그인을 업데이트해 훅이 바뀌면 다시 신뢰해야 합니다.
 
@@ -478,13 +478,22 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 ## 아트 작업 (`am-art`, 별도 플러그인)
 
-아트 작업(AD 패키지 검수, 게임 반영, 이미지 비교, 작업 기록)용 명령 넷입니다. 개발 워크플로와는 상관없고 am 없이도 돌며, 아트 작업을 하는 PC 에만 설치합니다. "검수", "기억해둬" 처럼 흔한 말에도 불리기 때문입니다.
+아트 작업(AD 패키지 검수와 실무, 게임 반영, 이미지 비교, 작업 기록)용 명령 다섯입니다. 개발 워크플로와는 상관없고 am 없이도 돌며, 아트 작업을 하는 PC 에만 설치합니다. "검수", "지시서 ㄱㄱ", "기억해둬" 처럼 흔한 말에도 불리기 때문입니다. AD 는 Claude Code, 실무자는 Codex 이므로 두 도구에 모두 설치합니다.
 
 ```
 /plugin install am-art@am-workflow
 ```
 
+Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치합니다(Codex 는 GitHub 의 main 에서 받으므로, 이미 설치했다면 `codex plugin remove am-art@am-workflow` 뒤 다시 추가해야 새 판이 보입니다).
+
+| 명령 | Claude Code | Codex |
+|---|---|---|
+| `am-art:ad-review` | 씁니다 | 불러도 "Claude Code 용"이라고 한 줄 말하고 멈춤 |
+| `am-art:ad-execute` | 자동으로 불리지 않고, 직접 불러도 "Codex 용"이라고 한 줄 말하고 멈춤 | 씁니다 |
+| `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` | 씁니다 | 자동으로 불리지 않음(직접 부르면 돌지만 Claude Code 를 기준으로 만든 명령) |
+
 - `am-art:ad-review`: AD 패키지에서 AD 역할로 한 바퀴를 돕니다. 피드백 채널의 새 완료보고·질문을 검수하고 FB·다음 지시서·상태 대장 줄을 쓴 뒤 표 하나로 보고합니다. 새 문서가 없으면 "검수할 문서 없음" 한 줄로 끝나므로 `/loop 5m` 으로 `자동` 인자와 함께 반복해 돌릴 수 있습니다. 세부 규칙은 스킬에 복사하지 않고 그때그때 패키지 문서를 읽습니다.
+- `am-art:ad-execute`(Codex): 실무자 역할로 한 바퀴를 돕니다. "지시서 ㄱㄱ", "실무자2", "이어서 작업" 처럼 말하거나 `피드백/.../NNN_..._지시.md` 경로만 붙여 넣으면 불립니다. 시작할 때마다 패키지의 공통 계약 문서(`AGENTS.md`, 실무자 수칙, 역할 정의, 문서 템플릿, 프로젝트 설정)를 직접 다시 읽고 "공통 계약 읽음" 한 줄을 보여 준 뒤, 환경을 확인하고 내 지시서를 찾아(보류·다른 실무자 배정·이미 완료보고나 다른 실무자가 먼저 착수한 대상, AD 가 아직 답하지 않은 내 질문이 걸린 대상은 건너뜀) 상태 대장에 착수를 적고, 이미지 생성은 Codex 의 imagegen 스킬에 맡겨 자가검수 → 완료보고 → 상태 대장 순으로 마칩니다. 할 지시서가 없으면 "지시서 대기" 한 줄로 끝납니다. 세션의 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 한 번 묻습니다(개인 계정 주소는 어디에도 적지 않습니다). 커밋은 바꾼 파일과 메시지를 보여 주고 승인받은 뒤에만 하며 push 는 하지 않습니다. `대기 5분`(최대 시간 기본 8시간, `대기 5분 3시간` 처럼 바꿈)을 주면 지시서가 없거나 질문을 남기고 끝난 바퀴 뒤에 그 간격만큼 쉬었다가 다시 찾고, 목표 완료·`정지`·환경 오류·최대 시간 중 하나에서 멈춥니다. 대기 중 커밋 승인은 끝날 때 한 번에 묻습니다.
 - `am-art:pipe-apply`: 확정 이미지를 파치 → Spine → Unity 에 반영하고, 슬롯마다 세 곳을 실제 파일로 확인한 표를 보여 줍니다. 한 칸이라도 비면 완료라고 하지 않고, 커밋·업로드는 하지 않습니다.
 - `am-art:log-compare`: 이미지 여러 장을 한 화면에서 비교하는 HTML 을 만듭니다. 원본을 가리키는 로컬 보기와, 이미지를 파일 안에 넣어 다른 사람에게 보낼 수 있는 공유용이 있습니다. 별표로 최종본을 고르고 목록을 내보낼 수 있습니다. 생성기는 Python 이고, 공유용은 Pillow 가 필요합니다(없으면 어디에 설치할지 묻습니다). 어떤 이미지를 어떻게 늘어놓을지는 프로젝트마다 `compare.json` 에 둡니다.
 - `am-art:log-resume`: "기억해둬"는 진행 지점은 상태 대장, 규칙은 프로젝트 문서, 자료 위치만 메모리에 나눠 적고, "학습해"는 수정본과 원본의 차이를 숫자로 재서 규칙으로 남기며, "어디까지 했어"는 상태 대장·git·대화 기록을 차례로 찾아 근거 파일과 함께 답합니다.
@@ -493,7 +502,7 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 **실제 파일을 바꾸지 않는 시험**: `am-art:ad-review 시험 <폴더>` 는 FB·지시서·상태 대장 줄을 모두 그 폴더에만 쓰고 정본으로 옮기지 않으므로, 과거 문서로 결과를 실제 문서와 비교해 볼 수 있습니다. `am-art:pipe-apply 점검` 은 사전 점검과 세 곳 확인 표까지만 하고 파일을 바꾸지 않습니다.
 
-Claude Code 전용입니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). Codex 에는 이 플러그인을 넣지 마세요. 넣으면 실무자(Codex) 세션에서 AD 명령이 불릴 수 있습니다.
+`am-art:ad-execute` 를 뺀 넷은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). Codex 에 설치해도 실무자 세션에서 AD 명령이 돌지 않도록 `am-art:ad-review` 는 Codex 에서 한 줄 안내 후 멈추고, 나머지 셋은 Codex 에서 자동으로 불리지 않습니다.
 
 ## 모델과 effort 기본값
 
@@ -516,6 +525,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-art:pipe-apply` | `opus` | `medium` |
 | `am-art:log-compare` | `sonnet` | `medium` |
 | `am-art:log-resume` | `opus` | `high` |
+| `am-art:ad-execute` | `sonnet` | `low` |
 | 단계 사이 맥락 압축 세션(`am-auto:multi`·`am-auto:one`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
 | `am-auto:agent` 계획 단계 에이전트(`am-auto:stage-plan`) | `opus` | `high` |

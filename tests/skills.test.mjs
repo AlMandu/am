@@ -15,12 +15,14 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120 };
-// am-art's skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'ad-execute': 120 };
+// am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
 const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
+// Every am-art skill: ad-execute is the Codex worker's and carries neither block.
+const ART_PLUGIN = [...ART, 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/skills/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART.map((n) => [n, 'art'])) };
+const SKILL_HOME = { land: 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
@@ -40,7 +42,7 @@ const frontmatter = (text) => {
 };
 
 test('every am, am-auto and am-util skill carries the same common rules block, and the am-art skills the art block instead', () => {
-  const commonSkills = Object.keys(LIMITS).filter((n) => !ART.includes(n));
+  const commonSkills = Object.keys(LIMITS).filter((n) => !ART_PLUGIN.includes(n));
   for (const n of commonSkills) assert.ok(BLOCKS.common.targets.includes(skillPath(n)), n);
   assert.ok(BLOCKS.common.targets.includes('orchestrator/skills/run/SKILL.md'));
   const blocks = commonSkills.map((n) => common(read(n)));
@@ -151,6 +153,33 @@ test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent and am-util:land
   }
 });
 
+// am-art serves both tools: ad-execute is the Codex worker's, ad-review the Claude Code AD's (user decision).
+const AD_EXECUTE_TRIGGERS = ['피드백 채널 최신 지시서대로 작업', '지시서 ㄱㄱ', '지시서 읽어', '지시서 다시 읽어', '지시서 확인', '‘실무자’', '‘실무’', '실무자1', '실무자 2', '실무자 대기', '실무자2번. 대기.', '너는 실무자 2번이야', '이어서 작업', '계속 진행해', '013 지시서를 실행', '피드백/.../NNN_..._지시.md', 'FB §5 → 011 지시 실행'];
+test('am-art: ad-execute stops in Claude Code, ad-review stops in Codex, and Codex picks none of the other four on its own', () => {
+  const text = read('ad-execute');
+  for (const s of [BLOCKS.common.start, BLOCKS.art.start, '${CLAUDE_PLUGIN_ROOT}', 'AskUserQuestion']) assert.ok(!text.includes(s), `ad-execute: ${s}`);
+  assert.ok(!existsSync(path.join(skillDir('ad-execute'), 'agents', 'openai.yaml')), 'Codex may pick ad-execute on its own');
+  const fm = frontmatter(text);
+  assert.equal(fm['disable-model-invocation'], 'true');
+  const desc = fm.description.slice(1, -1);
+  assert.ok(desc.length <= 1024, `description: ${desc.length} characters`);
+  for (const s of [...AD_EXECUTE_TRIGGERS, 'Codex 전용']) assert.ok(desc.includes(s), s);
+  // Each stop line comes right after the argument line, before anything else is read.
+  const after = (t) => t.split('\n')[t.split('\n').indexOf('Argument: $ARGUMENTS') + 1];
+  assert.match(after(text), /^If you are Claude Code, not Codex: .*, and stop;/);
+  // The shared contract files are named once, in their one section.
+  const contract = text.split('\n## Shared contract')[1].split('\n## ')[0];
+  for (const f of ['`AGENTS.md`', '`02_Codex_실무자_수칙.md`', '`01_역할정의_워크플로우.md`', '`03_문서_템플릿.md`', '`프로젝트/<프로젝트>_<타입>_설정.md`']) {
+    assert.ok(contract.includes(f), f);
+    assert.equal(text.split(f).length, 2, `${f} once`);
+  }
+  const review = read('ad-review');
+  assert.match(after(review), /^If you are not Claude Code \(for example Codex\): .*am-art:ad-execute.*, and stop;/);
+  assert.ok(review.indexOf(after(review)) < review.indexOf(BLOCKS.art.start));
+  assert.match(frontmatter(review).description, /Claude Code 전용/);
+  for (const n of ART) assert.match(readFileSync(path.join(skillDir(n), 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/, n);
+});
+
 test('every skill folder of every plugin folder is a skill with limits, in its own plugin folder', () => {
   const found = [];
   for (const folder of PLUGIN_FOLDERS) {
@@ -191,9 +220,9 @@ test('the skills checked here and the common and art block targets are every SKI
   }
   actual.sort();
   assert.deepEqual(Object.keys(LIMITS).map((n) => `${SKILL_HOME[n] ?? 'plugin'}/skills/${n}/SKILL.md`).sort(), actual);
-  const art = ART.map(skillPath);
-  assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual.filter((f) => !art.includes(f)), 'orchestrator/skills/run/SKILL.md'].sort());
-  assert.deepEqual([...BLOCKS.art.targets].sort(), art.sort());
+  const artPlugin = ART_PLUGIN.map(skillPath);
+  assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual.filter((f) => !artPlugin.includes(f)), 'orchestrator/skills/run/SKILL.md'].sort());
+  assert.deepEqual([...BLOCKS.art.targets].sort(), ART.map(skillPath).sort());
 });
 
 // A copy moved to another plugin folder must still find what it imports; a static check would miss a lost export name.
@@ -226,7 +255,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'multi' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
