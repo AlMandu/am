@@ -5,12 +5,9 @@
 //     "autoChanged": { <repository folder>: [<pattern>, ...] } }
 // Every key is optional; keys starting with `_` are notes, kept as they are. A broken file or an unknown key is an error
 // (one English line `<file>: <problem>`), and `set` then refuses too instead of making a new file.
-// autoChanged lists, per repository, the paths that change by themselves (git-sync shows them as candidates). Patterns are
-// relative to the repository root and case-sensitive: `*` stays inside one folder part, `**` is zero or more parts, a trailing
-// `/` is that whole folder, everything else is literal. Only `auto add` and `auto remove` write it.
-// CLI: get <key|deployTools.<name>> (exit 3 when missing), set <key> <value>, set deployTools.<name> <path>, show,
-//   auto list <repo>, auto add <repo> <pattern>, auto remove <repo> <pattern> (exit 3 when not listed),
-//   auto match <repo> (paths on standard input, one per line; prints `<path>\t<pattern>` for each path a pattern matches).
+// autoChanged is the old list am-art 0.1.3 wrote (repository folder -> patterns). This script only reads it and leaves it as it
+// is on `set`; it never writes it. am-util's git-sync-settings.mjs imports it into git-sync.json.
+// CLI: get <key|deployTools.<name>> (exit 3 when missing), set <key> <value>, set deployTools.<name> <path>, show.
 // Exit codes: 0 done, 1 error, 2 usage, 3 missing value. Node only, no dependencies.
 
 import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -20,7 +17,6 @@ import { fileURLToPath } from 'node:url';
 
 export const PATH_KEYS = ['adCodexRoot', 'spineRoot', 'python', 'browserSmoke', 'gameRoot'];
 export const KEYS = [...PATH_KEYS, 'deployTools', 'autoChanged'];
-export const PATTERN_MAX = 200;
 // A lock older than this is left over from a writer that died; rename retries cover a virus scanner holding the file.
 export const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 15_000;
@@ -50,54 +46,6 @@ function absoluteProblem(value) {
   return '';
 }
 
-/** Why a value cannot be an autoChanged pattern, or ''. */
-export function patternProblem(p) {
-  if (typeof p !== 'string' || !p) return 'must be a non-empty string';
-  if (p.length > PATTERN_MAX) return `must be at most ${PATTERN_MAX} characters`;
-  if (CONTROL.test(p)) return 'must not hold control characters';
-  if (p.includes('\\')) return 'must use / between folders, not \\';
-  if (p.startsWith('/')) return 'must be relative to the repository root (no leading /)';
-  if (/^[A-Za-z]:/.test(p)) return 'must not start with a drive letter';
-  const parts = (p.endsWith('/') ? p.slice(0, -1) : p).split('/');
-  if (parts.some((s) => s === '' || s === '.' || s === '..')) return 'must not hold empty, "." or ".." folder parts';
-  return '';
-}
-
-const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** The anchored regular expression of a pattern; runs of `*` and of `**` parts are collapsed so matching stays fast. */
-function patternRegex(pattern) {
-  const parts = [];
-  const raw = pattern.endsWith('/') ? [...pattern.slice(0, -1).split('/'), '**'] : pattern.split('/');
-  for (const part of raw) {
-    const p = /^\*+$/.test(part) && part.length > 1 ? '**' : part;
-    if (p !== '**' || parts[parts.length - 1] !== '**') parts.push(p);
-  }
-  let re = '';
-  parts.forEach((p, i) => {
-    const last = i === parts.length - 1;
-    if (p === '**') re += last ? '[^/]+(?:/[^/]+)*' : '(?:[^/]+/)*';
-    else re += p.replace(/\*+/g, '*').split('*').map(escapeRegex).join('[^/]*') + (last ? '' : '/');
-  });
-  return new RegExp(`^${re}$`);
-}
-
-/** A repository-relative path as the patterns see it: `/` separators, no leading `./`, no trailing carriage return. */
-const normalizeRel = (rel) => rel.replace(/\r$/, '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
-
-/** Whether `rel` (a path relative to the repository root) matches `pattern`. */
-export function matchPattern(pattern, rel) {
-  return patternRegex(pattern).test(normalizeRel(rel));
-}
-
-const sameRepo = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
-
-/** The autoChanged key of `repo`: an existing key naming the same folder, else `path.resolve(repo)`. */
-export function repoKey(data, repo) {
-  const want = path.resolve(repo);
-  return Object.keys(data.autoChanged ?? {}).find((k) => sameRepo(path.resolve(k), want)) ?? want;
-}
-
 /** Checks parsed file data; returns '' or the first problem. Existence is checked only when a value is set. */
 function shapeProblem(data) {
   if (!isObject(data)) return 'the top level must be a JSON object';
@@ -108,15 +56,12 @@ function shapeProblem(data) {
     if (!isObject(data.deployTools)) return 'deployTools must be an object of name -> path';
     for (const [n, v] of Object.entries(data.deployTools)) if (bad(v)) return `deployTools.${n} must be a non-empty string without control characters`;
   }
+  // The old am-art 0.1.3 list: only its shape is checked, never the pattern syntax (am-util:git-sync checks that on import).
   if (data.autoChanged !== undefined) {
     if (!isObject(data.autoChanged)) return 'autoChanged must be an object of repository folder -> list of patterns';
     for (const [repo, list] of Object.entries(data.autoChanged)) {
       if (bad(repo)) return 'autoChanged repository keys must be non-empty strings without control characters';
-      if (!Array.isArray(list)) return `autoChanged["${repo}"] must be a list of patterns`;
-      for (const p of list) {
-        const problem = patternProblem(p);
-        if (problem) return `autoChanged["${repo}"] pattern ${JSON.stringify(p)} ${problem}`;
-      }
+      if (!Array.isArray(list) || list.some((p) => typeof p !== 'string')) return `autoChanged["${repo}"] must be a list of strings`;
     }
   }
   return '';
@@ -245,9 +190,12 @@ function writeLocked(file, change, lockOptions) {
   }
 }
 
+/** The one line `get` and `set` give for autoChanged, which moved to am-util:git-sync. */
+const movedLine = (file) => `${file}: autoChanged moved to am-util:git-sync (git-sync.json); this file keeps only the old am-art 0.1.3 list, which git-sync imports by itself`;
+
 /** Sets `key` (or `deployTools.<name>`) to the path `value` under a lock. Returns '' or an error line. */
 export function setArtSetting(file, key, value, lockOptions) {
-  if (key === 'autoChanged') return `${file}: autoChanged is changed only with auto add / auto remove`;
+  if (key === 'autoChanged') return movedLine(file);
   const tool = /^deployTools\.(.+)$/.exec(key);
   if (!tool && !PATH_KEYS.includes(key)) return `${file}: unknown key "${key}" (use ${PATH_KEYS.join(', ')} or deployTools.<name>)`;
   if (tool && CONTROL.test(tool[1])) return `${file}: the tool name must not hold control characters`;
@@ -261,127 +209,24 @@ export function setArtSetting(file, key, value, lockOptions) {
   return r.error ?? '';
 }
 
-/** Why `repo` cannot be a repository to add patterns for (an existing folder holding `.git`), or ''. */
-function repoProblem(repo) {
-  const problem = pathProblem(repo);
-  if (problem) return problem;
-  try {
-    if (!statSync(repo).isDirectory()) return 'must be a folder, not a file';
-  } catch (err) {
-    return `cannot be read (${oneLine(err && err.message)})`;
-  }
-  if (!existsSync(path.join(repo, '.git'))) return 'is not the top folder of a git repository (no .git in it)';
-  return '';
-}
-
-/** Adds `pattern` to the autoChanged list of `repo`: { error } or { status: 'added' | 'unchanged' }. */
-export function autoAdd(file, repo, pattern, lockOptions) {
-  const bad = repoProblem(repo);
-  if (bad) return { error: `${file}: the repository ${bad}` };
-  const problem = patternProblem(pattern);
-  if (problem) return { error: `${file}: the pattern ${problem}` };
-  const r = writeLocked(file, (data) => {
-    const key = repoKey(data, repo);
-    const list = data.autoChanged?.[key] ?? [];
-    if (list.includes(pattern)) return 'unchanged';
-    data.autoChanged = { ...(data.autoChanged ?? {}), [key]: [...list, pattern] };
-    return data;
-  }, lockOptions);
-  return r.error ? r : { status: r.status ?? 'added' };
-}
-
-/** Removes `pattern` from the list of `repo` (and the key once the list is empty): { error } or { status: 'removed' | 'missing' }. */
-export function autoRemove(file, repo, pattern, lockOptions) {
-  const bad = absoluteProblem(repo);
-  if (bad) return { error: `${file}: the repository ${bad}` };
-  const r = writeLocked(file, (data) => {
-    const key = repoKey(data, repo);
-    const list = data.autoChanged?.[key] ?? [];
-    if (!list.includes(pattern)) return 'missing';
-    const rest = list.filter((p) => p !== pattern);
-    const next = { ...data.autoChanged };
-    if (rest.length) next[key] = rest;
-    else delete next[key];
-    data.autoChanged = next;
-    return data;
-  }, lockOptions);
-  return r.error ? r : { status: r.status ?? 'removed' };
-}
-
-/** The autoChanged list of `repo` in already read data. */
-export const autoList = (data, repo) => data.autoChanged?.[repoKey(data, repo)] ?? [];
-
-/** Reads standard input whole; an empty Windows pipe reports EOF. */
-function readStdin() {
-  try {
-    return readFileSync(0, 'utf8');
-  } catch (err) {
-    if (err && err.code === 'EOF') return '';
-    throw err;
-  }
-}
-
-const USAGE = 'usage: node art-settings.mjs get <key|deployTools.<name>> | set <key> <value> | set deployTools.<name> <path> | show'
-  + ' | auto list <repo> | auto add <repo> <pattern> | auto remove <repo> <pattern> | auto match <repo> (paths on standard input)';
+const USAGE = 'usage: node art-settings.mjs get <key|deployTools.<name>> | set <key> <value> | set deployTools.<name> <path> | show';
 
 /** CLI entry; `env`, `out` and `err` are parameters so tests need no environment variable. */
-export function main(args, { env = process.env, out = (s) => process.stdout.write(s), err = (s) => process.stderr.write(s), input = readStdin } = {}) {
+export function main(args, { env = process.env, out = (s) => process.stdout.write(s), err = (s) => process.stderr.write(s) } = {}) {
   const file = artSettingsFile(env);
   const [cmd, key, value, ...rest] = args;
   const usage = () => (err(`${USAGE}\n`), 2);
-  if (cmd === 'auto') {
-    const [, sub, repo, pattern] = args;
-    const withPattern = sub === 'add' || sub === 'remove';
-    if (!['list', 'add', 'remove', 'match'].includes(sub) || args.length !== (withPattern ? 4 : 3)) return usage();
-    if (sub === 'add') {
-      const r = autoAdd(file, repo, pattern);
-      if (r.error) return err(`${r.error}\n`), 1;
-      out(`${pattern} ${r.status === 'added' ? 'added' : 'already listed'}\n`);
-      return 0;
-    }
-    if (sub === 'remove') {
-      const r = autoRemove(file, repo, pattern);
-      if (r.error) return err(`${r.error}\n`), 1;
-      if (r.status === 'missing') return err(`${file}: ${pattern} is not listed for ${repo}\n`), 3;
-      out(`${pattern} removed\n`);
-      return 0;
-    }
-    const bad = absoluteProblem(repo);
-    if (bad) return err(`${file}: the repository ${bad}\n`), 1;
-    const r = readArtSettings(file);
-    if (r.error) return err(`${r.error}\n`), 1;
-    const list = autoList(r.data, repo);
-    if (sub === 'list') {
-      if (list.length) out(`${list.join('\n')}\n`);
-      return 0;
-    }
-    let text;
-    try {
-      text = input();
-    } catch (e) {
-      return err(`cannot read the paths from standard input (${oneLine(e && e.message)})\n`), 1;
-    }
-    const regexes = list.map((p) => [p, patternRegex(p)]);
-    const hits = [];
-    for (const line of String(text).split('\n')) {
-      const given = line.replace(/\r$/, '');
-      const rel = normalizeRel(given);
-      if (!rel) continue;
-      const hit = regexes.find(([, re]) => re.test(rel));
-      if (hit) hits.push(`${given}\t${hit[0]}`);
-    }
-    if (hits.length) out(`${hits.join('\n')}\n`);
-    return 0;
-  }
   if (cmd === 'show' && args.length === 1) {
     const r = readArtSettings(file);
     if (r.error) return err(`${r.error}\n`), 1;
     out(`${file}\n${JSON.stringify(r.data, null, 2)}\n`);
+    if (r.data.autoChanged !== undefined) err('note: autoChanged here is the old am-art 0.1.3 list; am-util:git-sync keeps the live list in git-sync.json\n');
     return 0;
   }
   if (cmd === 'get' && key && value === undefined) {
     const r = readArtSettings(file);
     if (r.error) return err(`${r.error}\n`), 1;
+    if (key === 'autoChanged') return err(`${movedLine(file)}\n`), 1;
     const { value: v, error } = lookup(r.data, key);
     if (error) return err(`${file}: ${error}\n`), 1;
     if (v === undefined) return err(`${file}: ${key} is not set\n`), 3;

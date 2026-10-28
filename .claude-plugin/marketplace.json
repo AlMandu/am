@@ -16,12 +16,12 @@
     {
       "name": "am-util",
       "source": "./util",
-      "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land, 지금 브랜치를 최신 기준 브랜치 위로 옮기는 update-branch(Claude Code·Codex 공용)"
+      "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land, 지금 브랜치를 최신 기준 브랜치 위로 옮기는 update-branch(Claude Code·Codex 공용), 아티스트용 git 상태·선별 커밋·push 도우미 git-sync(Claude Code 전용)"
     },
     {
       "name": "am-art",
       "source": "./art",
-      "description": "아트 작업용 스킬: Claude Code 에는 AD 검수 한 바퀴, 파치·Spine·Unity 반영 확인, 이미지 비교 HTML, 작업 기억·학습·회상, 아티스트용 git 상태·선별 커밋·push 다섯, Codex 에는 실무자 한 바퀴 하나만"
+      "description": "아트 작업용 스킬: Claude Code 에는 AD 검수 한 바퀴, 파치·Spine·Unity 반영 확인, 이미지 비교 HTML, 작업 기억·학습·회상 넷, Codex 에는 실무자 한 바퀴 하나만(아티스트용 git 도우미는 am-util 로 옮김)"
     },
     {
       "name": "am-orchestrator",

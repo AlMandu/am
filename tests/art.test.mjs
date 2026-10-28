@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { artSettingsFile, autoAdd, main, matchPattern, readArtSettings, setArtSetting } from '../art/scripts/art-settings.mjs';
+import { artSettingsFile, main, readArtSettings, setArtSetting } from '../art/scripts/art-settings.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(REPO, 'art', 'scripts', 'art-settings.mjs');
@@ -156,142 +156,41 @@ test('art settings: two set commands at once both land', async () => {
   }
 });
 
-// autoChanged: a fake repository (a folder with `.git`) under a Korean folder with a space.
-function repoFixture(c) {
-  const repo = path.join(c.base, '게임 저장소');
-  mkdirSync(path.join(repo, '.git'), { recursive: true });
-  return repo;
-}
-const auto = (c, ...args) => run(c.env, 'auto', ...args);
-const matchRun = (c, repo, text) => {
-  const out = [];
-  const err = [];
-  const code = main(['auto', 'match', repo], { env: c.env, out: (s) => out.push(s), err: (s) => err.push(s), input: () => text });
-  return { code, out: out.join(''), err: err.join('') };
-};
-
-test('art settings autoChanged: add and list go round, a second add leaves the file as it is, remove drops the empty key', () => {
-  const c = config();
-  try {
-    const repo = repoFixture(c);
-    assert.deepEqual(auto(c, 'list', repo), { code: 0, out: '', err: '' });
-    assert.deepEqual(auto(c, 'add', repo, 'Packages/'), { code: 0, out: 'Packages/ added\n', err: '' });
-    assert.equal(auto(c, 'add', repo, '**/*.spriteatlas').code, 0);
-    const before = readFileSync(c.file, 'utf8');
-    assert.deepEqual(auto(c, 'add', repo, 'Packages/'), { code: 0, out: 'Packages/ already listed\n', err: '' });
-    assert.equal(readFileSync(c.file, 'utf8'), before);
-    assert.equal(auto(c, 'list', repo).out, 'Packages/\n**/*.spriteatlas\n');
-    assert.deepEqual(JSON.parse(before), { autoChanged: { [path.resolve(repo)]: ['Packages/', '**/*.spriteatlas'] } });
-    const missing = auto(c, 'remove', repo, 'Library/');
-    assert.equal(missing.code, 3);
-    assert.match(missing.err, /Library\/ is not listed/);
-    assert.equal(readFileSync(c.file, 'utf8'), before);
-    assert.equal(auto(c, 'remove', repo, 'Packages/').out, 'Packages/ removed\n');
-    assert.equal(auto(c, 'remove', repo, '**/*.spriteatlas').code, 0);
-    assert.deepEqual(JSON.parse(readFileSync(c.file, 'utf8')), { autoChanged: {} });
-    // list, match and remove check only the form of the repository path, so a moved repository can still be cleaned up.
-    assert.deepEqual(auto(c, 'list', path.join(c.base, 'gone')), { code: 0, out: '', err: '' });
-    assert.equal(auto(c, 'list', 'relative/repo').code, 1);
-    assert.equal(auto(c, 'remove', path.join(c.base, 'gone'), 'x').code, 3);
-    assert.equal(auto(c, 'add', repo).code, 2);
-    assert.equal(auto(c, 'nope', repo).code, 2);
-  } finally {
-    c.done();
-  }
-});
-
-test('art settings autoChanged: add refuses bad patterns and folders that are not a repository top, writing nothing', () => {
-  const c = config();
-  try {
-    const repo = repoFixture(c);
-    const drive = `C${':'}`;
-    for (const p of ['/Packages/', 'Assets\\UI', `${drive}/x`, `${drive}x`, 'Assets/../x', './Assets', 'a//b', 'a.png/.', 'a'.repeat(201), '', 'a\tb']) {
-      assert.match(autoAdd(c.file, repo, p).error, /the pattern /, JSON.stringify(p));
-    }
-    assert.equal(autoAdd(c.file, repo, 'a'.repeat(200)).status, 'added');
-    rmSync(c.file);
-    assert.match(autoAdd(c.file, path.join(c.base, 'gone'), 'x').error, /does not exist/);
-    const file = path.join(c.base, 'note.txt');
-    writeFileSync(file, '');
-    assert.match(autoAdd(c.file, file, 'x').error, /must be a folder/);
-    assert.match(autoAdd(c.file, c.place, 'x').error, /no \.git/);
-    assert.match(autoAdd(c.file, 'relative/repo', 'x').error, /absolute path/);
-    assert.equal(existsSync(c.file), false);
-    // A worktree has a .git file instead of a folder.
-    const worktree = path.join(c.base, 'worktree');
-    mkdirSync(worktree);
-    writeFileSync(path.join(worktree, '.git'), 'gitdir: elsewhere\n');
-    assert.equal(autoAdd(c.file, worktree, 'Packages/').status, 'added');
-  } finally {
-    c.done();
-  }
-});
-
-test('art settings autoChanged: on Windows the same repository written with / or a lower-case drive is one key', { skip: process.platform !== 'win32' && 'Windows paths only' }, () => {
-  const c = config();
-  try {
-    const repo = repoFixture(c);
-    assert.equal(auto(c, 'add', repo, 'Packages/').code, 0);
-    const slashes = repo.split('\\').join('/');
-    const lower = repo[0].toLowerCase() + repo.slice(1);
-    assert.equal(auto(c, 'add', slashes, '.omc/').code, 0);
-    assert.equal(auto(c, 'add', lower, 'Packages/').out, 'Packages/ already listed\n');
-    const data = JSON.parse(readFileSync(c.file, 'utf8'));
-    assert.deepEqual(data.autoChanged, { [repo]: ['Packages/', '.omc/'] });
-    assert.equal(auto(c, 'list', `${lower}\\`).out, 'Packages/\n.omc/\n');
-    assert.equal(matchRun(c, slashes, 'Packages/manifest.json\n').out, 'Packages/manifest.json\tPackages/\n');
-  } finally {
-    c.done();
-  }
-});
-
-test('art settings autoChanged: match follows the small glob over whole paths and prints the first matching pattern', () => {
-  const yes = [
-    ['Packages/', 'Packages/manifest.json'], ['Packages/', 'Packages/a/b/c.json'], ['**/*.spriteatlas', 'a.spriteatlas'],
-    ['**/*.spriteatlas', 'Assets/UI/아트 폴더/b.spriteatlas'], ['Assets/*.meta', 'Assets/x.meta'], ['Assets/**/x.png', 'Assets/x.png'],
-    ['Assets/**/x.png', 'Assets/a/b/x.png'], ['ProjectSettings/*Settings.asset', 'ProjectSettings/QualitySettings.asset'],
-    ['a/***/b', 'a/c/b'], ['x+(y).txt', 'x+(y).txt'], ['Packages/', '.\\Packages\\m.json\r'], ['*_BACKUP_*', 'a_BACKUP_1.png'],
-  ];
-  const no = [
-    ['Packages/', 'PackagesX/a'], ['Packages/', 'Packages'], ['Packages/', 'Assets/Packages/a'], ['Assets/*.meta', 'Assets/a/x.meta'],
-    ['*.meta', 'Assets/x.meta'], ['x.png', 'Assets/x.png'], ['packages/', 'Packages/a'], ['x+(y).txt', 'xx+(y).txt'], ['a.b', 'axb'],
-  ];
-  for (const [p, rel] of yes) assert.equal(matchPattern(p, rel), true, `${p} ~ ${rel}`);
-  for (const [p, rel] of no) assert.equal(matchPattern(p, rel), false, `${p} !~ ${rel}`);
-  // Long runs of * and ** stay fast.
-  const t = Date.now();
-  assert.equal(matchPattern(`${'**/'.repeat(60)}${'*'.repeat(50)}x`, `${'a/'.repeat(40)}${'a'.repeat(60)}`), false);
-  assert.ok(Date.now() - t < 2000);
-  const c = config();
-  try {
-    const repo = repoFixture(c);
-    for (const p of ['Packages/', '**/*.meta', 'Assets/UI/a.meta']) assert.equal(auto(c, 'add', repo, p).code, 0);
-    const r = matchRun(c, repo, 'Packages/manifest.json\r\nAssets/UI/a.meta\r\nAssets/UI/a.prefab\r\n\r\nRecordings/v.mp4\n');
-    assert.deepEqual(r, { code: 0, out: 'Packages/manifest.json\tPackages/\nAssets/UI/a.meta\t**/*.meta\n', err: '' });
-    assert.deepEqual(matchRun(c, path.join(c.base, 'other'), 'Packages/manifest.json\n'), { code: 0, out: '', err: '' });
-  } finally {
-    c.done();
-  }
-});
-
-test('art settings autoChanged: a broken list is a read error that set refuses too, and set autoChanged is refused', () => {
+// autoChanged is the old am-art 0.1.3 list: read and kept as it is, never written; am-util:git-sync keeps the live list.
+test('art settings: an art.json written by am-art 0.1.3 still reads and set keeps its autoChanged', () => {
   const c = config();
   try {
     mkdirSync(path.dirname(c.file));
-    for (const bad of [{ autoChanged: [] }, { autoChanged: { x: 'Packages/' } }, { autoChanged: { x: ['../a'] } }, { autoChanged: { x: [3] } }]) {
+    const repo = path.join(c.base, '게임 저장소');
+    // Only the shape is checked, so patterns git-sync would refuse still read.
+    const old = { _note: '메모', spineRoot: c.place, autoChanged: { [repo]: ['Packages/', '../odd', ''] } };
+    writeFileSync(c.file, JSON.stringify(old, null, 2));
+    assert.deepEqual(readArtSettings(c.file), { data: old });
+    assert.equal(run(c.env, 'set', 'python', c.place).code, 0);
+    assert.equal(readFileSync(c.file, 'utf8'), `${JSON.stringify({ ...old, python: c.place }, null, 2)}\n`);
+    for (const args of [['auto', 'list', repo], ['auto']]) {
+      const r = run(c.env, ...args);
+      assert.equal(r.code, 2);
+      assert.match(r.err, /^usage: /);
+      assert.doesNotMatch(r.err, /auto/);
+    }
+  } finally {
+    c.done();
+  }
+});
+
+test('art settings: a broken autoChanged is still a read error that set refuses', () => {
+  const c = config();
+  try {
+    mkdirSync(path.dirname(c.file));
+    for (const bad of [{ autoChanged: [] }, { autoChanged: { x: 'Packages/' } }, { autoChanged: { x: [3] } }]) {
       writeFileSync(c.file, JSON.stringify(bad));
       assert.match(readArtSettings(c.file).error, /autoChanged/, JSON.stringify(bad));
-      assert.match(run(c.env, 'set', 'spineRoot', c.place).err, /autoChanged.*fix or remove/);
-      assert.equal(auto(c, 'list', c.place).code, 1);
+      const r = run(c.env, 'set', 'spineRoot', c.place);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /autoChanged.*fix or remove/);
       assert.equal(readFileSync(c.file, 'utf8'), JSON.stringify(bad));
     }
-    // A repository key that no longer exists still reads cleanly.
-    writeFileSync(c.file, JSON.stringify({ autoChanged: { [path.join(c.base, 'gone')]: ['Packages/'] } }));
-    assert.equal(readArtSettings(c.file).error, undefined);
-    const r = run(c.env, 'set', 'autoChanged', c.place);
-    assert.equal(r.code, 1);
-    assert.match(r.err, /only with auto add \/ auto remove/);
-    assert.match(run(c.env, 'set', 'other', c.place).err, /unknown key "other"/);
     writeFileSync(c.file, JSON.stringify({ autoChange: {} }));
     assert.match(readArtSettings(c.file).error, /unknown key "autoChange"/);
   } finally {
@@ -299,21 +198,34 @@ test('art settings autoChanged: a broken list is a read error that set refuses t
   }
 });
 
-test('art settings autoChanged: two auto add commands at once both land', async () => {
+test('art settings: get and set autoChanged point to am-util:git-sync, and show adds a note only when the key is there', () => {
   const c = config();
   try {
-    const repo = repoFixture(c);
-    const one = (pattern) => new Promise((resolve) => {
-      const p = spawn(process.execPath, [CLI, 'auto', 'add', repo, pattern], { env: { ...process.env, CLAUDE_CONFIG_DIR: c.dir } });
-      p.on('close', resolve);
-    });
-    assert.deepEqual(await Promise.all([one('Packages/'), one('.omc/'), one('**/*.orig')]), [0, 0, 0]);
-    const list = JSON.parse(readFileSync(c.file, 'utf8')).autoChanged[path.resolve(repo)];
-    assert.deepEqual([...list].sort(), ['**/*.orig', '.omc/', 'Packages/']);
-    // The command line reads the paths from standard input.
-    const r = spawnSync(process.execPath, [CLI, 'auto', 'match', repo], { env: { ...process.env, CLAUDE_CONFIG_DIR: c.dir }, input: 'Packages/a.json\nAssets/b.prefab\nx.orig\n' });
-    assert.equal(r.status, 0, r.stderr.toString());
-    assert.equal(r.stdout.toString('utf8'), 'Packages/a.json\tPackages/\nx.orig\t**/*.orig\n');
+    const set = run(c.env, 'set', 'autoChanged', c.place);
+    assert.equal(set.code, 1);
+    assert.match(set.err, /moved to am-util:git-sync/);
+    assert.equal(existsSync(c.file), false);
+    const get = () => {
+      const r = run(c.env, 'get', 'autoChanged');
+      assert.deepEqual([r.code, r.out], [1, '']);
+      assert.match(r.err, /git-sync\.json/);
+    };
+    get();
+    mkdirSync(path.dirname(c.file));
+    const data = { autoChanged: { [c.place]: ['Packages/'] } };
+    writeFileSync(c.file, JSON.stringify(data));
+    get();
+    let r = run(c.env, 'show');
+    assert.deepEqual([r.code, r.out], [0, `${c.file}\n${JSON.stringify(data, null, 2)}\n`]);
+    assert.match(r.err, /^note: .*git-sync\.json\n$/);
+    writeFileSync(c.file, JSON.stringify({ spineRoot: c.place }));
+    r = run(c.env, 'show');
+    assert.deepEqual([r.code, r.err], [0, '']);
+    writeFileSync(c.file, '{ broken');
+    r = run(c.env, 'get', 'autoChanged');
+    assert.equal(r.code, 1);
+    assert.match(r.err, /not valid JSON/);
+    assert.doesNotMatch(r.err, /moved to/);
   } finally {
     c.done();
   }
@@ -599,7 +511,7 @@ const DRIVE = (rest) => `C${':'}${rest}`;
 const KEPT = { 'README.md': [DRIVE('\\Users\\<이름>\\'), DRIVE('\\Projects\\am')] };
 const companyHits = (text) => text.split('\n').flatMap((line, i) => COMPANY.filter(([, re]) => re.test(line)).map(([what]) => `${i + 1}: ${what}`));
 
-test('art: no company value in the art plugin, its shared block, the docs or this test', () => {
+test('art: no company value in the art plugin, its shared block, am-util git-sync, the docs or this test', () => {
   const files = [];
   const walk = (dir) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -610,7 +522,10 @@ test('art: no company value in the art plugin, its shared block, the docs or thi
   };
   walk(path.join(REPO, 'art'));
   assert.ok(files.some((f) => f.endsWith('SKILL.md')) && files.some((f) => f.endsWith('make_compare.py')), 'the art folder is read');
-  for (const f of ['shared/art.md', 'README.md', 'README-ART.md', 'CHANGELOG.md', 'tests/art.test.mjs']) files.push(path.join(REPO, f));
+  // The artists' git helper moved to am-util in am-art 0.1.4 and still reads art.json.
+  walk(path.join(REPO, 'util', 'skills', 'git-sync'));
+  assert.ok(files.some((f) => f.endsWith(path.join('util', 'skills', 'git-sync', 'SKILL.md'))), 'the util git-sync skill is read');
+  for (const f of ['util/scripts/git-sync-settings.mjs', 'shared/art.md', 'README.md', 'README-ART.md', 'CHANGELOG.md', 'tests/art.test.mjs']) files.push(path.join(REPO, f));
   const found = files.flatMap((f) => {
     const rel = path.relative(REPO, f).split(path.sep).join('/');
     let text = readFileSync(f, 'utf8');

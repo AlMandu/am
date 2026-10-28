@@ -19,10 +19,11 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 `am-auto:agent` 도 같은 일을 하되, Claude Code 에서 단계마다 별도 `claude` 세션 대신 지금 세션의 서브에이전트(단계 에이전트)를 띄우고, 단계가 끝날 때마다 채팅에 한 줄(단계와 상태)만 남깁니다. 큰 작업은 `am-auto:one` 처럼 부분으로 나눠 돕니다.
 
-그 밖의 명령 셋은 필요할 때만 씁니다.
+그 밖의 명령 넷은 필요할 때만 씁니다.
 
 - `am-util:land`(am-util 플러그인, 따로 설치): 지금 브랜치를 대상 브랜치(생략하면 원격 기본 브랜치)에 합쳐 원격에 push 한 뒤, 지금 브랜치를 합친 커밋으로 옮깁니다. 커밋하지 않은 변경은 그대로 두며, 대상 쪽 변경과 겹치면 옮기지 않고 알립니다. 강제 push 는 하지 않습니다.
 - `am-util:update-branch`(am-util 플러그인, 따로 설치): 지금 브랜치를 최신 기준 브랜치(생략하면 원격 기본 브랜치, 예: `master`) 위로 옮깁니다. 커밋하지 않은 파일은 그대로 돌아오고, 옮기기 전 자리에 백업 브랜치를 남깁니다. push 는 하지 않습니다.
+- `am-util:git-sync`(am-util 플러그인, Claude Code 전용, 직접 입력할 때만): git 을 잘 모르는 아티스트용 도우미입니다. git 상태를 쉬운 말로 보여 주고, 내 작업만 골라 승인 뒤 커밋하며, 허락받았을 때만 push 합니다(아래 "am-util:git-sync").
 - `am-auto:sessions`(am-auto 플러그인): 이 PC 에서 `am-auto:multi`·`am-auto:one` 과 오케스트레이터가 띄운 세션이 작업 폴더별로 지금 무엇을 하는지 한 번 보여 줍니다. 아무것도 바꾸거나 멈추지 않습니다.
 
 명령과 함께 두 가지 장치가 돕니다.
@@ -67,9 +68,9 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 |---|---|---|
 | `am` | `am:plan`·`am:do`·`am:check`·`am:commit`, 커밋 게이트, 2차 의견 | Claude Code·Codex |
 | `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
-| `am-util` | `am-util:land`·`am-util:update-branch` | Claude Code·Codex |
+| `am-util` | `am-util:land`·`am-util:update-branch`, `am-util:git-sync`(Claude Code 전용) | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
-| `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`·`am-art:git-sync`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
+| `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
 
 **Claude Code**
 
@@ -151,6 +152,7 @@ Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 �
 | 지금 브랜치를 기본 브랜치에 합쳐 push | `/am-util:land [브랜치]` | `$am-util:land [브랜치]` |
 | 지금 브랜치를 최신 기본 브랜치 위로 옮기기 | `/am-util:update-branch [브랜치]` | `$am-util:update-branch [브랜치]` |
 | update-branch 전 자리로 되돌리기 | `/am-util:update-branch backup/<브랜치>-<시각>` | `$am-util:update-branch backup/<브랜치>-<시각>` |
+| 아티스트용 git 상태·커밋·push·오류 설명 | `/am-util:git-sync [상태\|커밋\|올리기\|설명]` | Claude Code 전용 |
 | 돌고 있는 세션 보기 | `/am-auto:sessions` | Claude Code 전용 |
 
 ## 명령별 설명
@@ -348,6 +350,17 @@ am-util 플러그인의 명령입니다(Claude Code·Codex).
 - 충돌이 나면 파일마다 양쪽이 무엇을 바꿨는지 보여 주고 "중단" 또는 "맡기기(어느 쪽을 살릴지)"를 묻습니다. 씬·프리팹·바이너리 파일은 한쪽을 통째로 고릅니다. 확신이 없으면 중단해 원래대로 돌립니다.
 - 지금 브랜치를 이미 원격에 올려 두었다면, 옮긴 뒤 다시 올리려면 강제 push 가 필요하다고 알리기만 합니다.
 
+### `am-util:git-sync`: 아티스트용 git 도우미
+
+am-util 플러그인의 명령입니다(Claude Code 전용). 말로는 불리지 않으니 `/am-util:git-sync [상태|커밋|올리기|설명]` 을 직접 입력합니다. 인자가 없으면 이 대화 내용에서 고르고, 애매하면 묻습니다. 아트 저장소가 아니어도 씁니다.
+
+- `상태`(기본): 앞섬/뒤처짐과 바뀐 파일을 내 작업 / 저절로 바뀐 것 / 모르는 것으로 나눠 쉬운 말로 보여 줍니다.
+- `커밋`: 내 작업만 하나씩 스테이징해 목록과 메시지를 보여 준 뒤 "제가 할까요, 직접 하실래요?" 를 묻습니다.
+- `올리기`: 이 대화에서 올려 달라고 했을 때만 push 하고, 나갈 커밋에 코드 파일이 섞이면 멈춥니다. 강제 push 는 하지 않습니다.
+- `설명`: 붙여 넣은 충돌·리베이스 오류 메시지를 쉬운 말로 설명하고 중단(`--abort`)을 먼저 권합니다.
+- 최신화와 마스터 반영은 `am-util:update-branch`·`am-util:land` 를 직접 입력하라고 안내합니다.
+- 저절로 바뀌는 파일 패턴 목록은 저장소마다 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/git-sync.json` 에 있고, 아티스트가 "저절로 바뀐 거야" 라고 확인한 파일만 승인 뒤 더합니다. 저장소마다 처음 쓸 때 예전 art.json 의 `autoChanged` 목록을 한 번 가져옵니다(art.json 은 바꾸지 않습니다).
+
 ### `am-auto:sessions`: 돌고 있는 세션 보기
 
 am-auto 플러그인의 명령입니다(Claude Code 전용).
@@ -495,7 +508,7 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 ## 아트 작업 (`am-art`, 별도 플러그인)
 
-아트 작업(AD 패키지 검수와 실무, 게임 반영, 이미지 비교, 작업 기록, 아티스트용 git)용 명령 여섯입니다. 개발 워크플로와는 상관없고 am 없이도 돌며, 아트 작업을 하는 PC 에만 설치합니다. "검수", "지시서 ㄱㄱ", "기억해둬" 처럼 흔한 말에도 불리기 때문입니다. AD 는 Claude Code, 실무자는 Codex 이므로 두 도구에 모두 설치합니다.
+아트 작업(AD 패키지 검수와 실무, 게임 반영, 이미지 비교, 작업 기록)용 명령 다섯입니다. 개발 워크플로와는 상관없고 am 없이도 돌며, 아트 작업을 하는 PC 에만 설치합니다. "검수", "지시서 ㄱㄱ", "기억해둬" 처럼 흔한 말에도 불리기 때문입니다. AD 는 Claude Code, 실무자는 Codex 이므로 두 도구에 모두 설치합니다. 아티스트용 git 도우미 `am-util:git-sync` 는 am-util 에 있으니(위 "am-util:git-sync") 아트 PC 는 am-util 도 설치합니다.
 
 스킬마다의 자세한 사용법과 상황별 예시 문장(am-util 의 `am-util:update-branch`·`am-util:land` 포함)은 [README-ART.md](README-ART.md) 에 있습니다.
 
@@ -509,20 +522,19 @@ Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치합니다(Codex 
 |---|---|---|
 | `am-art:ad-review` | 씁니다 | 나타나지 않음 |
 | `am-art:ad-execute` | 나타나지 않음 | 씁니다 |
-| `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`·`am-art:git-sync` | 씁니다 | 나타나지 않음 |
+| `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` | 씁니다 | 나타나지 않음 |
 
 - `am-art:ad-review`: AD 패키지에서 AD 역할로 한 바퀴를 돕니다. 피드백 채널의 새 완료보고·질문을 검수하고 FB·다음 지시서·상태 대장 줄을 쓴 뒤 표 하나로 보고합니다. 새 문서가 없으면 "검수할 문서 없음" 한 줄로 끝나므로 `/loop 5m` 으로 `자동` 인자와 함께 반복해 돌릴 수 있습니다. 세부 규칙은 스킬에 복사하지 않고 그때그때 패키지 문서를 읽습니다. `새요청`(또는 스케치·외부 이미지를 주며 "코덱스가 작업할 수 있게 준비해줘")이면 이해한 내용을 쉬운 말로 확인한 뒤 첫 지시서를 쓰고, `게임투입`(또는 "덮어씌울 수 있게 이름 맞춰줘")이면 정본을 게임 파일 이름의 128px 사본으로 패키지 `게임투입/<시각>/` 에 만들고 지금 게임 파일을 패키지 `백업/` 에 복사한 뒤 대응표를 씁니다. 게임 폴더는 건드리지 않으며, 사본은 Pillow 로 만듭니다.
 - `am-art:ad-execute`(Codex): 실무자 역할로 한 바퀴를 돕니다. "지시서 ㄱㄱ", "실무자2", "이어서 작업" 처럼 말하거나 `피드백/.../NNN_..._지시.md` 경로만 붙여 넣으면 불립니다. 시작할 때마다 패키지의 공통 계약 문서(`AGENTS.md`, 실무자 수칙, 역할 정의, 문서 템플릿, 프로젝트 설정)를 직접 다시 읽고 "공통 계약 읽음" 한 줄을 보여 준 뒤, 환경을 확인하고 내 지시서를 찾아(보류·다른 실무자 배정·이미 완료보고나 다른 실무자가 먼저 착수한 대상, AD 가 아직 답하지 않은 내 질문이 걸린 대상은 건너뜀) 상태 대장에 착수를 적고, 이미지 생성은 Codex 의 imagegen 스킬에 맡겨 자가검수 → 완료보고 → 상태 대장 순으로 마칩니다. 할 지시서가 없으면 "지시서 대기" 한 줄로 끝납니다. 세션의 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 한 번 묻습니다(개인 계정 주소는 어디에도 적지 않습니다). 커밋은 바꾼 파일과 메시지를 보여 주고 승인받은 뒤에만 하며 push 는 하지 않습니다. `대기 5분`(최대 시간 기본 8시간, `대기 5분 3시간` 처럼 바꿈)을 주면 지시서가 없거나 질문을 남기고 끝난 바퀴 뒤에 그 간격만큼 쉬었다가 다시 찾고, 목표 완료·`정지`·환경 오류·최대 시간 중 하나에서 멈춥니다. 대기 중 커밋 승인은 끝날 때 한 번에 묻습니다.
 - `am-art:pipe-apply`: 확정 이미지를 파치 → Spine → Unity 에 반영하고, 슬롯마다 세 곳을 실제 파일로 확인한 표를 보여 줍니다. 한 칸이라도 비면 완료라고 하지 않고, 커밋·업로드는 하지 않습니다.
 - `am-art:log-compare`: 이미지 여러 장을 한 화면에서 비교하는 HTML 을 만듭니다. 원본을 가리키는 로컬 보기와, 이미지를 파일 안에 넣어 다른 사람에게 보낼 수 있는 공유용이 있습니다. 별표로 최종본을 고르고 목록을 내보낼 수 있습니다. 생성기는 Python 이고, 공유용은 Pillow 가 필요합니다(없으면 어디에 설치할지 묻습니다). 어떤 이미지를 어떻게 늘어놓을지는 프로젝트마다 `compare.json` 에 둡니다.
 - `am-art:log-resume`: "기억해둬"는 진행 지점은 상태 대장, 규칙은 프로젝트 문서, 자료 위치만 메모리에 나눠 적고, "학습해"는 수정본과 원본의 차이를 숫자로 재서 규칙으로 남기며, "어디까지 했어"는 상태 대장·git·대화 기록을 차례로 찾아 근거 파일과 함께 답합니다.
-- `am-art:git-sync`: git 을 잘 모르는 아티스트용입니다. "지금 깃 상태 봐줘" 면 앞섬/뒤처짐과 바뀐 파일을 내 작업 / 저절로 바뀐 것 / 모르는 것으로 나눠 쉬운 말로 보여 주고, "우리 작업 관련된거만 커밋해줘" 면 고른 파일만 하나씩 스테이징해 목록과 메시지를 보여 준 뒤 "제가 할까요, 직접 하실래요?" 를 묻습니다. push 는 "올려줘" 라고 할 때만 하고 코드 파일이 섞이면 멈추며, 강제 push 는 하지 않습니다. 최신화와 마스터 반영은 `am-util:update-branch`·`am-util:land` 를 직접 입력하라고 안내하고(am-util 필요), 충돌·리베이스 오류 메시지는 쉬운 말로 설명합니다.
 
-**PC별 설정(`art.json`)**: 저장소가 공개라 회사 경로는 스킬에 넣지 않습니다. `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/art.json` 에 PC마다 두고, 값이 없으면 스킬이 처음 쓸 때 하나씩 물어 채웁니다. 키는 `adCodexRoot`(AD 패키지들이 든 폴더), `spineRoot`(Spine 저장소), `python`(패키지 도구와 비교 생성기를 돌릴 파이썬), `deployTools`(반영 도구 이름 → 스크립트 경로, 예: `무기`·`캐릭터`·`spine-unity`·`펫`), `browserSmoke`(선택, 비교 페이지를 브라우저로 확인할 스크립트), `gameRoot`(게임 프로젝트 폴더, 게임 투입본을 처음 만들 때 물음), `autoChanged`(저장소 폴더 → 저절로 바뀌는 파일 패턴 목록, `am-art:git-sync` 가 아티스트 확인 뒤 `auto add` 로 더하고 `auto remove` 로 뺌)입니다. 스킬은 이 파일을 플러그인의 `art-settings.mjs` 로만 읽고 씁니다. 손으로 고쳐도 되지만 모르는 키나 깨진 JSON 이 있으면 스킬이 값을 쓰지 않고 멈춥니다. 반영 도구가 없는 종류(배경·아이콘 등)는 묻지 않고 "반영 도구 없음"이라고 보고합니다.
+**PC별 설정(`art.json`)**: 저장소가 공개라 회사 경로는 스킬에 넣지 않습니다. `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/art.json` 에 PC마다 두고, 값이 없으면 스킬이 처음 쓸 때 하나씩 물어 채웁니다. 키는 `adCodexRoot`(AD 패키지들이 든 폴더), `spineRoot`(Spine 저장소), `python`(패키지 도구와 비교 생성기를 돌릴 파이썬), `deployTools`(반영 도구 이름 → 스크립트 경로, 예: `무기`·`캐릭터`·`spine-unity`·`펫`), `browserSmoke`(선택, 비교 페이지를 브라우저로 확인할 스크립트), `gameRoot`(게임 프로젝트 폴더, 게임 투입본을 처음 만들 때 물음)입니다. 저절로 바뀌는 파일 목록은 `am-util:git-sync` 의 `git-sync.json` 에 있고, 예전 art.json 의 `autoChanged` 는 지우지 않고 그대로 남아 git-sync 가 저장소마다 처음 한 번 가져갑니다. 스킬은 이 파일을 플러그인의 `art-settings.mjs` 로만 읽고 씁니다. 손으로 고쳐도 되지만 모르는 키나 깨진 JSON 이 있으면 스킬이 값을 쓰지 않고 멈춥니다. 반영 도구가 없는 종류(배경·아이콘 등)는 묻지 않고 "반영 도구 없음"이라고 보고합니다.
 
 **실제 파일을 바꾸지 않는 시험**: `am-art:ad-review 시험 <폴더>` 는 FB·지시서·상태 대장 줄을 모두 그 폴더에만 쓰고 정본으로 옮기지 않으므로, 과거 문서로 결과를 실제 문서와 비교해 볼 수 있습니다. `am-art:pipe-apply 점검` 은 사전 점검과 세 곳 확인 표까지만 하고 파일을 바꾸지 않습니다.
 
-`am-art:ad-execute` 를 뺀 다섯은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). 그래서 같은 am-art 를 설치해도 Claude Code 에는 그 다섯만, Codex 에는 `am-art:ad-execute` 하나만 목록에 나타납니다(Codex 는 플러그인의 Codex 전용 설명 파일이 가리키는 폴더만 읽습니다). 혹시 잘못된 쪽에서 불리더라도 `am-art:ad-review` 와 `am-art:ad-execute` 는 "다른 도구용"이라는 한 줄만 말하고 멈춥니다.
+`am-art:ad-execute` 를 뺀 넷은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). 그래서 같은 am-art 를 설치해도 Claude Code 에는 그 넷만, Codex 에는 `am-art:ad-execute` 하나만 목록에 나타납니다(Codex 는 플러그인의 Codex 전용 설명 파일이 가리키는 폴더만 읽습니다). 혹시 잘못된 쪽에서 불리더라도 `am-art:ad-review` 와 `am-art:ad-execute` 는 "다른 도구용"이라는 한 줄만 말하고 멈춥니다.
 
 ## 모델과 effort 기본값
 
@@ -667,6 +679,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 - Claude Code: `/plugin marketplace update am-workflow` 뒤 `/plugin update am@am-workflow`(설치한 am-auto·am-util 도 같은 모양으로), 그리고 재시작
 - Codex: `codex plugin marketplace upgrade` (Git 저장소일 때) 또는 `codex plugin remove am@am-workflow` 후 `codex plugin add am@am-workflow`(am-util 도 같은 모양으로). 훅이 바뀌었으면 다시 신뢰
 - 0.1.67 로 올리면 자동 실행 명령과 land 가 am 에서 빠집니다. 계속 쓰려면 위 "설치" 대로 am-auto(Claude Code)·am-util 을 설치합니다.
+- am-util 0.1.3·am-art 0.1.4 부터 am-art 의 git-sync 는 `/am-util:git-sync` 로 옮겨졌습니다. 아트 PC 는 am-util 도 설치·업데이트합니다. am-art 0.1.4 의 옛 자리는 새 명령을 알려 주기만 하고 0.1.5 에서 없어집니다.
 
 ## 개발
 
@@ -674,7 +687,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 
 - `plugin/`(am): 스킬 넷(`plan`·`do`·`check`·`commit`), 2차 의견 서브에이전트(`agents/second-opinion.md`), 커밋 게이트 훅(`hooks/hook.mjs`·`gate.mjs`·`hooks.json`), Codex 2차 의견 스크립트(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)과 PC 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트(`user-models.mjs`·`user-settings.mjs`), 두 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트(`user-files.mjs`).
 - `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 넷(`multi`·`one`·`agent`·`sessions`), 세 실행 명령이 실행 중에 읽는 진행 규칙 글(`flow/`, 스킬이 아니라 명령 목록에 나오지 않음), 단계 에이전트 다섯(`agents/stage-*.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`)과 오케스트레이터 넘김 훅(`handover.mjs`), 단계 세션 스크립트(`stage.mjs`), 단계 에이전트 시작·끝 스크립트(`agent-stage.mjs`), 진행 소식(`progress.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 남은 메모리 확인(`memory-guard.mjs`), 남은 프로세스 정리(`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
-- `util/`(am-util): 스킬 `land`·`update-branch`.
+- `util/`(am-util): 스킬 `land`·`update-branch`·`git-sync`, git-sync 의 패턴 목록 스크립트(`git-sync-settings.mjs`).
 - `orchestrator/`(am-orchestrator): 아래 오케스트레이터 플러그인.
 - 사본: `plugin/` 의 게이트·2차 의견·사용자 설정 파일 스크립트를 `auto/`·`util/` 에 복사해 둡니다. `plugin/` 원본만 고치고 `node scripts/sync-shared.mjs` 로 반영합니다(`--check` 는 어긋난 사본만 알려 줍니다).
 

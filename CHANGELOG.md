@@ -1,5 +1,15 @@
 # Changelog
 
+## am-util 0.1.3 (2026-10-28)
+
+- 새 명령 `am-util:git-sync [상태|커밋|올리기|설명]`(Claude Code 전용): am-art 에 있던 아티스트용 git 도우미를 옮겨 왔다. 아트 저장소가 아니어도 쓸 수 있다. 하는 일은 그대로다(상태를 내 작업 / 저절로 바뀐 것 / 모르는 것 세 묶음으로 보여 주기, 내 작업만 골라 승인 뒤 커밋, 허락받았을 때만 push 하고 코드 파일이 섞이면 멈춤, 충돌·리베이스 오류 설명). 말로는 불리지 않으니 `/am-util:git-sync` 를 직접 입력한다.
+- "저절로 바뀌는 파일" 패턴 목록은 `<CLAUDE_CONFIG_DIR 또는 ~/.claude>/am/git-sync.json` 에 있고 `git-sync-settings.mjs` 로만 읽고 쓴다. 저장소마다 처음 쓸 때 art.json 의 옛 `autoChanged` 목록을 한 번 가져온다(art.json 은 바꾸지 않는다). 그 뒤 옛 am-art 로 art.json 에 더한 패턴이 있으면 알려 주고 다시 넣을지 묻는다.
+
+## am-art 0.1.4 (2026-10-28)
+
+- `am-art:git-sync` 는 이제 새 명령 `/am-util:git-sync` 와 am-util 설치·업데이트 방법만 알려 주는 안내다(git 명령을 실행하지 않는다). 이 안내는 am-art 0.1.5 에서 없어진다. 아트 PC 는 am-util 도 설치·업데이트한다.
+- `art-settings.mjs` 의 `auto` 명령을 뺐다. art.json 의 `autoChanged` 는 지우지 않고 그대로 두며, `get autoChanged`·`set autoChanged` 는 목록이 am-util:git-sync 의 `git-sync.json` 으로 옮겨졌다고 알리고, `show` 는 이 키가 있을 때 같은 뜻의 알림 한 줄을 덧붙인다.
+
 ## am-art 0.1.3 (2026-10-28)
 
 - `am-art:ad-review 새요청`: 새 요청·스케치·외부 이미지를 주며 "이거 코덱스가 작업할 수 있게 준비해줘" 라고 하면(인자 없이도), AD 가 이해한 내용(대상, 용도, 형태·색·크기, 모호한 점)을 쉬운 말로 말하고 한 질문으로 확인한 뒤 실무자용 첫 지시서를 쓴다. "이해했는지 대답부터 해줘" 면 파일을 만들지 않고 이해한 내용만 답한다.

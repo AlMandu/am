@@ -1,6 +1,6 @@
 # 아트 스킬 사용 안내 (am-art, am-util)
 
-아트 PC 에서 쓰는 am-art 플러그인 여섯 스킬과, 브랜치 최신화·병합을 맡는 am-util 플러그인 두 스킬의 사용법을 상황별 예시 문장과 함께 정리했습니다. 설치 방법과 짧은 소개는 [README.md 의 "아트 작업"](README.md#아트-작업-am-art-별도-플러그인) 에 있습니다.
+아트 PC 에서 쓰는 am-art 플러그인 다섯 스킬과, 아티스트용 git 도우미·브랜치 최신화·병합을 맡는 am-util 플러그인 세 스킬의 사용법을 상황별 예시 문장과 함께 정리했습니다. 설치 방법과 짧은 소개는 [README.md 의 "아트 작업"](README.md#아트-작업-am-art-별도-플러그인) 에 있습니다.
 
 ## 목차
 - [먼저 알아 둘 것](#먼저-알아-둘-것)
@@ -9,7 +9,7 @@
 - [am-art:pipe-apply: 파치 → Spine → Unity 반영](#am-artpipe-apply-파치--spine--unity-반영)
 - [am-art:log-compare: 이미지 비교 페이지](#am-artlog-compare-이미지-비교-페이지)
 - [am-art:log-resume: 기억·학습·회상](#am-artlog-resume-기억학습회상)
-- [am-art:git-sync: 아티스트용 git 도우미](#am-artgit-sync-아티스트용-git-도우미)
+- [am-util:git-sync: 아티스트용 git 도우미 (Claude Code)](#am-utilgit-sync-아티스트용-git-도우미-claude-code)
 - [am-util:update-branch: 최신 기준 브랜치 위로 옮기기](#am-utilupdate-branch-최신-기준-브랜치-위로-옮기기)
 - [am-util:land: 대상 브랜치에 합쳐 push](#am-utilland-대상-브랜치에-합쳐-push)
 - [하루 작업 흐름 예시](#하루-작업-흐름-예시)
@@ -21,9 +21,9 @@
 
 | 스킬 | 도구 | 부르는 법 |
 |---|---|---|
-| `am-art:ad-review`, `am-art:pipe-apply`, `am-art:log-compare`, `am-art:log-resume`, `am-art:git-sync` | Claude Code | 아래 예시 문장처럼 말하면 알아서 불립니다. `/am-art:<이름> <인자>` 로 직접 불러도 됩니다. |
+| `am-art:ad-review`, `am-art:pipe-apply`, `am-art:log-compare`, `am-art:log-resume` | Claude Code | 아래 예시 문장처럼 말하면 알아서 불립니다. `/am-art:<이름> <인자>` 로 직접 불러도 됩니다. |
 | `am-art:ad-execute` | Codex | 예시 문장처럼 말하거나 지시서 경로를 붙여 넣으면 불립니다. `$am-art:ad-execute <인자>` 로도 부릅니다. Claude Code 목록에는 나타나지 않습니다. |
-| `am-util:update-branch`, `am-util:land` | Claude Code·Codex | **말로는 불리지 않습니다.** `/am-util:update-branch`, `/am-util:land`(Codex 는 `$` 로 시작)를 직접 입력해야 합니다. |
+| `am-util:git-sync`(Claude Code 만), `am-util:update-branch`, `am-util:land` | Claude Code·Codex | **말로는 불리지 않습니다.** `/am-util:git-sync`, `/am-util:update-branch`, `/am-util:land`(Codex 는 update-branch·land 만, `$` 로 시작)를 직접 입력해야 합니다. |
 
 - 역할: AD(검수·지시)는 Claude Code, 실무자(이미지 생성)는 Codex 입니다. 두 실무자 세션은 `실무자1`, `실무자2` 로 나눕니다.
 - 오너(사람)에게 묻는 질문은 한 번에 하나씩, 고르는 방식으로 나옵니다. 추천안이 맨 위에 "(추천)" 표시와 함께 옵니다.
@@ -42,7 +42,8 @@
 | `deployTools.<이름>` | 반영 도구 스크립트 경로(`무기`, `캐릭터`, `spine-unity`, `펫`) | pipe-apply (도구 없는 종류는 묻지 않음) |
 | `gameRoot` | 게임 프로젝트 폴더 | ad-review 게임투입 |
 | `browserSmoke` | (선택) 비교 페이지를 브라우저로 확인할 스크립트 | 묻지 않음 |
-| `autoChanged` | 저장소별 "저절로 바뀌는 파일" 패턴 목록 | git-sync (아티스트 확인 뒤 추가) |
+
+저장소별 "저절로 바뀌는 파일" 패턴 목록은 이 파일이 아니라 같은 폴더의 `git-sync.json` 에 있고, git-sync 가 아티스트 확인 뒤 더합니다. 예전 art.json 에 있던 목록(`autoChanged`)은 그대로 남아 git-sync 가 저장소마다 처음 한 번 가져갑니다.
 
 손으로 고쳐도 되지만 모르는 키나 깨진 JSON 이 있으면 스킬이 값을 쓰지 않고 멈춥니다. 반영 도구를 새로 등록하려면 오너가 스크립트 경로를 알려 주면 됩니다(예: "배경 반영 도구는 이 스크립트야").
 
@@ -282,10 +283,10 @@
 
 ---
 
-## am-art:git-sync: 아티스트용 git 도우미
+## am-util:git-sync: 아티스트용 git 도우미 (Claude Code)
 
 **누구를 위한 스킬인가**: git 을 잘 모르고 주로 Fork 를 쓰는 아티스트가 Unity 아트 저장소에서 씁니다.
-**모드**: `상태`(기본), `커밋`, `올리기`, `설명`. 인자가 없으면 말에서 고르고, 애매하면 묻습니다.
+**모드**: `상태`(기본), `커밋`, `올리기`, `설명`. 말로는 불리지 않는 명령이라 `/am-util:git-sync <모드>` 를 직접 입력합니다. 인자가 없으면 이 대화 내용에서 고르고, 애매하면 묻습니다.
 
 ### 늘 지키는 것
 - "대답만", "의견만" 이면 아무 명령도 실행하지 않고 답만 합니다.
@@ -296,7 +297,7 @@
 ### 상태
 - 최신 원격을 받아 온 뒤(실패하면 마지막으로 받은 기준이라고 알림) 지금 브랜치, 원격 기본 브랜치보다 몇 개 앞섰는지/뒤처졌는지, 로컬 기본 브랜치가 원격과 갈라졌는지 알려 줍니다.
 - 바뀐 파일을 세 묶음으로 나눕니다:
-  - **저절로 바뀐 것 후보**: Unity 가 흔히 바꾸는 것(`Packages/`, 내용 변화 없는 `.meta`, `ProjectSettings/` 의 자동 항목, `.omc/`, 녹화·캡처 폴더, 병합 찌꺼기 파일) + 이 저장소에 등록한 패턴(`autoChanged`). 맞아도 후보일 뿐이라 내용을 보고 이유를 짧게 답니다.
+  - **저절로 바뀐 것 후보**: Unity 가 흔히 바꾸는 것(`Packages/`, 내용 변화 없는 `.meta`, `ProjectSettings/` 의 자동 항목, `.omc/`, 녹화·캡처 폴더, 병합 찌꺼기 파일) + 이 저장소에 등록한 패턴(`git-sync.json`). 맞아도 후보일 뿐이라 내용을 보고 이유를 짧게 답니다.
   - **내 작업**: 이 대화에서 바꾼 파일과 아티스트가 이름을 댄 파일.
   - **모르는 것**: 나머지.
 
@@ -315,7 +316,7 @@
 - 거부되면 받아 오거나 합치지 않고, 원격에 새 커밋이 있다고 쉽게 설명하고 am-util:update-branch 를 안내합니다.
 
 ### 최신화와 마스터 반영
-- git-sync 가 직접 하지 않고 am-util 명령을 입력하라고 안내합니다(말로 불리지 않는 명령이라 사람이 입력해야 함). am-util 이 없으면 설치하라고 알려 줍니다.
+- git-sync 가 직접 하지 않고 am-util 명령을 입력하라고 안내합니다(말로 불리지 않는 명령이라 사람이 입력해야 함).
 - "마스터에 merge" 는 am-util:land 가 push 까지 하므로, 안내하기 전에 코드 파일 검사를 먼저 하고 코드가 있으면 멈춥니다.
 - merge 뒤 돌아오면 양쪽에서 바뀐 파일을 골라 기본 브랜치 쪽 최근 변경이 사라지지 않았는지 확인합니다. 사라진 게 있으면 어느 파일의 무엇인지 알려 주고, 직접 고치지는 않습니다.
 
@@ -324,17 +325,17 @@
 
 ### 상황별 예시
 
-| 상황 | 이렇게 말하기 |
+| 상황 | 입력 |
 |---|---|
-| 지금 상태 | `지금 깃 상태 봐줘`, `깃 상태` |
-| 갑자기 변경이 많아졌을 때 | `로컬 체인지가 갑자기 엄청 많이 생겼는데` |
-| 내 작업만 커밋 | `커밋해줘 우리 작업 관련된거만`, `스테이징 해줘` |
-| 자동 변경 등록 | `그 Packages 쪽은 저절로 바뀐 거야` |
-| 원격에 올리기 | `올려줘`, `push 해줘` |
-| 오류 메시지 해석 | `리베이스 했더니 이런 메시지가 떠` + 메시지 붙여 넣기 |
-| 최신화 | `최신화해줘` → 안내대로 `/am-util:update-branch` 입력 |
-| 마스터 반영 | `마스터에 merge 해줘` → 코드 검사 뒤 안내대로 `/am-util:land` 입력 → 끝나고 `merge 했어, 확인해줘` |
-| 실행 없이 의견만 | `대답만 해줘. 지금 올려도 돼?` |
+| 지금 상태 | `/am-util:git-sync 상태` |
+| 갑자기 변경이 많아졌을 때 | `/am-util:git-sync 상태` → 같은 대화에서 `로컬 체인지가 갑자기 엄청 많이 생겼는데` |
+| 내 작업만 커밋 | `/am-util:git-sync 커밋` |
+| 자동 변경 등록 | 같은 대화에서 `그 Packages 쪽은 저절로 바뀐 거야` |
+| 원격에 올리기 | `/am-util:git-sync 올리기` |
+| 오류 메시지 해석 | `/am-util:git-sync 설명` + 메시지 붙여 넣기 |
+| 최신화 | 같은 대화에서 `최신화해줘` → 안내대로 `/am-util:update-branch` 입력 |
+| 마스터 반영 | 같은 대화에서 `마스터에 merge 해줘` → 코드 검사 뒤 안내대로 `/am-util:land` 입력 → 끝나고 `merge 했어, 확인해줘` |
+| 실행 없이 의견만 | 같은 대화에서 `대답만 해줘. 지금 올려도 돼?` |
 
 ---
 
@@ -399,14 +400,15 @@
 | 5. 검수 돌리기 | Claude Code | `/loop 5m /am-art:ad-review 자동` → 돌아와서 `오너 대기 목록 하나씩 물어봐` |
 | 6. 비교·결정 | Claude Code | `통과한 것들 비교용 html 만들어` → `별표한거 최종본 뭐야` (log-compare) |
 | 7. 게임 반영 | Claude Code | `작업된게 있으면 파치에 적용해` (pipe-apply), 필요하면 `게임에 덮어씌울 수 있게 이름 맞춰줘` (ad-review 게임투입) |
-| 8. 저장과 반영 | Claude Code | `커밋해줘 우리 작업 관련된거만` → `마스터에 merge 해줘` (git-sync) → `/am-util:land` |
+| 8. 저장과 반영 | Claude Code | `/am-util:git-sync 커밋` → 같은 대화에서 `마스터에 merge 해줘` → `/am-util:land` |
 | 9. 규칙 남기기 | Claude Code | `내가 수정한거 학습해`, `지금 작업 기억해둬` (log-resume) |
 
 ## 자주 묻는 것
 
-- **스킬이 안 불려요.** am-util 두 명령은 말로 불리지 않으니 `/am-util:…` 를 직접 입력하세요. ad-review 와 ad-execute 는 반대쪽 도구에서 불리면 "다른 도구용" 이라는 한 줄만 말하고 멈춥니다.
+- **스킬이 안 불려요.** am-util 세 명령은 말로 불리지 않으니 `/am-util:…` 를 직접 입력하세요. ad-review 와 ad-execute 는 반대쪽 도구에서 불리면 "다른 도구용" 이라는 한 줄만 말하고 멈춥니다.
 - **경로를 계속 물어요.** 처음 한 번만 묻고 `art.json` 에 저장합니다. 계속 묻는다면 저장이 실패한 것이니 스킬이 보여 준 오류 줄을 확인하세요.
 - **`검수할 문서 없음` 만 나와요.** 실무자가 완료보고를 아직 쓰지 않았거나, 이미 검수한 문서뿐입니다. 정상입니다.
 - **`지시서 대기` 만 나와요.** 나에게 배정된 실행할 지시서가 없거나, 모두 보류·다른 실무자 배정·내 질문의 답 대기 상태입니다.
-- **커밋하면 바로 원격에 올라가나요?** 아니요. push 는 git-sync 에 "올려줘" 라고 하거나 am-util:land 를 입력할 때만 합니다.
+- **커밋하면 바로 원격에 올라가나요?** 아니요. push 는 `/am-util:git-sync 올리기` 나 am-util:land 를 입력할 때만 합니다.
+- **am-art 의 git-sync 를 입력했더니 옮겨졌다고 해요.** am-art 0.1.4 부터 git-sync 는 am-util 에 있습니다. `/am-util:git-sync` 를 입력하세요. `/am-util` 까지 쳤을 때 목록에 없으면 `/plugin marketplace update am-workflow` 뒤 am-util 을 설치(`/plugin install am-util@am-workflow`)하거나 업데이트(`/plugin update am-util@am-workflow`)하고 Claude Code 를 다시 시작하세요. 전에 등록한 "저절로 바뀌는 파일" 목록은 그대로 이어 씁니다.
 - **새 버전이 Codex 에 안 보여요.** Codex 는 GitHub 의 main 에서 받으므로 `codex plugin remove am-art@am-workflow` 뒤 `codex plugin add am-art@am-workflow` 로 다시 설치하세요.

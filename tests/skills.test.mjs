@@ -624,17 +624,22 @@ test('plugin/agents holds only the reviewer, and auto/agents only the stage agen
   assert.deepEqual(readdirSync(AGENTS_DIR).sort(), STAGE_AGENT_NAMES.map((n) => `${n}.md`).sort());
 });
 
-// Skill names before 0.1.67 and the plugin/ paths of what moved to auto/ and util/. CHANGELOG.md and tests/ keep them on
-// purpose (history, inputs), and plugin/hooks/hooks.json is frozen byte for byte (tests/gate.test.mjs).
-const OLD_NAME = /am:(?:auto\b|sessions\b|land\b|stage-|solo\b|lean\b)/;
+// Skill names before 0.1.67, the git-sync name that moved from am-art to am-util in am-art 0.1.4, and the plugin/ paths
+// of what moved to auto/ and util/. CHANGELOG.md and tests/ keep them on purpose (history, inputs), and
+// plugin/hooks/hooks.json is frozen byte for byte (tests/gate.test.mjs).
+const OLD_NAME = /am:(?:auto\b|sessions\b|land\b|stage-|solo\b|lean\b)|am-art:git-sync\b/;
 const OLD_PATH = /plugin\/(?:scripts\/(?:stage|agent-stage|progress|sessions|claude-opinion|memory-guard|proc-tree)\.mjs|hooks\/(?:handover|stage-guard|stage-hook)\.mjs|agents\/stage-|skills\/(?:multi|one|agent|sessions|land|auto|solo|lean)\b)|skills\/auto-(?:multi|one|agent)\b/;
-const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'art/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'orchestrator/README.md', 'CLAUDE.md', 'CLAUDE.full.md'];
+const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'art/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'README-ART.md', 'orchestrator/README.md', 'CLAUDE.md', 'CLAUDE.full.md'];
 const OLD_SKIP = ['plugin/hooks/hooks.json'];
-// The only places an old name stays: the stored .gate phase (written and read) and the README's notice of the rename.
+// The only places an old name stays: the stored .gate phase (written and read), the README's notice of the rename and the
+// two git-sync lines below.
 const OLD_KEPT = {
   'auto/scripts/stage.mjs': ['phase: `am:auto ${stage}`'],
   'auto/scripts/sessions.mjs': ['/^am:auto (\\S+)$/'],
   'README.md': ['옛 이름 `am:auto-multi`·`am:auto-one`·`am:auto-agent`·`am:sessions`·`am:land` 는 없어졌습니다'],
+  // The moved stub's title goes with MOVED_STUB in am-art 0.1.5; the util skill tells users of am-art 0.1.3 or earlier to update.
+  'art/claude-skills/git-sync/SKILL.md': ['# am-art:git-sync (moved)'],
+  'util/skills/git-sync/SKILL.md': ['When the skill list also shows am-art:git-sync (am-art 0.1.3 or earlier)'],
 };
 
 test('no old skill name or moved plugin/ path is left outside the history and the test inputs', () => {
