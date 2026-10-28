@@ -17,16 +17,22 @@ const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 const AUTO = path.join(REPO_ROOT, 'auto');
 const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
 // am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
-const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume', 'git-sync'];
+const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
 // Every am-art skill: ad-execute is the Codex worker's and carries neither block.
 const ART_PLUGIN = [...ART, 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util', 'update-branch': 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
+const SKILL_HOME = { land: 'util', 'update-branch': 'util', 'git-sync': 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 // am-art has no default skills/ (both tools add a manifest's skills path to it): art/claude-skills/ for Claude Code, art/codex-skills/ for Codex (user decision).
 const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-execute': 'codex-skills' };
 const SKILL_ROOTS = [...PLUGIN_FOLDERS.map((f) => [f, 'skills']), ['art', 'claude-skills'], ['art', 'codex-skills']];
+// Skills with neither the common nor the art block: am-util:git-sync keeps three artist rules in its body, because the
+// common block's decision cards and "never revert others' changes" clash with what it does, and the art block names art.json.
+const NO_BLOCK = ['git-sync'];
+// am-art 0.1.4's one-version stub that only points to am-util:git-sync. Its name is the util skill's, so the name-keyed
+// tables above leave it out and its own test checks it. Remove the folder, this constant and its test in am-art 0.1.5.
+const MOVED_STUB = 'art/claude-skills/git-sync';
 const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', SKILL_SUB[name] ?? 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
@@ -45,7 +51,7 @@ const frontmatter = (text) => {
 };
 
 test('every am, am-auto and am-util skill carries the same common rules block, and the am-art skills the art block instead', () => {
-  const commonSkills = Object.keys(LIMITS).filter((n) => !ART_PLUGIN.includes(n));
+  const commonSkills = Object.keys(LIMITS).filter((n) => !ART_PLUGIN.includes(n) && !NO_BLOCK.includes(n));
   for (const n of commonSkills) assert.ok(BLOCKS.common.targets.includes(skillPath(n)), n);
   assert.ok(BLOCKS.common.targets.includes('orchestrator/skills/run/SKILL.md'));
   const blocks = commonSkills.map((n) => common(read(n)));
@@ -54,6 +60,10 @@ test('every am, am-auto and am-util skill carries the same common rules block, a
   for (const n of ART) {
     assert.ok(!read(n).includes(BLOCKS.common.start), n);
     assert.ok(read(n).includes(BLOCKS.art.start), n);
+  }
+  for (const n of NO_BLOCK) {
+    assert.ok(!read(n).includes('<!-- am:'), n);
+    assert.ok(!BLOCKS.common.targets.includes(skillPath(n)) && !BLOCKS.art.targets.includes(skillPath(n)), n);
   }
 });
 
@@ -148,8 +158,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-util:land and am-util:update-branch are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch']) {
+test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-util:land, am-util:update-branch and am-util:git-sync are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'git-sync']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(skillDir(name), 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -158,7 +168,7 @@ test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-util:land an
 
 // am-art serves both tools: ad-execute is the Codex worker's, ad-review the Claude Code AD's (user decision); the stop lines stay as a last guard.
 const AD_EXECUTE_TRIGGERS = ['피드백 채널 최신 지시서대로 작업', '지시서 ㄱㄱ', '지시서 읽어', '지시서 다시 읽어', '지시서 확인', '‘실무자’', '‘실무’', '실무자1', '실무자 2', '실무자 대기', '실무자2번. 대기.', '너는 실무자 2번이야', '이어서 작업', '계속 진행해', '013 지시서를 실행', '피드백/.../NNN_..._지시.md', 'FB §5 → 011 지시 실행'];
-test('am-art: ad-execute stops in Claude Code, ad-review stops in Codex, and Codex picks none of the other four on its own', () => {
+test('am-art: ad-execute stops in Claude Code, ad-review stops in Codex, and Codex picks none of the other three on its own', () => {
   const text = read('ad-execute');
   for (const s of [BLOCKS.common.start, BLOCKS.art.start, '${CLAUDE_PLUGIN_ROOT}', 'AskUserQuestion']) assert.ok(!text.includes(s), `ad-execute: ${s}`);
   assert.ok(!existsSync(path.join(skillDir('ad-execute'), 'agents', 'openai.yaml')), 'Codex may pick ad-execute on its own');
@@ -183,10 +193,38 @@ test('am-art: ad-execute stops in Claude Code, ad-review stops in Codex, and Cod
   for (const n of ART) assert.match(readFileSync(path.join(skillDir(n), 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/, n);
 });
 
+test('am-util:git-sync is Claude Code only and keeps its pattern list in am-util', () => {
+  const text = read('git-sync');
+  const lines = text.split('\n');
+  assert.match(lines[lines.indexOf('Argument: $ARGUMENTS') + 1], /^If you are not Claude Code \(for example Codex\): .*, and stop;/);
+  assert.match(frontmatter(text).description, /Claude Code 전용/);
+  assert.ok(text.includes('node "${CLAUDE_PLUGIN_ROOT}/scripts/git-sync-settings.mjs"'));
+  assert.ok(!text.includes('art-settings'));
+  for (const s of ['(추천)', 'file:///']) assert.ok(text.includes(s), s);
+  assert.ok(existsSync(path.join(REPO_ROOT, 'util', 'scripts', 'git-sync-settings.mjs')));
+});
+
+test('am-art:git-sync is a stub that only points to am-util:git-sync, outside the model values', async () => {
+  const dir = path.join(REPO_ROOT, MOVED_STUB);
+  const text = readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+  const fm = frontmatter(text);
+  // Runs on the session model: a fixed notice, gone in am-art 0.1.5.
+  assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'disable-model-invocation', 'name']);
+  assert.equal(fm.name, 'git-sync');
+  assert.equal(fm['disable-model-invocation'], 'true');
+  assert.match(fm.description, /^"[^"]{40,}"$/);
+  assert.ok(text.split('\n').length <= 30, 'at most 30 lines');
+  for (const s of ['git ', '${CLAUDE_PLUGIN_ROOT}', '<!-- am:']) assert.ok(!text.includes(s), s);
+  for (const s of ['/am-util:git-sync', '/plugin update am-util@am-workflow']) assert.ok(text.includes(s), s);
+  assert.match(readFileSync(path.join(dir, 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/);
+  const { targets } = await import('../scripts/models.mjs');
+  assert.ok(!targets().some((t) => t.file === `${MOVED_STUB}/SKILL.md`), 'no model value target');
+});
+
 // The one exception to "no Codex-only copies": each tool's manifest names its own skill folder, and art/ has no default skills/ that both would add (user decision).
 test('am-art: Claude Code sees only art/claude-skills, Codex only art/codex-skills with ad-execute alone', () => {
   assert.ok(!existsSync(path.join(REPO_ROOT, 'art', 'skills')), 'art/skills would be added to both tools');
-  assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'claude-skills')).sort(), [...ART].sort());
+  assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'claude-skills')).sort(), [...ART, 'git-sync'].sort());
   assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'codex-skills')), ['ad-execute']);
   const manifest = (tool) => JSON.parse(readFileSync(path.join(REPO_ROOT, 'art', tool, 'plugin.json'), 'utf8'));
   const claude = manifest('.claude-plugin');
@@ -206,7 +244,7 @@ test('every skill folder of every plugin folder is a skill with limits, in its o
     const dir = path.join(REPO_ROOT, folder, sub);
     if (!existsSync(dir)) continue;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (!e.isDirectory()) continue;
+      if (!e.isDirectory() || `${folder}/${sub}/${e.name}` === MOVED_STUB) continue;
       found.push(e.name);
       assert.equal(`${folder}/${sub}`, `${SKILL_HOME[e.name] ?? 'plugin'}/${SKILL_SUB[e.name] ?? 'skills'}`, `${folder}/${sub}/${e.name}`);
     }
@@ -235,12 +273,12 @@ test('the skills checked here and the common and art block targets are every SKI
     const dir = path.join(REPO_ROOT, folder, sub);
     if (!existsSync(dir)) continue;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.isDirectory() && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/${sub}/${e.name}/SKILL.md`);
+      if (e.isDirectory() && `${folder}/${sub}/${e.name}` !== MOVED_STUB && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/${sub}/${e.name}/SKILL.md`);
     }
   }
   actual.sort();
   assert.deepEqual(Object.keys(LIMITS).map(skillPath).sort(), actual);
-  const artPlugin = ART_PLUGIN.map(skillPath);
+  const artPlugin = [...ART_PLUGIN, ...NO_BLOCK].map(skillPath);
   assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual.filter((f) => !artPlugin.includes(f)), 'orchestrator/skills/run/SKILL.md'].sort());
   assert.deepEqual([...BLOCKS.art.targets].sort(), ART.map(skillPath).sort());
 });
@@ -275,7 +313,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'git-sync', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'multi' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback

@@ -1,6 +1,6 @@
 # am plugin repository
 
-Lightweight plan/do/check/commit workflow plugin for Claude Code and Codex CLI. The repository root is the marketplace (`.claude-plugin/marketplace.json`) and lists five plugins, each installed into users' caches on its own: `plugin/` is `am` (plan, do, check, commit, the commit gate, the second opinion), `auto/` is `am-auto` (Claude Code only, depends on am: the unattended run skills, stage agents and stage runner), `util/` is `am-util` (land, update-branch), `art/` is `am-art` (art skills; Claude Code and Codex see different skill folders) and `orchestrator/` is `am-orchestrator` (Claude Code only, runs the am skills task by task over a design document).
+Lightweight plan/do/check/commit workflow plugin for Claude Code and Codex CLI. The repository root is the marketplace (`.claude-plugin/marketplace.json`) and lists five plugins, each installed into users' caches on its own: `plugin/` is `am` (plan, do, check, commit, the commit gate, the second opinion), `auto/` is `am-auto` (Claude Code only, depends on am: the unattended run skills, stage agents and stage runner), `util/` is `am-util` (land, update-branch, git-sync), `art/` is `am-art` (art skills; Claude Code and Codex see different skill folders) and `orchestrator/` is `am-orchestrator` (Claude Code only, runs the am skills task by task over a design document).
 
 The full maintainer rules live in `CLAUDE.full.md`. This file keeps only the rules every change needs and an index into that file.
 

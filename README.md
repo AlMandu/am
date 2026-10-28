@@ -542,11 +542,11 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-auto:sessions` | `sonnet` | `low` |
 | `am-util:land` | `opus` | `high` |
 | `am-util:update-branch` | `opus` | `high` |
+| `am-util:git-sync` | `opus` | `high` |
 | `am-art:ad-review` | `opus` | `high` |
 | `am-art:pipe-apply` | `opus` | `medium` |
 | `am-art:log-compare` | `sonnet` | `medium` |
 | `am-art:log-resume` | `opus` | `high` |
-| `am-art:git-sync` | `opus` | `high` |
 | `am-art:ad-execute` | `sonnet` | `low` |
 | 단계 사이 맥락 압축 세션(`am-auto:multi`·`am-auto:one`, Claude Code) | `sonnet` | `medium` |
 | 2차 의견 서브에이전트(`am:second-opinion`) | `opus` | `high` |
