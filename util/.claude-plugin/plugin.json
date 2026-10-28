@@ -1,9 +1,9 @@
 {
   "name": "am-util",
-  "version": "0.1.0",
-  "description": "지금 브랜치를 대상 브랜치에 합쳐 push 한 뒤 합친 커밋으로 옮기는 land. 커밋하지 않은 변경은 보존한다. Claude Code·Codex 공용.",
+  "version": "0.1.1",
+  "description": "지금 브랜치를 대상 브랜치에 합쳐 push 한 뒤 합친 커밋으로 옮기는 land. 커밋하지 않은 변경은 보존한다. 지금 브랜치를 최신 기준 브랜치 위로 옮기는 catch-up. Claude Code·Codex 공용.",
   "author": { "name": "Seonghun" },
   "homepage": "https://github.com/AlMandu/am",
   "repository": "https://github.com/AlMandu/am",
-  "keywords": ["workflow", "land", "merge", "push", "codex"]
+  "keywords": ["workflow", "land", "merge", "push", "rebase", "catch-up", "codex"]
 }

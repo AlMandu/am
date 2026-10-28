@@ -21,7 +21,7 @@ export const BLOCKS = {
     source: 'shared/common.md',
     start: '<!-- am:common:start -->',
     end: '<!-- am:common:end -->',
-    targets: [...['plan', 'do', 'check', 'commit'].map(am), ...['multi', 'one', 'agent', 'sessions'].map(auto), skill('util')('land'), 'orchestrator/skills/run/SKILL.md'],
+    targets: [...['plan', 'do', 'check', 'commit'].map(am), ...['multi', 'one', 'agent', 'sessions'].map(auto), ...['land', 'catch-up'].map(skill('util')), 'orchestrator/skills/run/SKILL.md'],
   },
   // am-art's skills carry their own owner rules instead of the common block (its chat rules conflict with theirs).
   art: {

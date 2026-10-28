@@ -22,12 +22,12 @@ const MODEL = {
 const ENTRIES = {
   am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
   'am-auto': { multi: 'alias', one: 'alias', agent: 'alias', sessions: 'alias', compact: 'alias' },
-  'am-util': { land: 'alias' },
+  'am-util': { land: 'alias', 'catch-up': 'alias' },
   'am-art': { 'ad-review': 'alias', 'pipe-apply': 'alias', 'log-compare': 'alias', 'log-resume': 'alias', 'ad-execute': 'alias' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Skills per models.json group and the plugin folder that holds them (<folder>/<SKILL_SUBDIR or skills>/<name>/SKILL.md).
-export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'sessions'], 'am-util': ['land'], 'am-art': ['ad-review', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
+export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'sessions'], 'am-util': ['land', 'catch-up'], 'am-art': ['ad-review', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
 export const PLUGIN_DIRS = { am: 'plugin', 'am-auto': 'auto', 'am-util': 'util', 'am-art': 'art' };
 // am-art has no default skills/: each tool's manifest names its own folder (art/.claude-plugin and art/.codex-plugin).
 export const SKILL_SUBDIR = { 'ad-review': 'claude-skills', 'pipe-apply': 'claude-skills', 'log-compare': 'claude-skills', 'log-resume': 'claude-skills', 'ad-execute': 'codex-skills' };
