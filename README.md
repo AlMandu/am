@@ -22,7 +22,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 그 밖의 명령 셋은 필요할 때만 씁니다.
 
 - `am-util:land`(am-util 플러그인, 따로 설치): 지금 브랜치를 대상 브랜치(생략하면 원격 기본 브랜치)에 합쳐 원격에 push 한 뒤, 지금 브랜치를 합친 커밋으로 옮깁니다. 커밋하지 않은 변경은 그대로 두며, 대상 쪽 변경과 겹치면 옮기지 않고 알립니다. 강제 push 는 하지 않습니다.
-- `am-util:catch-up`(am-util 플러그인, 따로 설치): 지금 브랜치를 최신 기준 브랜치(생략하면 원격 기본 브랜치, 예: `master`) 위로 옮깁니다. 커밋하지 않은 파일은 그대로 돌아오고, 옮기기 전 자리에 백업 브랜치를 남깁니다. push 는 하지 않습니다.
+- `am-util:update-branch`(am-util 플러그인, 따로 설치): 지금 브랜치를 최신 기준 브랜치(생략하면 원격 기본 브랜치, 예: `master`) 위로 옮깁니다. 커밋하지 않은 파일은 그대로 돌아오고, 옮기기 전 자리에 백업 브랜치를 남깁니다. push 는 하지 않습니다.
 - `am-auto:sessions`(am-auto 플러그인): 이 PC 에서 `am-auto:multi`·`am-auto:one` 과 오케스트레이터가 띄운 세션이 작업 폴더별로 지금 무엇을 하는지 한 번 보여 줍니다. 아무것도 바꾸거나 멈추지 않습니다.
 
 명령과 함께 두 가지 장치가 돕니다.
@@ -67,7 +67,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 |---|---|---|
 | `am` | `am:plan`·`am:do`·`am:check`·`am:commit`, 커밋 게이트, 2차 의견 | Claude Code·Codex |
 | `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
-| `am-util` | `am-util:land`·`am-util:catch-up` | Claude Code·Codex |
+| `am-util` | `am-util:land`·`am-util:update-branch` | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
 | `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
 
@@ -149,7 +149,7 @@ Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 �
 | 요청 하나로 단계 에이전트가 계획부터 커밋까지 | `/am-auto:agent 0으로 나누면 오류 문구를 보여 줘` | Claude Code 전용 |
 | 멈춘 단계 에이전트 진행 이어 가기 | `/am-auto:agent <slug>` | Claude Code 전용 |
 | 지금 브랜치를 기본 브랜치에 합쳐 push | `/am-util:land [브랜치]` | `$am-util:land [브랜치]` |
-| 지금 브랜치를 최신 기본 브랜치 위로 옮기기 | `/am-util:catch-up [브랜치]` | `$am-util:catch-up [브랜치]` |
+| 지금 브랜치를 최신 기본 브랜치 위로 옮기기 | `/am-util:update-branch [브랜치]` | `$am-util:update-branch [브랜치]` |
 | 돌고 있는 세션 보기 | `/am-auto:sessions` | Claude Code 전용 |
 
 ## 명령별 설명
@@ -333,11 +333,11 @@ am-util 플러그인의 명령입니다(Claude Code·Codex).
 - 로컬 대상 브랜치는 원격에 맞춥니다. 원격과 다르면 시작할 때 원격 위치로 옮기므로 로컬 대상 브랜치에만 있던 커밋은 그 브랜치에서 빠지고, 답에 옮기기 전 위치와 빠진 커밋 목록을 보여 줘 되찾을 수 있게 합니다. 로컬에 없으면 push 한 커밋에 원격을 따라가는 브랜치로 만듭니다. 다른 작업 폴더에 체크아웃돼 있어 옮길 수 없으면 알리기만 합니다.
 - push 를 하므로 사용자가 부를 때만 돕니다. 예전 `am:merge` 의 기록(`merge.md`, `feature/<slug>` 브랜치, `commits.md`)은 읽지 않습니다.
 
-### `am-util:catch-up`: 지금 브랜치를 최신 기준 브랜치 위로 옮기기
+### `am-util:update-branch`: 지금 브랜치를 최신 기준 브랜치 위로 옮기기
 
 am-util 플러그인의 명령입니다(Claude Code·Codex).
 
-`am-util:catch-up [브랜치]` 는 지금 브랜치의 커밋을 최신 기준 브랜치 맨 끝 뒤로 옮깁니다(rebase). 브랜치를 생략하면 원격의 기본 브랜치(예: `master`)를 씁니다. push 는 하지 않습니다.
+`am-util:update-branch [브랜치]` 는 지금 브랜치의 커밋을 최신 기준 브랜치 맨 끝 뒤로 옮깁니다(rebase). 브랜치를 생략하면 원격의 기본 브랜치(예: `master`)를 씁니다. push 는 하지 않습니다.
 
 - 기준 브랜치 위에 서 있으면 새 브랜치 이름을 묻고(추천 이름 하나), 그 브랜치를 만들어 진행합니다. 작업 중 파일과 로컬 커밋은 새 브랜치로 따라갑니다. Unity 프로젝트면 시작할 때 에디터를 닫았는지 함께 묻습니다.
 - 먼저 원격의 최신 기준 브랜치를 받고, 로컬 기준 브랜치를 원격과 똑같이 맞춥니다(체크아웃 없이). 로컬 기준 브랜치에만 있던 커밋은 그 브랜치에서 빠지며, 답에 옮기기 전 위치와 빠진 커밋 목록을 보여 줘 되찾을 수 있게 합니다. 다른 작업 폴더가 기준 브랜치를 열어 두어 옮길 수 없으면, 내 브랜치는 그대로 원격의 최신 기준 위로 옮기고 그 폴더 위치를 알립니다.
@@ -536,7 +536,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-auto:agent` | `opus` | `medium` |
 | `am-auto:sessions` | `sonnet` | `low` |
 | `am-util:land` | `opus` | `high` |
-| `am-util:catch-up` | `opus` | `high` |
+| `am-util:update-branch` | `opus` | `high` |
 | `am-art:ad-review` | `opus` | `high` |
 | `am-art:pipe-apply` | `opus` | `medium` |
 | `am-art:log-compare` | `sonnet` | `medium` |
@@ -668,7 +668,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 
 - `plugin/`(am): 스킬 넷(`plan`·`do`·`check`·`commit`), 2차 의견 서브에이전트(`agents/second-opinion.md`), 커밋 게이트 훅(`hooks/hook.mjs`·`gate.mjs`·`hooks.json`), Codex 2차 의견 스크립트(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)과 PC 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트(`user-models.mjs`·`user-settings.mjs`), 두 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트(`user-files.mjs`).
 - `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 넷(`multi`·`one`·`agent`·`sessions`), 세 실행 명령이 실행 중에 읽는 진행 규칙 글(`flow/`, 스킬이 아니라 명령 목록에 나오지 않음), 단계 에이전트 다섯(`agents/stage-*.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`)과 오케스트레이터 넘김 훅(`handover.mjs`), 단계 세션 스크립트(`stage.mjs`), 단계 에이전트 시작·끝 스크립트(`agent-stage.mjs`), 진행 소식(`progress.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 남은 메모리 확인(`memory-guard.mjs`), 남은 프로세스 정리(`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
-- `util/`(am-util): 스킬 `land`·`catch-up`.
+- `util/`(am-util): 스킬 `land`·`update-branch`.
 - `orchestrator/`(am-orchestrator): 아래 오케스트레이터 플러그인.
 - 사본: `plugin/` 의 게이트·2차 의견·사용자 설정 파일 스크립트를 `auto/`·`util/` 에 복사해 둡니다. `plugin/` 원본만 고치고 `node scripts/sync-shared.mjs` 로 반영합니다(`--check` 는 어긋난 사본만 알려 줍니다).
 

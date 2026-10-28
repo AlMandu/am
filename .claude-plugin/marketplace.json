@@ -16,7 +16,7 @@
     {
       "name": "am-util",
       "source": "./util",
-      "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land, 지금 브랜치를 최신 기준 브랜치 위로 옮기는 catch-up(Claude Code·Codex 공용)"
+      "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land, 지금 브랜치를 최신 기준 브랜치 위로 옮기는 update-branch(Claude Code·Codex 공용)"
     },
     {
       "name": "am-art",

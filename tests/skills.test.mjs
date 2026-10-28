@@ -15,14 +15,14 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'catch-up': 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'ad-execute': 120 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'ad-execute': 120 };
 // am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
 const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
 // Every am-art skill: ad-execute is the Codex worker's and carries neither block.
 const ART_PLUGIN = [...ART, 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util', 'catch-up': 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
+const SKILL_HOME = { land: 'util', 'update-branch': 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 // am-art has no default skills/ (both tools add a manifest's skills path to it): art/claude-skills/ for Claude Code, art/codex-skills/ for Codex (user decision).
 const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-execute': 'codex-skills' };
@@ -148,8 +148,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-util:land and am-util:catch-up are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'land', 'catch-up']) {
+test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-util:land and am-util:update-branch are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(skillDir(name), 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -275,7 +275,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'catch-up', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'multi' ? ['hooks'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
@@ -293,8 +293,8 @@ test('am-util:land lands from a temporary worktree, never force pushes and only 
   for (const line of skill.split('\n').filter((l) => l.includes('git merge ') && !l.includes('-C <temp>'))) assert.ok(line.includes('--ff-only'), line);
 });
 
-test('am-util:catch-up forces the base like reset --hard without checkout, never commits, pushes or stashes, and restores the WIP only by its message', () => {
-  const skill = withoutCommon(read('catch-up'));
+test('am-util:update-branch forces the base like reset --hard without checkout, never commits, pushes or stashes, and restores the WIP only by its message', () => {
+  const skill = withoutCommon(read('update-branch'));
   for (const s of ['git branch -f <base> origin/<base>', 'git commit-tree', 'git update-ref', 'git reset --mixed HEAD~1', '-c rebase.updateRefs=false rebase <onto>', 'git rebase --abort', 'git check-ref-format --branch', 'git switch -c', 'git worktree list', 'backup/']) assert.ok(skill.includes(s), s);
   // The WIP commit is plumbing (a commit command would run the gate), and the restore checks the commit's message first.
   assert.ok(skill.includes('if `git log -1 --format=%s HEAD` equals `<wip-msg>`, run `git reset --mixed HEAD~1`'));
