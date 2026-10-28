@@ -28,7 +28,7 @@ export const BLOCKS = {
     source: 'shared/art.md',
     start: '<!-- am:shared:art:start -->',
     end: '<!-- am:shared:art:end -->',
-    targets: ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'].map(art),
+    targets: ['ad-review', 'pipe-apply', 'log-compare', 'log-resume', 'git-sync'].map(art),
   },
 };
 // Every SKILL.md under these folders is scanned for markers, targets or not (a missing folder is skipped).

@@ -15,9 +15,9 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'ad-execute': 120 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
 // am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
-const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
+const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume', 'git-sync'];
 // Every am-art skill: ad-execute is the Codex worker's and carries neither block.
 const ART_PLUGIN = [...ART, 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
