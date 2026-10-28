@@ -285,9 +285,11 @@ test('every skill sets the model and effort its turn runs with', () => {
 
 test('am-util:land lands from a temporary worktree, never force pushes and only fast-forwards this folder at the end', () => {
   const skill = withoutCommon(read('land'));
-  for (const s of ['git worktree add --detach', 'git merge --no-ff', 'merge --continue', 'merge --abort', 'git worktree remove', 'git fetch . ', 'git ls-remote --symref origin HEAD', 'git branch -f <target> origin/<target>', '--set-upstream-to=origin/<target>', 'Never force push', "Until step 8, never touch this folder's working tree", 'git merge --ff-only --no-autostash --no-overwrite-ignore', 'even if the local target update or upstream setup failed']) assert.ok(skill.includes(s), s);
+  for (const s of ['git worktree add --detach', 'merge --no-ff --no-edit', 'merge --continue', 'merge --abort', 'git worktree remove', 'git fetch . ', 'git ls-remote --symref origin HEAD', 'git branch -f <target> origin/<target>', '--set-upstream-to=origin/<target>', 'Never force push', "Until step 8, never touch this folder's working tree", 'git merge --ff-only --no-autostash --no-overwrite-ignore', 'even if the local target update or upstream setup failed', 'ProjectSettings/ProjectVersion.txt', 'git -C <temp> checkout --ours -- <path>']) assert.ok(skill.includes(s), s);
   // No destructive checkout change, commit that runs the gate in the temp folder, or unchecked ref move.
   assert.doesNotMatch(skill, /git (switch|checkout|stash|reset|restore|rebase|pull)\b/);
+  // Even in the temp worktree a checkout only takes one side of a conflicted file.
+  assert.doesNotMatch(skill, /checkout (?!--(ours|theirs) -- <path>)/);
   for (const s of ['git commit', 'git update-ref', 'merge.md', 'commits.md', 'feature/<slug>']) assert.ok(!skill.includes(s), s);
   for (const line of skill.split('\n').filter((l) => l.includes('git push'))) assert.doesNotMatch(line, /--force|-f |\+/, line);
   for (const line of skill.split('\n').filter((l) => l.includes('git merge ') && !l.includes('-C <temp>'))) assert.ok(line.includes('--ff-only'), line);
@@ -295,7 +297,9 @@ test('am-util:land lands from a temporary worktree, never force pushes and only 
 
 test('am-util:update-branch forces the base like reset --hard without checkout, never commits, pushes or stashes, and restores the WIP only by its message', () => {
   const skill = withoutCommon(read('update-branch'));
-  for (const s of ['git branch -f <base> origin/<base>', 'git commit-tree', 'git update-ref', 'git reset --mixed HEAD~1', '-c rebase.updateRefs=false rebase <onto>', 'git rebase --abort', 'git check-ref-format --branch', 'git switch -c', 'git worktree list', 'backup/']) assert.ok(skill.includes(s), s);
+  for (const s of ['git branch -f <base> origin/<base>', 'git commit-tree', 'git update-ref', 'git reset --mixed HEAD~1', '-c rebase.updateRefs=false rebase <onto>', 'git rebase --abort', 'git check-ref-format --branch', 'git switch -c', 'git worktree list', 'backup/', '## Back to the backup', 'git switch --no-overwrite-ignore -C <branch> <backup>']) assert.ok(skill.includes(s), s);
+  // Going back runs the Back to the backup section, not the old promise that left the branch moved.
+  assert.ok(!skill.includes('moving to the backup and then undoing'));
   // The WIP commit is plumbing (a commit command would run the gate), and the restore checks the commit's message first.
   assert.ok(skill.includes('if `git log -1 --format=%s HEAD` equals `<wip-msg>`, run `git reset --mixed HEAD~1`'));
   assert.doesNotMatch(skill, /git commit(?!-tree)/);
