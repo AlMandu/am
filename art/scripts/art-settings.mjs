@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // am-art per-PC settings: the company values the art skills need, kept out of the public repository.
 // File: <CLAUDE_CONFIG_DIR or ~/.claude>/am/art.json, JSON (a leading BOM is allowed):
-//   { "adCodexRoot": <path>, "spineRoot": <path>, "python": <path>, "deployTools": { <name>: <path> }, "browserSmoke": <path> }
+//   { "adCodexRoot": <path>, "spineRoot": <path>, "python": <path>, "deployTools": { <name>: <path> }, "browserSmoke": <path>, "gameRoot": <path> }
 // Every key is optional; keys starting with `_` are notes, kept as they are. A broken file or an unknown key is an error
 // (one English line `<file>: <problem>`), and `set` then refuses too instead of making a new file.
 // CLI: get <key|deployTools.<name>> (exit 3 when missing), set <key> <value>, set deployTools.<name> <path>, show.
@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const PATH_KEYS = ['adCodexRoot', 'spineRoot', 'python', 'browserSmoke'];
+export const PATH_KEYS = ['adCodexRoot', 'spineRoot', 'python', 'browserSmoke', 'gameRoot'];
 export const KEYS = [...PATH_KEYS, 'deployTools'];
 // A lock older than this is left over from a writer that died; rename retries cover a virus scanner holding the file.
 export const LOCK_STALE_MS = 10_000;

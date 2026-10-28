@@ -1,7 +1,7 @@
 ---
 name: ad-review
-description: "아트 AD 패키지(AD_Codex_*)에서 AD 역할로 한 바퀴를 돕니다: 피드백 채널 확인 → 실무자 완료보고·질문 검수 → FB 작성 → 다음 지시서 발행 → 상태 대장 기록 → 오너 보고. 아트 작업 중 ‘검수’, ‘검수 ㄱㄱ’, ‘검수할게 있나?’, ‘검수나 완료가 있어?’, ‘완료보고 읽어’, ‘피드백 확인해’, ‘실무자1 검수’, ‘실무자2 검수’, ‘질문파일 보고 질문해봐’, ‘검수하고 질문해’, ‘지시서 ㄱㄱ’, ‘다음 작업 추천’ 이라고 하거나 피드백/.../NNN_..._완료보고.md 경로만 붙여 넣으면 씁니다. 이미지 생성·게임 반영·커밋은 하지 않습니다. Claude Code 전용입니다."
-argument-hint: "[실무자1|실무자2|<문서 경로>|자동|시험 <폴더>]"
+description: "아트 AD 패키지(AD_Codex_*)에서 AD 역할로 한 바퀴를 돕니다: 피드백 채널 확인 → 실무자 완료보고·질문 검수 → FB 작성 → 다음 지시서 발행 → 상태 대장 기록 → 오너 보고. 아트 작업 중 ‘검수’, ‘검수 ㄱㄱ’, ‘검수할게 있나?’, ‘검수나 완료가 있어?’, ‘완료보고 읽어’, ‘피드백 확인해’, ‘실무자1 검수’, ‘실무자2 검수’, ‘질문파일 보고 질문해봐’, ‘검수하고 질문해’, ‘지시서 ㄱㄱ’, ‘다음 작업 추천’ 이라고 하거나 피드백/.../NNN_..._완료보고.md 경로만 붙여 넣으면 씁니다. 새 요청·스케치·외부 이미지로 첫 지시서를 준비할 때(‘이거 코덱스가 작업할 수 있게 준비해줘’, ‘이해했는지 대답부터 해줘’, ‘내가 그린 스케치’)와 정본을 게임 파일 이름에 맞춘 사본으로 만들 때(‘바로 덮어씌울수 있도록 이름 맞추고’, ‘게임에 넣을 128 사본’)도 씁니다. 이미지 생성·게임 반영·커밋은 하지 않습니다. Claude Code 전용입니다."
+argument-hint: "[실무자1|실무자2|<문서 경로>|자동|시험 <폴더>|새요청|게임투입]"
 model: opus
 effort: high
 ---
@@ -36,6 +36,9 @@ The package documents are the source of every detail; this skill holds only the 
 - a file path: that one document.
 - `자동`: go on with the AD recommendation without owner checks (Owner checks below).
 - `시험 <폴더>`: a dry run on past documents. Every file this run would write (FB, instruction, answer, status ledger line) goes into `<폴더>` instead, nothing is copied to the canonical path, and no file in the feedback channel changes. Combine it with a document path to review one past document.
+- `새요청`: a new request (New request below). Without an argument, the owner's words also go there when they bring a new request, a sketch or an outside image to prepare for the worker.
+- `게임투입`: game-named copies of canonical images (Game drop-in below). Without an argument, the owner's words also go there when they ask for copies named to overwrite the game files.
+- Both run Step 0, then only their section, and skip Steps 1-8 except where the section names one. Neither runs in `자동` mode: both need the owner's confirmation.
 
 ## Steps
 0. Package: `adCodexRoot` from art.json (in `자동` mode a missing value is not asked: end with one line saying which key is missing). If the current folder is not inside an `AD_Codex_*` package under it, ask which package (in `자동` mode, end with one line saying the run must start inside a package). If this session has not read the package yet, read the documents in the order `CLAUDE.md` gives. If the settings copy is missing or has empty fields, do not review: stop and say which.
@@ -48,6 +51,21 @@ The package documents are the source of every detail; this skill holds only the 
 7. On a pass, move it: copy to the canonical path only. Replacing a file of the same name there is a canonical replacement: owner approval → back up the old file → copy → a "교체" line in the status ledger, in that order.
 8. Status ledger: add lines only (form F) to the target's `_상태.md`.
 9. Report the owner (Report below).
+
+## New request (새요청)
+After Step 0. When the owner asks only for an answer ("대답만", "대답부터", "이해했는지만"), say what you understood and end; write no file.
+1. Open every image the owner gave yourself. Say in plain words what you understood: the target, its use, shape, colour and size, and what is still unclear; put each instruction term in brackets with a plain explanation. Confirm with one AskUserQuestion.
+2. Once confirmed, write the first instruction in form A of 03 by Step 6's rules (numbers recomputed, ★ marks, worker named). Give the judgement criteria and allowed ranges as numbers so the worker need not ask or stop, and answer in advance any judgement the attempt limit (settings §5) would hit. Several targets: split them between 실무자 1 and 2, or ask for one image sheet.
+3. A new target's feedback folder and `_상태.md` follow settings §2 and form F; when there is no place for them, ask. Then Step 8 and Report.
+
+## Game drop-in (게임투입)
+After Step 0, only for targets already canonical (passed but not moved yet: Step 7 first; not passed yet: say so and leave that target out).
+1. `get gameRoot` (missing: ask and `set` it, as the owner rules say). Find the game file of the same use under `gameRoot`, reading earlier `게임투입/*/대응표.md` and the settings copy first; when it is not exactly one, show the candidates and ask.
+2. Spec: the settings copy's values, else 128px with a transparent background. Folders: `<package>/게임투입/<YYYYMMDD-HHMM>/` for the copies and `대응표.md`, `<package>/백업/게임_<YYYYMMDD-HHMM>/` for the current game files, or the folders the settings copy names; when a folder of that name exists, use a new name such as `-2`.
+3. Pillow: `get python`, then `<python> -c "import PIL"`; without it ask which environment to install it into (the art.json Python first) and install with `<python> -m pip install Pillow` only after the answer.
+4. Each copy: `<python> "${CLAUDE_PLUGIN_ROOT}/scripts/make_dropin.py" --src <canonical image> --out <drop-in folder>/<game file name> --size N`. Report `size` and `transparent` of its last JSON line, and open the copy yourself at real size (1:1).
+5. Copy the current game file into the backup folder (never move or delete it). Write `대응표.md`: 제작 이름 | 게임 이름 | 용도 | 게임 안 위치 (relative to `gameRoot`) | 백업 파일.
+6. Write nothing into the game folder. Report with path links and "이 폴더 파일을 게임 안 위치로 복사하면 덮어씌워집니다".
 
 ## Owner checks
 - Within AD authority (01 §1: adopting a passed result, moving to canonical, a v+1 reissue of a number without ★): do it without asking and report afterwards.
@@ -63,4 +81,4 @@ Short: one table, the path list, the next step.
 - In `시험` mode, end with a table comparing what this run wrote with the real past documents the owner names (verdict words, re-measurement done, form kept).
 
 ## Never
-Generate images; edit the rule documents (`00`~`04`, `README.md`, `CLAUDE.md`, `AGENTS.md`); overwrite a canonical file; delete recursively (use the recycle bin); commit without owner approval; instruct with impression adjectives (give the measured range and numbers); instruct only in chat (the worker cannot see chat: always a file in the feedback channel).
+Generate images (a smaller game copy is made only with `make_dropin.py`); write into `gameRoot`; edit the rule documents (`00`~`04`, `README.md`, `CLAUDE.md`, `AGENTS.md`); overwrite a canonical file; delete recursively (use the recycle bin); commit without owner approval; instruct with impression adjectives (give the measured range and numbers); instruct only in chat (the worker cannot see chat: always a file in the feedback channel).

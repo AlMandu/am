@@ -104,6 +104,21 @@ test('art settings: set checks the path (absolute, existing, no control characte
   }
 });
 
+test('art settings: gameRoot goes round, refuses a relative or missing path, and a file holding it reads cleanly', () => {
+  const c = config();
+  try {
+    assert.equal(run(c.env, 'set', 'gameRoot', c.place).code, 0);
+    assert.equal(run(c.env, 'get', 'gameRoot').out, `${c.place}\n`);
+    assert.equal(run(c.env, 'set', 'gameRoot', 'relative/game').code, 1);
+    assert.match(setArtSetting(c.file, 'gameRoot', path.join(c.place, 'missing')), /gameRoot does not exist/);
+    assert.equal(JSON.parse(readFileSync(c.file, 'utf8')).gameRoot, c.place);
+    writeFileSync(c.file, JSON.stringify({ gameRoot: path.join(c.base, 'gone'), spineRoot: c.place }));
+    assert.deepEqual(readArtSettings(c.file), { data: { gameRoot: path.join(c.base, 'gone'), spineRoot: c.place } });
+  } finally {
+    c.done();
+  }
+});
+
 test('art settings: a stale lock is taken over, a live one makes set wait and then fail', () => {
   const c = config();
   try {
@@ -309,6 +324,99 @@ test('make_compare: it never overwrites a page it did not make or an input, but 
     assert.deepEqual(readdirSync(f.base).filter((n) => n.endsWith('.tmp')), []);
   } finally {
     f.done();
+  }
+});
+
+// make_dropin: one shrunk copy for the game, written only as a new file.
+const DROPIN = path.join(REPO, 'art', 'scripts', 'make_dropin.py');
+function dropinFixture() {
+  const base = mkdtempSync(path.join(os.tmpdir(), 'am-art-drop-'));
+  const src = path.join(base, '정본 이미지');
+  mkdirSync(src);
+  const script = [
+    'import sys', 'from PIL import Image, ImageDraw', 'd = sys.argv[1]',
+    "im = Image.new('RGBA', (256, 256), (0, 0, 0, 0)); ImageDraw.Draw(im).ellipse((28, 28, 228, 228), fill=(255, 0, 0, 255)); im.save(d + '/빨간 원.png')",
+    "Image.new('RGBA', (512, 256), (0, 128, 255, 255)).save(d + '/wide.png')",
+    "Image.new('RGBA', (64, 64), (0, 128, 255, 255)).save(d + '/small.png')",
+  ].join('\n');
+  const made = spawnSync(PY.cmd, ['-c', script, src], { encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+  return { base, src, done: () => rmSync(base, { recursive: true, force: true }) };
+}
+function dropin(src, out, extra = []) {
+  const r = spawnSync(PY.cmd, [DROPIN, '--src', src, '--out', out, ...extra], { encoding: 'utf8' });
+  const last = (r.stdout || '').trim().split('\n').pop();
+  return { status: r.status, stderr: r.stderr, summary: last ? JSON.parse(last) : null };
+}
+const failed = (r) => {
+  assert.equal(r.status, 1);
+  assert.equal(typeof r.summary.error, 'string');
+  assert.match(r.stderr, /오류: /);
+  assert.doesNotMatch(r.stderr, /Traceback/);
+};
+
+test('make_dropin: a transparent 256 circle becomes a 128 PNG with no dark fringe, and a wide image keeps its ratio', { skip: noPillow }, () => {
+  const f = dropinFixture();
+  try {
+    const out = path.join(f.base, '게임 투입', '새 폴더', 'icon_circle.png');
+    const r = dropin(path.join(f.src, '빨간 원.png'), out);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.summary, { out, src: path.join(f.src, '빨간 원.png'), srcSize: [256, 256], size: [128, 128], transparent: true });
+    const probe = [
+      'import sys', 'from PIL import Image', 'im = Image.open(sys.argv[1])', 'print(im.size, im.mode, im.getpixel((0, 0))[3])',
+      'px = im.load()', 'edge = [px[x, y] for x in range(im.width) for y in range(im.height) if 0 < px[x, y][3] < 255]',
+      'print(len(edge) > 0, min(p[0] for p in edge))',
+    ].join('\n');
+    const p = spawnSync(PY.cmd, ['-c', probe, out], { encoding: 'utf8' });
+    assert.equal(p.status, 0, p.stderr);
+    const [first, second] = p.stdout.trim().split(/\r?\n/);
+    assert.equal(first, '(128, 128) RGBA 0');
+    const [hasEdge, minRed] = second.split(' ');
+    assert.equal(hasEdge, 'True');
+    assert.ok(Number(minRed) >= 250, `edge red ${minRed}`);
+    const wide = dropin(path.join(f.src, 'wide.png'), path.join(f.base, 'wide.tga'));
+    assert.equal(wide.status, 0, wide.stderr);
+    assert.deepEqual(wide.summary.size, [128, 64]);
+    assert.equal(wide.summary.transparent, false);
+  } finally {
+    f.done();
+  }
+});
+
+test('make_dropin: it refuses an existing output, the input itself, enlarging and a .jpg, writing nothing', { skip: noPillow }, () => {
+  const f = dropinFixture();
+  try {
+    const circle = path.join(f.src, '빨간 원.png');
+    const before = readFileSync(circle);
+    const taken = path.join(f.base, 'taken.png');
+    writeFileSync(taken, 'game file');
+    let r = dropin(circle, taken);
+    failed(r);
+    assert.match(r.summary.error, /덮어쓰지 않습니다/);
+    assert.equal(readFileSync(taken, 'utf8'), 'game file');
+    failed(dropin(circle, circle));
+    assert.deepEqual(readFileSync(circle), before);
+    r = dropin(path.join(f.src, 'small.png'), path.join(f.base, 'small_128.png'));
+    failed(r);
+    assert.match(r.summary.error, /키우지 않습니다/);
+    failed(dropin(circle, path.join(f.base, 'circle.jpg')));
+    failed(dropin(circle, path.join(f.base, 'zero.png'), ['--size', '0']));
+    assert.deepEqual(readdirSync(f.base).sort(), ['taken.png', '정본 이미지']);
+    assert.deepEqual(readdirSync(f.src).sort(), ['small.png', 'wide.png', '빨간 원.png']);
+  } finally {
+    f.done();
+  }
+});
+
+test('make_dropin: a missing input ends with the JSON error line, not a traceback', { skip: noPython }, () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), 'am-art-drop-'));
+  try {
+    const r = dropin(path.join(base, '없는 그림.png'), path.join(base, 'out', 'x.png'));
+    failed(r);
+    assert.match(r.summary.error, /입력 이미지가 없습니다/);
+    assert.deepEqual(readdirSync(base), []);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });
 
