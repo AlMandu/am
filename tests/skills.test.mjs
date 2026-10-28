@@ -590,7 +590,7 @@ test('plugin/agents holds only the reviewer, and auto/agents only the stage agen
 // purpose (history, inputs), and plugin/hooks/hooks.json is frozen byte for byte (tests/gate.test.mjs).
 const OLD_NAME = /am:(?:auto\b|sessions\b|land\b|stage-|solo\b|lean\b)/;
 const OLD_PATH = /plugin\/(?:scripts\/(?:stage|agent-stage|progress|sessions|claude-opinion|memory-guard|proc-tree)\.mjs|hooks\/(?:handover|stage-guard|stage-hook)\.mjs|agents\/stage-|skills\/(?:multi|one|agent|sessions|land|auto|solo|lean)\b)|skills\/auto-(?:multi|one|agent)\b/;
-const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'art/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'orchestrator/README.md', 'CLAUDE.md'];
+const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'art/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'orchestrator/README.md', 'CLAUDE.md', 'CLAUDE.full.md'];
 const OLD_SKIP = ['plugin/hooks/hooks.json'];
 // The only places an old name stays: the stored .gate phase (written and read) and the README's notice of the rename.
 const OLD_KEPT = {
