@@ -497,6 +497,8 @@ Unity 예시는 [examples/unity](examples/unity/) 에 있습니다. MSBuild 로 
 
 아트 작업(AD 패키지 검수와 실무, 게임 반영, 이미지 비교, 작업 기록, 아티스트용 git)용 명령 여섯입니다. 개발 워크플로와는 상관없고 am 없이도 돌며, 아트 작업을 하는 PC 에만 설치합니다. "검수", "지시서 ㄱㄱ", "기억해둬" 처럼 흔한 말에도 불리기 때문입니다. AD 는 Claude Code, 실무자는 Codex 이므로 두 도구에 모두 설치합니다.
 
+스킬마다의 자세한 사용법과 상황별 예시 문장(am-util 의 `am-util:update-branch`·`am-util:land` 포함)은 [README-ART.md](README-ART.md) 에 있습니다.
+
 ```
 /plugin install am-art@am-workflow
 ```

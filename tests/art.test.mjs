@@ -610,7 +610,7 @@ test('art: no company value in the art plugin, its shared block, the docs or thi
   };
   walk(path.join(REPO, 'art'));
   assert.ok(files.some((f) => f.endsWith('SKILL.md')) && files.some((f) => f.endsWith('make_compare.py')), 'the art folder is read');
-  for (const f of ['shared/art.md', 'README.md', 'CHANGELOG.md', 'tests/art.test.mjs']) files.push(path.join(REPO, f));
+  for (const f of ['shared/art.md', 'README.md', 'README-ART.md', 'CHANGELOG.md', 'tests/art.test.mjs']) files.push(path.join(REPO, f));
   const found = files.flatMap((f) => {
     const rel = path.relative(REPO, f).split(path.sep).join('/');
     let text = readFileSync(f, 'utf8');
