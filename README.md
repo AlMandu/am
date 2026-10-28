@@ -68,7 +68,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 | `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
 | `am-util` | `am-util:land` | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
-| `am-art` | `am-art:ad-review`(Claude Code)·`am-art:ad-execute`(Codex)·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
+| `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
 
 **Claude Code**
 
@@ -488,9 +488,9 @@ Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치합니다(Codex 
 
 | 명령 | Claude Code | Codex |
 |---|---|---|
-| `am-art:ad-review` | 씁니다 | 불러도 "Claude Code 용"이라고 한 줄 말하고 멈춤 |
-| `am-art:ad-execute` | 자동으로 불리지 않고, 직접 불러도 "Codex 용"이라고 한 줄 말하고 멈춤 | 씁니다 |
-| `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` | 씁니다 | 자동으로 불리지 않음(직접 부르면 돌지만 Claude Code 를 기준으로 만든 명령) |
+| `am-art:ad-review` | 씁니다 | 나타나지 않음 |
+| `am-art:ad-execute` | 나타나지 않음 | 씁니다 |
+| `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` | 씁니다 | 나타나지 않음 |
 
 - `am-art:ad-review`: AD 패키지에서 AD 역할로 한 바퀴를 돕니다. 피드백 채널의 새 완료보고·질문을 검수하고 FB·다음 지시서·상태 대장 줄을 쓴 뒤 표 하나로 보고합니다. 새 문서가 없으면 "검수할 문서 없음" 한 줄로 끝나므로 `/loop 5m` 으로 `자동` 인자와 함께 반복해 돌릴 수 있습니다. 세부 규칙은 스킬에 복사하지 않고 그때그때 패키지 문서를 읽습니다.
 - `am-art:ad-execute`(Codex): 실무자 역할로 한 바퀴를 돕니다. "지시서 ㄱㄱ", "실무자2", "이어서 작업" 처럼 말하거나 `피드백/.../NNN_..._지시.md` 경로만 붙여 넣으면 불립니다. 시작할 때마다 패키지의 공통 계약 문서(`AGENTS.md`, 실무자 수칙, 역할 정의, 문서 템플릿, 프로젝트 설정)를 직접 다시 읽고 "공통 계약 읽음" 한 줄을 보여 준 뒤, 환경을 확인하고 내 지시서를 찾아(보류·다른 실무자 배정·이미 완료보고나 다른 실무자가 먼저 착수한 대상, AD 가 아직 답하지 않은 내 질문이 걸린 대상은 건너뜀) 상태 대장에 착수를 적고, 이미지 생성은 Codex 의 imagegen 스킬에 맡겨 자가검수 → 완료보고 → 상태 대장 순으로 마칩니다. 할 지시서가 없으면 "지시서 대기" 한 줄로 끝납니다. 세션의 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 한 번 묻습니다(개인 계정 주소는 어디에도 적지 않습니다). 커밋은 바꾼 파일과 메시지를 보여 주고 승인받은 뒤에만 하며 push 는 하지 않습니다. `대기 5분`(최대 시간 기본 8시간, `대기 5분 3시간` 처럼 바꿈)을 주면 지시서가 없거나 질문을 남기고 끝난 바퀴 뒤에 그 간격만큼 쉬었다가 다시 찾고, 목표 완료·`정지`·환경 오류·최대 시간 중 하나에서 멈춥니다. 대기 중 커밋 승인은 끝날 때 한 번에 묻습니다.
@@ -502,7 +502,7 @@ Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치합니다(Codex 
 
 **실제 파일을 바꾸지 않는 시험**: `am-art:ad-review 시험 <폴더>` 는 FB·지시서·상태 대장 줄을 모두 그 폴더에만 쓰고 정본으로 옮기지 않으므로, 과거 문서로 결과를 실제 문서와 비교해 볼 수 있습니다. `am-art:pipe-apply 점검` 은 사전 점검과 세 곳 확인 표까지만 하고 파일을 바꾸지 않습니다.
 
-`am-art:ad-execute` 를 뺀 넷은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). Codex 에 설치해도 실무자 세션에서 AD 명령이 돌지 않도록 `am-art:ad-review` 는 Codex 에서 한 줄 안내 후 멈추고, 나머지 셋은 Codex 에서 자동으로 불리지 않습니다.
+`am-art:ad-execute` 를 뺀 넷은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). 그래서 같은 am-art 를 설치해도 Claude Code 에는 그 넷만, Codex 에는 `am-art:ad-execute` 하나만 목록에 나타납니다(Codex 는 플러그인의 Codex 전용 설명 파일이 가리키는 폴더만 읽습니다). 혹시 잘못된 쪽에서 불리더라도 `am-art:ad-review` 와 `am-art:ad-execute` 는 "다른 도구용"이라는 한 줄만 말하고 멈춥니다.
 
 ## 모델과 effort 기본값
 

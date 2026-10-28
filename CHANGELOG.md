@@ -1,5 +1,11 @@
 # Changelog
 
+## am-art 0.1.2 (2026-10-28)
+
+- 같은 am-art 를 설치해도 Claude Code 에는 `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` 넷만, Codex 에는 `am-art:ad-execute` 하나만 목록에 나타난다. 전에는 두 도구 모두에 다섯이 보이고, 다른 도구용 명령을 부르면 한 줄 안내 후 멈췄다.
+- 설치 명령과 플러그인 이름은 그대로다. Codex 에서는 새 판을 받으려면 `codex plugin remove am-art@am-workflow` 뒤 `codex plugin add am-art@am-workflow` 로 다시 설치한다.
+- 잘못된 쪽에서 불리는 경우를 대비한 한 줄 안내 후 멈춤은 `am-art:ad-review`·`am-art:ad-execute` 에 그대로 남겼다.
+
 ## am-art 0.1.1 (2026-10-27)
 
 - am-art 를 Claude Code·Codex 겸용으로 바꿨다. Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치한다(아트 PC 의 실무자 세션에만).

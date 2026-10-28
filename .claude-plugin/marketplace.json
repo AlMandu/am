@@ -21,7 +21,7 @@
     {
       "name": "am-art",
       "source": "./art",
-      "description": "아트 작업용 스킬 다섯: AD 검수 한 바퀴(Claude Code), 실무자 한 바퀴(Codex), 파치·Spine·Unity 반영 확인, 이미지 비교 HTML, 작업 기억·학습·회상(Claude Code·Codex 겸용)"
+      "description": "아트 작업용 스킬: Claude Code 에는 AD 검수 한 바퀴, 파치·Spine·Unity 반영 확인, 이미지 비교 HTML, 작업 기억·학습·회상 넷, Codex 에는 실무자 한 바퀴 하나만"
     },
     {
       "name": "am-orchestrator",

@@ -26,9 +26,12 @@ const ENTRIES = {
   'am-art': { 'ad-review': 'alias', 'pipe-apply': 'alias', 'log-compare': 'alias', 'log-resume': 'alias', 'ad-execute': 'alias' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
-// Skills per models.json group and the plugin folder that holds them (<folder>/skills/<name>/SKILL.md).
+// Skills per models.json group and the plugin folder that holds them (<folder>/<SKILL_SUBDIR or skills>/<name>/SKILL.md).
 export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'sessions'], 'am-util': ['land'], 'am-art': ['ad-review', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
 export const PLUGIN_DIRS = { am: 'plugin', 'am-auto': 'auto', 'am-util': 'util', 'am-art': 'art' };
+// am-art has no default skills/: each tool's manifest names its own folder (art/.claude-plugin and art/.codex-plugin).
+export const SKILL_SUBDIR = { 'ad-review': 'claude-skills', 'pipe-apply': 'claude-skills', 'log-compare': 'claude-skills', 'log-resume': 'claude-skills', 'ad-execute': 'codex-skills' };
+export const skillFile = (group, name) => `${PLUGIN_DIRS[group]}/${SKILL_SUBDIR[name] ?? 'skills'}/${name}/SKILL.md`;
 // Orchestrator stages that run an am skill take that skill's values (tests/orchestrator-skill.test.mjs keeps a copy).
 export const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // am-auto:agent stage agents (auto/agents/<agent>.md) take the values of the am skill they run.
@@ -96,7 +99,7 @@ function generated(file, render) {
 /** Every place that carries a value, in the order it is written. */
 export function targets() {
   return [
-    ...Object.entries(SKILLS).flatMap(([group, names]) => names.map((name) => frontmatter(`${PLUGIN_DIRS[group]}/skills/${name}/SKILL.md`, (m) => m[group][name]))),
+    ...Object.entries(SKILLS).flatMap(([group, names]) => names.map((name) => frontmatter(skillFile(group, name), (m) => m[group][name]))),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
     ...Object.entries(STAGE_AGENTS).map(([agent, skill]) => frontmatter(`auto/agents/${agent}.md`, (m) => m.am[skill])),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),

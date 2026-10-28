@@ -14,7 +14,7 @@ export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const skill = (dir) => (name) => `${dir}/skills/${name}/SKILL.md`;
 const am = skill('plugin');
 const auto = skill('auto');
-const art = skill('art');
+const art = (name) => `art/claude-skills/${name}/SKILL.md`;
 // Block name -> its source, its marker lines (each on a line of its own) and the SKILL.md files that carry it.
 export const BLOCKS = {
   common: {
@@ -32,7 +32,7 @@ export const BLOCKS = {
   },
 };
 // Every SKILL.md under these folders is scanned for markers, targets or not (a missing folder is skipped).
-const SKILL_DIRS = ['plugin/skills', 'util/skills', 'auto/skills', 'orchestrator/skills', 'art/skills'];
+const SKILL_DIRS = ['plugin/skills', 'util/skills', 'auto/skills', 'orchestrator/skills', 'art/claude-skills', 'art/codex-skills'];
 const MARKER = /<!-- am:(?:common|shared:([^\s>]*?)):(?:start|end) -->/g;
 
 const readText = (file) => readFileSync(file, 'utf8').replace(/^﻿/, '');

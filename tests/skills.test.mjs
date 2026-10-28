@@ -20,11 +20,14 @@ const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, 
 const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
 // Every am-art skill: ad-execute is the Codex worker's and carries neither block.
 const ART_PLUGIN = [...ART, 'ad-execute'];
-const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/skills/${name}/SKILL.md`;
+const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
 const SKILL_HOME = { land: 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
-const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', 'skills', name);
+// am-art has no default skills/ (both tools add a manifest's skills path to it): art/claude-skills/ for Claude Code, art/codex-skills/ for Codex (user decision).
+const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-execute': 'codex-skills' };
+const SKILL_ROOTS = [...PLUGIN_FOLDERS.map((f) => [f, 'skills']), ['art', 'claude-skills'], ['art', 'codex-skills']];
+const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', SKILL_SUB[name] ?? 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
 const read = (name) => readFileSync(path.join(skillDir(name), 'SKILL.md'), 'utf8');
@@ -153,7 +156,7 @@ test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent and am-util:land
   }
 });
 
-// am-art serves both tools: ad-execute is the Codex worker's, ad-review the Claude Code AD's (user decision).
+// am-art serves both tools: ad-execute is the Codex worker's, ad-review the Claude Code AD's (user decision); the stop lines stay as a last guard.
 const AD_EXECUTE_TRIGGERS = ['피드백 채널 최신 지시서대로 작업', '지시서 ㄱㄱ', '지시서 읽어', '지시서 다시 읽어', '지시서 확인', '‘실무자’', '‘실무’', '실무자1', '실무자 2', '실무자 대기', '실무자2번. 대기.', '너는 실무자 2번이야', '이어서 작업', '계속 진행해', '013 지시서를 실행', '피드백/.../NNN_..._지시.md', 'FB §5 → 011 지시 실행'];
 test('am-art: ad-execute stops in Claude Code, ad-review stops in Codex, and Codex picks none of the other four on its own', () => {
   const text = read('ad-execute');
@@ -180,15 +183,32 @@ test('am-art: ad-execute stops in Claude Code, ad-review stops in Codex, and Cod
   for (const n of ART) assert.match(readFileSync(path.join(skillDir(n), 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/, n);
 });
 
+// The one exception to "no Codex-only copies": each tool's manifest names its own skill folder, and art/ has no default skills/ that both would add (user decision).
+test('am-art: Claude Code sees only art/claude-skills, Codex only art/codex-skills with ad-execute alone', () => {
+  assert.ok(!existsSync(path.join(REPO_ROOT, 'art', 'skills')), 'art/skills would be added to both tools');
+  assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'claude-skills')).sort(), [...ART].sort());
+  assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'codex-skills')), ['ad-execute']);
+  const manifest = (tool) => JSON.parse(readFileSync(path.join(REPO_ROOT, 'art', tool, 'plugin.json'), 'utf8'));
+  const claude = manifest('.claude-plugin');
+  const codex = manifest('.codex-plugin');
+  for (const key of ['name', 'version', 'description']) assert.equal(codex[key], claude[key], key);
+  assert.equal(codex.skills, './codex-skills/');
+  assert.equal(claude.skills, './claude-skills/');
+  // No other folder of the repository carries a Codex-only manifest.
+  const others = readdirSync(REPO_ROOT, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== 'art' && existsSync(path.join(REPO_ROOT, e.name, '.codex-plugin')));
+  assert.deepEqual(others.map((e) => e.name), []);
+  assert.ok(!existsSync(path.join(REPO_ROOT, '.codex-plugin')), 'root .codex-plugin');
+});
+
 test('every skill folder of every plugin folder is a skill with limits, in its own plugin folder', () => {
   const found = [];
-  for (const folder of PLUGIN_FOLDERS) {
-    const dir = path.join(REPO_ROOT, folder, 'skills');
+  for (const [folder, sub] of SKILL_ROOTS) {
+    const dir = path.join(REPO_ROOT, folder, sub);
     if (!existsSync(dir)) continue;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       if (!e.isDirectory()) continue;
       found.push(e.name);
-      assert.equal(folder, SKILL_HOME[e.name] ?? 'plugin', `${folder}/skills/${e.name}`);
+      assert.equal(`${folder}/${sub}`, `${SKILL_HOME[e.name] ?? 'plugin'}/${SKILL_SUB[e.name] ?? 'skills'}`, `${folder}/${sub}/${e.name}`);
     }
   }
   assert.deepEqual(found.sort(), Object.keys(LIMITS).sort());
@@ -211,15 +231,15 @@ test('am, am-util and am-art declare no dependencies, and am-auto depends on am 
 
 test('the skills checked here and the common and art block targets are every SKILL.md of the plugin folders', () => {
   const actual = [];
-  for (const folder of PLUGIN_FOLDERS) {
-    const dir = path.join(REPO_ROOT, folder, 'skills');
+  for (const [folder, sub] of SKILL_ROOTS) {
+    const dir = path.join(REPO_ROOT, folder, sub);
     if (!existsSync(dir)) continue;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.isDirectory() && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/skills/${e.name}/SKILL.md`);
+      if (e.isDirectory() && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/${sub}/${e.name}/SKILL.md`);
     }
   }
   actual.sort();
-  assert.deepEqual(Object.keys(LIMITS).map((n) => `${SKILL_HOME[n] ?? 'plugin'}/skills/${n}/SKILL.md`).sort(), actual);
+  assert.deepEqual(Object.keys(LIMITS).map(skillPath).sort(), actual);
   const artPlugin = ART_PLUGIN.map(skillPath);
   assert.deepEqual([...BLOCKS.common.targets].sort(), [...actual.filter((f) => !artPlugin.includes(f)), 'orchestrator/skills/run/SKILL.md'].sort());
   assert.deepEqual([...BLOCKS.art.targets].sort(), ART.map(skillPath).sort());

@@ -1,0 +1,10 @@
+{
+  "name": "am-art",
+  "version": "0.1.2",
+  "description": "아트 작업용 스킬. Claude Code 에는 넷: AD 패키지 검수 한 바퀴(ad-review), 파치·Spine·Unity 반영과 누락 확인(pipe-apply), 이미지 비교 HTML(log-compare), 작업 기억·학습·회상(log-resume). Codex 에는 실무자 한 바퀴(ad-execute) 하나만. 회사 경로는 PC별 설정 파일에 둔다.",
+  "author": { "name": "Seonghun" },
+  "homepage": "https://github.com/AlMandu/am",
+  "repository": "https://github.com/AlMandu/am",
+  "keywords": ["art", "review", "spine", "unity", "compare"],
+  "skills": "./codex-skills/"
+}

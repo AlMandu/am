@@ -45,8 +45,11 @@ test('the marketplace lists every plugin and each source holds a manifest with t
     const manifest = JSON.parse(read(p.source, '.claude-plugin', 'plugin.json'));
     assert.equal(manifest.name, p.name);
     assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-    // Default folders are scanned; listing them registers twice in Claude Code.
-    for (const key of ['hooks', 'skills', 'agents']) assert.ok(!(key in manifest), `${p.name}: plugin.json must not list ${key}`);
+    // Default folders are scanned; listing them registers twice in Claude Code. am-art has no skills/ and names its Claude Code folder (CLAUDE.md).
+    for (const key of ['hooks', 'skills', 'agents']) {
+      if (key === 'skills' && p.name === 'am-art') assert.equal(manifest.skills, './claude-skills/');
+      else assert.ok(!(key in manifest), `${p.name}: plugin.json must not list ${key}`);
+    }
   }
 });
 
