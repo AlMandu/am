@@ -15,24 +15,21 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'ad-auto': 40, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
 // am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
 const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
-// Every am-art skill: ad-execute is the Codex worker's and carries neither block.
-const ART_PLUGIN = [...ART, 'ad-execute'];
+// Every am-art skill: ad-execute is the Codex worker's and ad-auto only runs ad-review in a forked subagent; both carry neither block.
+const ART_PLUGIN = [...ART, 'ad-auto', 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
 const SKILL_HOME = { land: 'util', 'update-branch': 'util', 'git-sync': 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 // am-art has no default skills/ (both tools add a manifest's skills path to it): art/claude-skills/ for Claude Code, art/codex-skills/ for Codex (user decision).
-const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-execute': 'codex-skills' };
+const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-auto': 'claude-skills', 'ad-execute': 'codex-skills' };
 const SKILL_ROOTS = [...PLUGIN_FOLDERS.map((f) => [f, 'skills']), ['art', 'claude-skills'], ['art', 'codex-skills']];
 // Skills with neither the common nor the art block: am-util:git-sync keeps three artist rules in its body, because the
 // common block's decision cards and "never revert others' changes" clash with what it does, and the art block names art.json.
 const NO_BLOCK = ['git-sync'];
-// am-art 0.1.4's one-version stub that only points to am-util:git-sync. Its name is the util skill's, so the name-keyed
-// tables above leave it out and its own test checks it. Remove the folder, this constant and its test in am-art 0.1.5.
-const MOVED_STUB = 'art/claude-skills/git-sync';
 const skillDir = (name) => path.join(REPO_ROOT, SKILL_HOME[name] ?? 'plugin', SKILL_SUB[name] ?? 'skills', name);
 // The values themselves are models.json's (tests/models.test.mjs checks them where that file exists); here only their form.
 const ALIAS = /^[a-z]+(\[1m\])?$/;
@@ -136,7 +133,7 @@ test('scripts/skills.mjs writes a changed block back, stops on a broken marker p
 });
 
 // The one slash name kept: ad-review's /loop command line, which the owner types as it is.
-const LOOP_LINE = '`/loop 5m /am-art:ad-review 자동`';
+const LOOP_LINE = '`/loop 5m /am-art:ad-auto`';
 test('am skills refer to other skills by name, not with a slash prefix', () => {
   for (const name of Object.keys(LIMITS)) {
     let text = withoutCommon(read(name));
@@ -204,27 +201,28 @@ test('am-util:git-sync is Claude Code only and keeps its pattern list in am-util
   assert.ok(existsSync(path.join(REPO_ROOT, 'util', 'scripts', 'git-sync-settings.mjs')));
 });
 
-test('am-art:git-sync is a stub that only points to am-util:git-sync, outside the model values', async () => {
-  const dir = path.join(REPO_ROOT, MOVED_STUB);
-  const text = readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+// The loop runs each unattended AD round in a forked subagent, so the owner's conversation keeps only the reports (user decision).
+test('am-art:ad-auto runs one ad-review 자동 round in a forked subagent, and idle rounds read little', () => {
+  const text = read('ad-auto');
   const fm = frontmatter(text);
-  // Runs on the session model: a fixed notice, gone in am-art 0.1.5.
-  assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'disable-model-invocation', 'name']);
-  assert.equal(fm.name, 'git-sync');
-  assert.equal(fm['disable-model-invocation'], 'true');
-  assert.match(fm.description, /^"[^"]{40,}"$/);
-  assert.ok(text.split('\n').length <= 30, 'at most 30 lines');
-  for (const s of ['git ', '${CLAUDE_PLUGIN_ROOT}', '<!-- am:']) assert.ok(!text.includes(s), s);
-  for (const s of ['/am-util:git-sync', '/plugin update am-util@am-workflow']) assert.ok(text.includes(s), s);
-  assert.match(readFileSync(path.join(dir, 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/);
-  const { targets } = await import('../scripts/models.mjs');
-  assert.ok(!targets().some((t) => t.file === `${MOVED_STUB}/SKILL.md`), 'no model value target');
+  assert.equal(fm.context, 'fork');
+  // A forked skill runs from /loop only when the model may invoke it.
+  assert.ok(!('disable-model-invocation' in fm), 'model-invocable');
+  assert.match(fm.description, /Claude Code 전용/);
+  for (const s of ['am-art:ad-review', '`자동`', 'Skill tool', '검수할 문서 없음', '오너 대기 목록']) assert.ok(text.includes(s), s);
+  for (const s of [BLOCKS.common.start, BLOCKS.art.start, 'AskUserQuestion']) assert.ok(!text.includes(s), s);
+  const lines = text.split('\n');
+  assert.match(lines[lines.indexOf('Argument: $ARGUMENTS') + 1], /^If you are not Claude Code \(for example Codex\): .*, and stop;/);
+  assert.match(readFileSync(path.join(skillDir('ad-auto'), 'agents', 'openai.yaml'), 'utf8'), /allow_implicit_invocation: false/);
+  // Idle rounds: ad-review's 자동 mode and ad-execute's wait mode look before reading the whole package again.
+  assert.ok(read('ad-review').includes("in `자동` mode, first do Step 1's search"), 'ad-review idle check');
+  assert.ok(read('ad-execute').includes('- Idle check, every round after the first:'), 'ad-execute idle check');
 });
 
 // The one exception to "no Codex-only copies": each tool's manifest names its own skill folder, and art/ has no default skills/ that both would add (user decision).
 test('am-art: Claude Code sees only art/claude-skills, Codex only art/codex-skills with ad-execute alone', () => {
   assert.ok(!existsSync(path.join(REPO_ROOT, 'art', 'skills')), 'art/skills would be added to both tools');
-  assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'claude-skills')).sort(), [...ART, 'git-sync'].sort());
+  assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'claude-skills')).sort(), [...ART, 'ad-auto'].sort());
   assert.deepEqual(readdirSync(path.join(REPO_ROOT, 'art', 'codex-skills')), ['ad-execute']);
   const manifest = (tool) => JSON.parse(readFileSync(path.join(REPO_ROOT, 'art', tool, 'plugin.json'), 'utf8'));
   const claude = manifest('.claude-plugin');
@@ -244,7 +242,7 @@ test('every skill folder of every plugin folder is a skill with limits, in its o
     const dir = path.join(REPO_ROOT, folder, sub);
     if (!existsSync(dir)) continue;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (!e.isDirectory() || `${folder}/${sub}/${e.name}` === MOVED_STUB) continue;
+      if (!e.isDirectory()) continue;
       found.push(e.name);
       assert.equal(`${folder}/${sub}`, `${SKILL_HOME[e.name] ?? 'plugin'}/${SKILL_SUB[e.name] ?? 'skills'}`, `${folder}/${sub}/${e.name}`);
     }
@@ -273,7 +271,7 @@ test('the skills checked here and the common and art block targets are every SKI
     const dir = path.join(REPO_ROOT, folder, sub);
     if (!existsSync(dir)) continue;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.isDirectory() && `${folder}/${sub}/${e.name}` !== MOVED_STUB && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/${sub}/${e.name}/SKILL.md`);
+      if (e.isDirectory() && existsSync(path.join(dir, e.name, 'SKILL.md'))) actual.push(`${folder}/${sub}/${e.name}/SKILL.md`);
     }
   }
   actual.sort();
@@ -315,7 +313,9 @@ test('every skill sets the model and effort its turn runs with', () => {
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
     const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'git-sync', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'multi' ? ['hooks'] : [];
-    assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks].sort(), name);
+    // ad-auto runs in a forked subagent; its model value is that subagent's.
+    const fork = name === 'ad-auto' ? ['context'] : [];
+    assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...hooks, ...fork].sort(), name);
     assert.match(fm.model, ALIAS, name); // an alias, not a full ID: a skill whose model cannot be resolved has no fallback
     assert.ok(USER_EFFORTS.includes(fm.effort), `${name}: ${fm.effort}`);
   }
@@ -632,13 +632,12 @@ const OLD_PATH = /plugin\/(?:scripts\/(?:stage|agent-stage|progress|sessions|cla
 const OLD_SCOPE = ['plugin/', 'auto/', 'util/', 'art/', 'shared/', 'scripts/', 'orchestrator/skills/', 'orchestrator/scripts/', 'README.md', 'README-ART.md', 'orchestrator/README.md', 'CLAUDE.md', 'CLAUDE.full.md'];
 const OLD_SKIP = ['plugin/hooks/hooks.json'];
 // The only places an old name stays: the stored .gate phase (written and read), the README's notice of the rename and the
-// two git-sync lines below.
+// git-sync line below.
 const OLD_KEPT = {
   'auto/scripts/stage.mjs': ['phase: `am:auto ${stage}`'],
   'auto/scripts/sessions.mjs': ['/^am:auto (\\S+)$/'],
   'README.md': ['옛 이름 `am:auto-multi`·`am:auto-one`·`am:auto-agent`·`am:sessions`·`am:land` 는 없어졌습니다'],
-  // The moved stub's title goes with MOVED_STUB in am-art 0.1.5; the util skill tells users of am-art 0.1.3 or earlier to update.
-  'art/claude-skills/git-sync/SKILL.md': ['# am-art:git-sync (moved)'],
+  // The util skill tells users of am-art 0.1.3 or earlier to update.
   'util/skills/git-sync/SKILL.md': ['When the skill list also shows am-art:git-sync (am-art 0.1.3 or earlier)'],
 };
 

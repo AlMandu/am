@@ -20,7 +20,7 @@ Not this skill's job: design decisions, review verdicts and moving results to th
 The package is the current folder or the nearest folder above it whose name starts with `AD_Codex_`; its parent folder is the root (`<root>`). Never read a settings file for this. Outside a package, ask the operator once which package (in wait mode, answer one line, `패키지 폴더 안에서 시작해 주세요.`, and end). A shared contract file missing from the package is an environment error: name it to the operator and stop.
 
 ## Shared contract (the one place to change when these files move)
-Read these files themselves at the start of every run, even when this session read them before. Copy nothing from them into notes or replies: the files are the source.
+Read these files themselves at the start of every run, even when this session read them before (in wait mode, from the second round, the idle check under Wait mode comes first). Copy nothing from them into notes or replies: the files are the source.
 1. `AGENTS.md` of the package.
 2. `02_Codex_실무자_수칙.md`: §0 environment check, §2 pre-start check, §4 completion conditions, §6 완료보고, §7 after a verdict, §8 never.
 3. `01_역할정의_워크플로우.md` §2: the latest document is judged by the file name's sequence number plus the header's `작성:` time, never by file modification time.
@@ -61,6 +61,7 @@ Files 1-4 come from the package today. If `<root>/_공통/` exists, read files 1
 
 ## Wait mode
 - One run is one round by default. Running it again is safe: the skips of step 3 keep an instruction from running twice.
+- Idle check, every round after the first: before step 1, look only at §2 of the settings copy, the file names in its folders (instructions, FBs, questions) and the `_상태.md` tails. When no instruction for me is clearly left after the skips of step 3, end the round with `지시서 대기` without reading the rest of the shared contract again. When there is one, or anything is unclear, run the round from step 1.
 - `대기 <N>분 [<M>시간]` (M is 8 when not given): ask the account question of step 2 first, then set a deadline of now plus M hours. Loop: one round; when it ended with `지시서 대기` or a form D question, wait N minutes as shell `sleep` calls of at most 60 seconds each (the shell call's timeout longer than its sleep), checking the end conditions between calls; then the next round.
 - End conditions: every target of the owner's goal has its 완료보고, the operator says `정지`, an environment error, or the deadline passes. End with one line saying which.
 - Inside the loop, do not ask for commit approval: collect the changed files and commit message drafts of every round and ask once when the loop ends.

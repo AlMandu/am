@@ -1,6 +1,6 @@
 ---
 name: ad-review
-description: "아트 AD 패키지(AD_Codex_*)에서 AD 역할로 한 바퀴를 돕니다: 피드백 채널 확인 → 실무자 완료보고·질문 검수 → FB 작성 → 다음 지시서 발행 → 상태 대장 기록 → 오너 보고. 아트 작업 중 ‘검수’, ‘검수 ㄱㄱ’, ‘검수할게 있나?’, ‘검수나 완료가 있어?’, ‘완료보고 읽어’, ‘피드백 확인해’, ‘실무자1 검수’, ‘실무자2 검수’, ‘질문파일 보고 질문해봐’, ‘검수하고 질문해’, ‘지시서 ㄱㄱ’, ‘다음 작업 추천’ 이라고 하거나 피드백/.../NNN_..._완료보고.md 경로만 붙여 넣으면 씁니다. 새 요청·스케치·외부 이미지로 첫 지시서를 준비할 때(‘이거 코덱스가 작업할 수 있게 준비해줘’, ‘이해했는지 대답부터 해줘’, ‘내가 그린 스케치’)와 정본을 게임 파일 이름에 맞춘 사본으로 만들 때(‘바로 덮어씌울수 있도록 이름 맞추고’, ‘게임에 넣을 128 사본’)도 씁니다. 이미지 생성·게임 반영·커밋은 하지 않습니다. Claude Code 전용입니다."
+description: "아트 AD 패키지(AD_Codex_*)에서 AD 역할로 한 바퀴를 돕니다: 피드백 채널 확인 → 실무자 완료보고·질문 검수 → FB 작성 → 다음 지시서 발행 → 상태 대장 기록 → 오너 보고. 아트 작업 중 ‘검수’, ‘검수 ㄱㄱ’, ‘검수할게 있나?’, ‘검수나 완료가 있어?’, ‘완료보고 읽어’, ‘피드백 확인해’, ‘실무자1 검수’, ‘실무자2 검수’, ‘질문파일 보고 질문해봐’, ‘검수하고 질문해’, ‘지시서 ㄱㄱ’, ‘다음 작업 추천’, ‘오너 대기 목록 하나씩 물어봐’ 라고 하거나 피드백/.../NNN_..._완료보고.md 경로만 붙여 넣으면 씁니다. 새 요청·스케치·외부 이미지로 첫 지시서를 준비할 때(‘이거 코덱스가 작업할 수 있게 준비해줘’, ‘이해했는지 대답부터 해줘’, ‘내가 그린 스케치’)와 정본을 게임 파일 이름에 맞춘 사본으로 만들 때(‘바로 덮어씌울수 있도록 이름 맞추고’, ‘게임에 넣을 128 사본’)도 씁니다. 이미지 생성·게임 반영·커밋은 하지 않습니다. Claude Code 전용입니다."
 argument-hint: "[실무자1|실무자2|<문서 경로>|자동|시험 <폴더>|새요청|게임투입]"
 model: opus
 effort: high
@@ -11,7 +11,7 @@ effort: high
 Argument: $ARGUMENTS
 If you are not Claude Code (for example Codex): answer exactly one line, `이 스킬은 Claude Code AD 용입니다(실무자는 am-art:ad-execute 스킬).`, and stop; read and change nothing.
 
-One run is one round as AD (Claude): feedback channel → review the worker's (Codex's) reports and questions → FB → next instruction → status ledger → owner report. Repetition happens outside the skill: `/loop 5m /am-art:ad-review 자동`.
+One run is one round as AD (Claude): feedback channel → review the worker's (Codex's) reports and questions → FB → next instruction → status ledger → owner report. Repetition happens outside the skill: `/loop 5m /am-art:ad-auto`, which runs each `자동` round in a forked subagent so that the owner's conversation keeps only the reports.
 
 Not this skill's job: image generation (the worker's), applying to 파치·Spine·Unity (the am-art:pipe-apply skill), commits (only after owner approval, by the owner's commit skill), new packages.
 
@@ -34,14 +34,14 @@ The package documents are the source of every detail; this skill holds only the 
 - none: every unprocessed document in the package.
 - `실무자1` / `실무자2`: that worker's documents only.
 - a file path: that one document.
-- `자동`: go on with the AD recommendation without owner checks (Owner checks below).
+- `자동`: go on with the AD recommendation without owner checks (Owner checks below). The am-art:ad-auto skill runs it in a forked subagent for the loop; given here directly, it runs the same way in this conversation.
 - `시험 <폴더>`: a dry run on past documents. Every file this run would write (FB, instruction, answer, status ledger line) goes into `<폴더>` instead, nothing is copied to the canonical path, and no file in the feedback channel changes. Combine it with a document path to review one past document.
 - `새요청`: a new request (New request below). Without an argument, the owner's words also go there when they bring a new request, a sketch or an outside image to prepare for the worker.
 - `게임투입`: game-named copies of canonical images (Game drop-in below). Without an argument, the owner's words also go there when they ask for copies named to overwrite the game files.
 - Both run Step 0, then only their section, and skip Steps 1-8 except where the section names one. Neither runs in `자동` mode: both need the owner's confirmation.
 
 ## Steps
-0. Package: `adCodexRoot` from art.json (in `자동` mode a missing value is not asked: end with one line saying which key is missing). If the current folder is not inside an `AD_Codex_*` package under it, ask which package (in `자동` mode, end with one line saying the run must start inside a package). If this session has not read the package yet, read the documents in the order `CLAUDE.md` gives. If the settings copy is missing or has empty fields, do not review: stop and say which.
+0. Package: `adCodexRoot` from art.json (in `자동` mode a missing value is not asked: end with one line saying which key is missing). If the current folder is not inside an `AD_Codex_*` package under it, ask which package (in `자동` mode, end with one line saying the run must start inside a package). If the settings copy is missing or has empty fields, do not review: stop and say which. If this session has not read the package yet, read the documents in the order `CLAUDE.md` gives; in `자동` mode, first do Step 1's search from the settings copy's §2 folders and the `_상태.md` tails, and end with `검수할 문서 없음` without reading the other documents only when no 완료보고 or 질문 is clearly after a folder's last AD line. When there is one, or anything is unclear (a sequence number missing from the ledger, a ledger line you cannot read with confidence), read the documents in full, then Step 1.
 1. Find unprocessed documents: in every target folder of settings §2 (`피드백/<대상>/`, `피드백/_배치_NN/`, `피드백/_OOAD요청/`), the 완료보고 and 질문 files after the last AD line of that folder's `_상태.md`. Judge "latest" only by the file name's sequence number plus the header's `작성:` time, never by file modification time. With none, answer exactly one line, `검수할 문서 없음`, and end (a repeated run must not review a document twice).
 2. Receipt: start a review only when the hashes in the 완료보고 match the actual files. Otherwise write a resend request document for the worker and move on.
 3. Review: open every result image yourself. Re-measure independently with the same commands and the same scripts as the instruction's §8-A. Judge by eye at real size (1:1) next to the canonical image. Never judge from the report's wording alone.
@@ -70,7 +70,7 @@ After Step 0, only for targets already canonical (passed but not moved yet: Step
 ## Owner checks
 - Within AD authority (01 §1: adopting a passed result, moving to canonical, a v+1 reissue of a number without ★): do it without asking and report afterwards.
 - Owner decisions (changing a ★ value, an undecided design item, a style standard change, a canonical replacement, a commit): always ask.
-- `자동`: AD-authority items go ahead with the recommendation. An owner decision puts only that target on `보류` and onto an "오너 대기 목록"; carry on with the other targets. When the owner is back, ask that list one item at a time.
+- `자동`: AD-authority items go ahead with the recommendation. An owner decision puts only that target on `보류` and onto an "오너 대기 목록"; carry on with the other targets. When the owner is back, ask that list one item at a time: it is in the earlier reports of this conversation (the am-art:ad-auto rounds); when they are gone, rebuild it from the `보류` lines of the `_상태.md` files.
 
 ## Report
 Short: one table, the path list, the next step.

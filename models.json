@@ -3,7 +3,7 @@
   "_am": "plan·do·check·commit: 그 스킬을 부른 차례(모델은 별칭). 이 값은 am-auto:agent 단계 에이전트(stage-plan·stage-do·stage-check·stage-commit·stage-commit-push)에도 쓰인다. second-opinion: 2차 의견 서브에이전트(별칭, 메인 세션의 Opus 버전을 따름). codex-opinion: Codex 2차 의견(model 을 비우면 사용자의 codex 설정). 오케스트레이터의 plan·implement·check·commit 단계는 plan·do·check·commit 값을 그대로 쓴다.",
   "_am-auto": "multi·one·agent·sessions: am-auto 의 그 스킬을 부른 차례(모델은 별칭). compact: am-auto:multi·one 단계 세션 앞에서 넘길 작업 파일을 줄이는 압축 세션(별칭, auto/scripts/stage.mjs 의 COMPACT_MODEL).",
   "_am-util": "land·update-branch·git-sync: am-util 의 그 스킬을 부른 차례(모델은 별칭). git-sync 는 Claude Code 전용.",
-  "_am-art": "ad-review·pipe-apply·log-compare·log-resume·ad-execute: am-art 의 그 스킬을 부른 차례(모델은 별칭). 앞의 넷은 Claude Code 전용(art/claude-skills/), ad-execute 는 Codex 전용(art/codex-skills/)이라 Claude Code 에는 나타나지 않고, Codex 는 이 값을 무시한다. art/claude-skills/git-sync 는 am-util:git-sync 로 옮겨졌다는 안내만 하는 자리표시라 값이 없다(세션 모델).",
+  "_am-art": "ad-review·ad-auto·pipe-apply·log-compare·log-resume·ad-execute: am-art 의 그 스킬을 부른 차례(모델은 별칭). ad-auto 는 하위 작업(context: fork)에서 돌므로 그 하위 작업의 모델이다. 앞의 다섯은 Claude Code 전용(art/claude-skills/), ad-execute 는 Codex 전용(art/codex-skills/)이라 Claude Code 에는 나타나지 않고, Codex 는 이 값을 무시한다.",
   "_orchestrator": "run: am-orchestrator:run 스킬을 부른 차례. split: 설계 문서를 작업으로 나누는 세션.",
   "am": {
     "plan": { "model": "opus", "effort": "high" },
@@ -27,6 +27,7 @@
   },
   "am-art": {
     "ad-review": { "model": "opus", "effort": "high" },
+    "ad-auto": { "model": "opus", "effort": "high" },
     "pipe-apply": { "model": "opus", "effort": "medium" },
     "log-compare": { "model": "sonnet", "effort": "medium" },
     "log-resume": { "model": "opus", "effort": "high" },

@@ -70,7 +70,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 | `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
 | `am-util` | `am-util:land`·`am-util:update-branch`, `am-util:git-sync`(Claude Code 전용) | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
-| `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
+| `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:ad-auto`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
 
 **Claude Code**
 
@@ -520,12 +520,12 @@ Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치합니다(Codex 
 
 | 명령 | Claude Code | Codex |
 |---|---|---|
-| `am-art:ad-review` | 씁니다 | 나타나지 않음 |
+| `am-art:ad-review`·`am-art:ad-auto` | 씁니다 | 나타나지 않음 |
 | `am-art:ad-execute` | 나타나지 않음 | 씁니다 |
 | `am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume` | 씁니다 | 나타나지 않음 |
 
-- `am-art:ad-review`: AD 패키지에서 AD 역할로 한 바퀴를 돕니다. 피드백 채널의 새 완료보고·질문을 검수하고 FB·다음 지시서·상태 대장 줄을 쓴 뒤 표 하나로 보고합니다. 새 문서가 없으면 "검수할 문서 없음" 한 줄로 끝나므로 `/loop 5m` 으로 `자동` 인자와 함께 반복해 돌릴 수 있습니다. 세부 규칙은 스킬에 복사하지 않고 그때그때 패키지 문서를 읽습니다. `새요청`(또는 스케치·외부 이미지를 주며 "코덱스가 작업할 수 있게 준비해줘")이면 이해한 내용을 쉬운 말로 확인한 뒤 첫 지시서를 쓰고, `게임투입`(또는 "덮어씌울 수 있게 이름 맞춰줘")이면 정본을 게임 파일 이름의 128px 사본으로 패키지 `게임투입/<시각>/` 에 만들고 지금 게임 파일을 패키지 `백업/` 에 복사한 뒤 대응표를 씁니다. 게임 폴더는 건드리지 않으며, 사본은 Pillow 로 만듭니다.
-- `am-art:ad-execute`(Codex): 실무자 역할로 한 바퀴를 돕니다. "지시서 ㄱㄱ", "실무자2", "이어서 작업" 처럼 말하거나 `피드백/.../NNN_..._지시.md` 경로만 붙여 넣으면 불립니다. 시작할 때마다 패키지의 공통 계약 문서(`AGENTS.md`, 실무자 수칙, 역할 정의, 문서 템플릿, 프로젝트 설정)를 직접 다시 읽고 "공통 계약 읽음" 한 줄을 보여 준 뒤, 환경을 확인하고 내 지시서를 찾아(보류·다른 실무자 배정·이미 완료보고나 다른 실무자가 먼저 착수한 대상, AD 가 아직 답하지 않은 내 질문이 걸린 대상은 건너뜀) 상태 대장에 착수를 적고, 이미지 생성은 Codex 의 imagegen 스킬에 맡겨 자가검수 → 완료보고 → 상태 대장 순으로 마칩니다. 할 지시서가 없으면 "지시서 대기" 한 줄로 끝납니다. 세션의 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 한 번 묻습니다(개인 계정 주소는 어디에도 적지 않습니다). 커밋은 바꾼 파일과 메시지를 보여 주고 승인받은 뒤에만 하며 push 는 하지 않습니다. `대기 5분`(최대 시간 기본 8시간, `대기 5분 3시간` 처럼 바꿈)을 주면 지시서가 없거나 질문을 남기고 끝난 바퀴 뒤에 그 간격만큼 쉬었다가 다시 찾고, 목표 완료·`정지`·환경 오류·최대 시간 중 하나에서 멈춥니다. 대기 중 커밋 승인은 끝날 때 한 번에 묻습니다.
+- `am-art:ad-review`: AD 패키지에서 AD 역할로 한 바퀴를 돕니다. 피드백 채널의 새 완료보고·질문을 검수하고 FB·다음 지시서·상태 대장 줄을 쓴 뒤 표 하나로 보고합니다. 새 문서가 없으면 "검수할 문서 없음" 한 줄로 끝납니다. 자리를 비울 때는 `/loop 5m /am-art:ad-auto` 로 반복합니다: `am-art:ad-auto` 는 바퀴마다 별도 하위 작업에서 `자동` 한 바퀴를 돌리고 지금 대화에는 보고만 남기므로, 오래 돌려도 대화가 거의 커지지 않습니다. `자동` 바퀴는 상태 대장 끝부분만 먼저 보고, 새 문서가 있거나 애매할 때만 패키지 문서를 다 읽습니다. 세부 규칙은 스킬에 복사하지 않고 그때그때 패키지 문서를 읽습니다. `새요청`(또는 스케치·외부 이미지를 주며 "코덱스가 작업할 수 있게 준비해줘")이면 이해한 내용을 쉬운 말로 확인한 뒤 첫 지시서를 쓰고, `게임투입`(또는 "덮어씌울 수 있게 이름 맞춰줘")이면 정본을 게임 파일 이름의 128px 사본으로 패키지 `게임투입/<시각>/` 에 만들고 지금 게임 파일을 패키지 `백업/` 에 복사한 뒤 대응표를 씁니다. 게임 폴더는 건드리지 않으며, 사본은 Pillow 로 만듭니다.
+- `am-art:ad-execute`(Codex): 실무자 역할로 한 바퀴를 돕니다. "지시서 ㄱㄱ", "실무자2", "이어서 작업" 처럼 말하거나 `피드백/.../NNN_..._지시.md` 경로만 붙여 넣으면 불립니다. 시작할 때마다 패키지의 공통 계약 문서(`AGENTS.md`, 실무자 수칙, 역할 정의, 문서 템플릿, 프로젝트 설정)를 직접 다시 읽고 "공통 계약 읽음" 한 줄을 보여 준 뒤, 환경을 확인하고 내 지시서를 찾아(보류·다른 실무자 배정·이미 완료보고나 다른 실무자가 먼저 착수한 대상, AD 가 아직 답하지 않은 내 질문이 걸린 대상은 건너뜀) 상태 대장에 착수를 적고, 이미지 생성은 Codex 의 imagegen 스킬에 맡겨 자가검수 → 완료보고 → 상태 대장 순으로 마칩니다. 할 지시서가 없으면 "지시서 대기" 한 줄로 끝납니다. 세션의 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 한 번 묻습니다(개인 계정 주소는 어디에도 적지 않습니다). 커밋은 바꾼 파일과 메시지를 보여 주고 승인받은 뒤에만 하며 push 는 하지 않습니다. `대기 5분`(최대 시간 기본 8시간, `대기 5분 3시간` 처럼 바꿈)을 주면 지시서가 없거나 질문을 남기고 끝난 바퀴 뒤에 그 간격만큼 쉬었다가 다시 찾고, 목표 완료·`정지`·환경 오류·최대 시간 중 하나에서 멈춥니다. 대기 모드의 두 번째 바퀴부터는 내 지시서가 있는지만 먼저 보고, 확실히 없으면 공통 계약 문서를 다시 읽지 않습니다. 대기 중 커밋 승인은 끝날 때 한 번에 묻습니다.
 - `am-art:pipe-apply`: 확정 이미지를 파치 → Spine → Unity 에 반영하고, 슬롯마다 세 곳을 실제 파일로 확인한 표를 보여 줍니다. 한 칸이라도 비면 완료라고 하지 않고, 커밋·업로드는 하지 않습니다.
 - `am-art:log-compare`: 이미지 여러 장을 한 화면에서 비교하는 HTML 을 만듭니다. 원본을 가리키는 로컬 보기와, 이미지를 파일 안에 넣어 다른 사람에게 보낼 수 있는 공유용이 있습니다. 별표로 최종본을 고르고 목록을 내보낼 수 있습니다. 생성기는 Python 이고, 공유용은 Pillow 가 필요합니다(없으면 어디에 설치할지 묻습니다). 어떤 이미지를 어떻게 늘어놓을지는 프로젝트마다 `compare.json` 에 둡니다.
 - `am-art:log-resume`: "기억해둬"는 진행 지점은 상태 대장, 규칙은 프로젝트 문서, 자료 위치만 메모리에 나눠 적고, "학습해"는 수정본과 원본의 차이를 숫자로 재서 규칙으로 남기며, "어디까지 했어"는 상태 대장·git·대화 기록을 차례로 찾아 근거 파일과 함께 답합니다.
@@ -534,7 +534,7 @@ Codex 에서는 `codex plugin add am-art@am-workflow` 로 설치합니다(Codex 
 
 **실제 파일을 바꾸지 않는 시험**: `am-art:ad-review 시험 <폴더>` 는 FB·지시서·상태 대장 줄을 모두 그 폴더에만 쓰고 정본으로 옮기지 않으므로, 과거 문서로 결과를 실제 문서와 비교해 볼 수 있습니다. `am-art:pipe-apply 점검` 은 사전 점검과 세 곳 확인 표까지만 하고 파일을 바꾸지 않습니다.
 
-`am-art:ad-execute` 를 뺀 넷은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). 그래서 같은 am-art 를 설치해도 Claude Code 에는 그 넷만, Codex 에는 `am-art:ad-execute` 하나만 목록에 나타납니다(Codex 는 플러그인의 Codex 전용 설명 파일이 가리키는 폴더만 읽습니다). 혹시 잘못된 쪽에서 불리더라도 `am-art:ad-review` 와 `am-art:ad-execute` 는 "다른 도구용"이라는 한 줄만 말하고 멈춥니다.
+`am-art:ad-execute` 를 뺀 다섯은 Claude Code 를 기준으로 만들었습니다(체크식 질문, `/loop`, Claude Code 대화 기록에 기댑니다). 그래서 같은 am-art 를 설치해도 Claude Code 에는 그 다섯만, Codex 에는 `am-art:ad-execute` 하나만 목록에 나타납니다(Codex 는 플러그인의 Codex 전용 설명 파일이 가리키는 폴더만 읽습니다). 혹시 잘못된 쪽에서 불리더라도 `am-art:ad-review`·`am-art:ad-auto`·`am-art:ad-execute` 는 "다른 도구용"이라는 한 줄만 말하고 멈춥니다.
 
 ## 모델과 effort 기본값
 
@@ -556,6 +556,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-util:update-branch` | `opus` | `high` |
 | `am-util:git-sync` | `opus` | `high` |
 | `am-art:ad-review` | `opus` | `high` |
+| `am-art:ad-auto` | `opus` | `high` |
 | `am-art:pipe-apply` | `opus` | `medium` |
 | `am-art:log-compare` | `sonnet` | `medium` |
 | `am-art:log-resume` | `opus` | `high` |
@@ -679,7 +680,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 - Claude Code: `/plugin marketplace update am-workflow` 뒤 `/plugin update am@am-workflow`(설치한 am-auto·am-util 도 같은 모양으로), 그리고 재시작
 - Codex: `codex plugin marketplace upgrade` (Git 저장소일 때) 또는 `codex plugin remove am@am-workflow` 후 `codex plugin add am@am-workflow`(am-util 도 같은 모양으로). 훅이 바뀌었으면 다시 신뢰
 - 0.1.67 로 올리면 자동 실행 명령과 land 가 am 에서 빠집니다. 계속 쓰려면 위 "설치" 대로 am-auto(Claude Code)·am-util 을 설치합니다.
-- am-util 0.1.3·am-art 0.1.4 부터 am-art 의 git-sync 는 `/am-util:git-sync` 로 옮겨졌습니다. 아트 PC 는 am-util 도 설치·업데이트합니다. am-art 0.1.4 의 옛 자리는 새 명령을 알려 주기만 하고 0.1.5 에서 없어집니다.
+- am-util 0.1.3·am-art 0.1.4 부터 am-art 의 git-sync 는 `/am-util:git-sync` 로 옮겨졌습니다. 아트 PC 는 am-util 도 설치·업데이트합니다. am-art 0.1.4 의 옛 자리는 새 명령을 알려 주기만 했고, 0.1.5 에서 없앴습니다.
 
 ## 개발
 
