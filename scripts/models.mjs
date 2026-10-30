@@ -21,13 +21,13 @@ const MODEL = {
 };
 const ENTRIES = {
   am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
-  'am-auto': { multi: 'alias', one: 'alias', agent: 'alias', sessions: 'alias', compact: 'alias' },
+  'am-auto': { multi: 'alias', one: 'alias', agent: 'alias', relay: 'alias', sessions: 'alias', compact: 'alias', 'relay-part': 'alias' },
   'am-util': { land: 'alias', 'update-branch': 'alias', 'git-sync': 'alias' },
   'am-art': { 'ad-review': 'alias', 'ad-auto': 'alias', 'pipe-apply': 'alias', 'log-compare': 'alias', 'log-resume': 'alias', 'ad-execute': 'alias' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Skills per models.json group and the plugin folder that holds them (<folder>/<SKILL_SUBDIR or skills>/<name>/SKILL.md).
-export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'sessions'], 'am-util': ['land', 'update-branch', 'git-sync'], 'am-art': ['ad-review', 'ad-auto', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
+export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'relay', 'sessions'], 'am-util': ['land', 'update-branch', 'git-sync'], 'am-art': ['ad-review', 'ad-auto', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
 export const PLUGIN_DIRS = { am: 'plugin', 'am-auto': 'auto', 'am-util': 'util', 'am-art': 'art' };
 // am-art has no default skills/: each tool's manifest names its own folder (art/.claude-plugin and art/.codex-plugin).
 export const SKILL_SUBDIR = { 'ad-review': 'claude-skills', 'ad-auto': 'claude-skills', 'pipe-apply': 'claude-skills', 'log-compare': 'claude-skills', 'log-resume': 'claude-skills', 'ad-execute': 'codex-skills' };
@@ -102,6 +102,7 @@ export function targets() {
     ...Object.entries(SKILLS).flatMap(([group, names]) => names.map((name) => frontmatter(skillFile(group, name), (m) => m[group][name]))),
     frontmatter('plugin/agents/second-opinion.md', (m) => m.am['second-opinion']),
     ...Object.entries(STAGE_AGENTS).map(([agent, skill]) => frontmatter(`auto/agents/${agent}.md`, (m) => m.am[skill])),
+    frontmatter('auto/agents/relay-part.md', (m) => m['am-auto']['relay-part']),
     frontmatter('orchestrator/skills/run/SKILL.md', (m) => m.orchestrator.run),
     ...['split', ...Object.keys(STAGE_SKILLS)].map((stage) => ({
       file: 'orchestrator/scripts/orchestrator.mjs',
@@ -142,6 +143,7 @@ export function targets() {
         ['`am-auto:agent` 구현 단계 에이전트(`am-auto:stage-do`)', m.am.do],
         ['`am-auto:agent` 점검 단계 에이전트(`am-auto:stage-check`)', m.am.check],
         ['`am-auto:agent` 커밋 단계 에이전트(`am-auto:stage-commit`·`am-auto:stage-commit-push`)', m.am.commit],
+        ['`am-auto:relay` 전달 에이전트(`am-auto:relay-part`)', m['am-auto']['relay-part']],
         ['Codex 2차 의견', m.am['codex-opinion'], m.am['codex-opinion'].model ? undefined : '사용자의 codex 설정'],
       ]),
     ),

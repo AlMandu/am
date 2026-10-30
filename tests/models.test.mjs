@@ -62,6 +62,7 @@ test('apply writes a changed value into every place that carries it, and check i
     m.am.commit.effort = other(m.am.commit.effort, ['low', 'medium']);
     m.am.do.effort = other(m.am.do.effort, ['low', 'high']);
     m['am-auto'].multi.effort = other(m['am-auto'].multi.effort, ['low', 'high']);
+    m['am-auto']['relay-part'].model = other(m['am-auto']['relay-part'].model, ['haiku', 'opus']);
     m['am-util'].land.effort = other(m['am-util'].land.effort, ['low', 'medium']);
     m.am.check.model = other(m.am.check.model, ['sonnet', 'haiku']);
     m.orchestrator.split.model = other(m.orchestrator.split.model, ['sonnet', 'haiku']);
@@ -71,7 +72,7 @@ test('apply writes a changed value into every place that carries it, and check i
     m.am['codex-opinion'] = { model: other(codex.model, ['gpt-5.1-codex', 'o4-mini']), effort: other(codex.effort, ['medium', 'low']) };
   });
   const { commit, 'second-opinion': agent, 'codex-opinion': codex } = models.am;
-  const { multi } = models['am-auto'];
+  const { multi, 'relay-part': relayPart } = models['am-auto'];
   const { run, split } = models.orchestrator;
   assert.equal(check(base, models).length > 0, true, 'drift is reported before apply');
   const { problems, changed } = apply(base, models);
@@ -87,6 +88,8 @@ test('apply writes a changed value into every place that carries it, and check i
   for (const [name, skill] of Object.entries(STAGE_AGENTS)) assert.ok(read(base, `auto/agents/${name}.md`).includes(fm(models.am[skill])), name);
   for (const name of ['stage-do', 'stage-check', 'stage-commit', 'stage-commit-push']) assert.ok(changed.includes(`auto/agents/${name}.md`), name);
   assert.ok(!changed.includes('auto/agents/stage-plan.md'), 'an agent whose values did not change is not written');
+  // The am-auto:relay hand-over agent takes its own am-auto value.
+  assert.ok(changed.includes('auto/agents/relay-part.md') && read(base, 'auto/agents/relay-part.md').includes(fm(relayPart)), 'relay-part');
   assert.ok(read(base, 'orchestrator/skills/run/SKILL.md').includes(fm(run)));
   const script = read(base, 'orchestrator/scripts/orchestrator.mjs');
   assert.ok(script.includes(`\n  split: { model: '${split.model}', effort: '${split.effort}' },`));
@@ -94,6 +97,7 @@ test('apply writes a changed value into every place that carries it, and check i
   assert.ok(read(base, 'plugin/scripts/codex-opinion.mjs').includes(`\n  '-c', 'model=${codex.model}',\n  '-c', 'model_reasoning_effort=${codex.effort}',\n`));
   const row = (label, v) => `| ${label} | \`${v.model}\` | \`${v.effort}\` |\n`;
   assert.ok(read(base, 'README.md').includes(row('`am:commit`', commit)) && read(base, 'README.md').includes(row('Codex 2차 의견', codex)));
+  assert.ok(read(base, 'README.md').includes(row('`am-auto:relay` 전달 에이전트(`am-auto:relay-part`)', relayPart)), 'relay-part README row');
   assert.ok(read(base, 'orchestrator/README.md').includes(row('커밋(`commit`)', commit)));
   const userFiles = read(base, 'plugin/scripts/user-files.mjs');
   assert.ok(userFiles.includes(`\n  commit: { model: '${commit.model}', effort: '${commit.effort}' },`));

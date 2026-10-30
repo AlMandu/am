@@ -15,14 +15,14 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'ad-auto': 40, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, multi: 80, one: 80, agent: 80, relay: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'ad-auto': 40, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
 // am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
 const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
 // Every am-art skill: ad-execute is the Codex worker's and ad-auto only runs ad-review in a forked subagent; both carry neither block.
 const ART_PLUGIN = [...ART, 'ad-auto', 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util', 'update-branch': 'util', 'git-sync': 'util', multi: 'auto', one: 'auto', agent: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
+const SKILL_HOME = { land: 'util', 'update-branch': 'util', 'git-sync': 'util', multi: 'auto', one: 'auto', agent: 'auto', relay: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 // am-art has no default skills/ (both tools add a manifest's skills path to it): art/claude-skills/ for Claude Code, art/codex-skills/ for Codex (user decision).
 const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-auto': 'claude-skills', 'ad-execute': 'codex-skills' };
@@ -155,8 +155,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-util:land, am-util:update-branch and am-util:git-sync are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'git-sync']) {
+test('am:plan, am:do, am-auto:multi, am-auto:one, am-auto:agent, am-auto:relay, am-util:land, am-util:update-branch and am-util:git-sync are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'multi', 'one', 'agent', 'relay', 'land', 'update-branch', 'git-sync']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(skillDir(name), 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -311,7 +311,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'land', 'update-branch', 'git-sync', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'multi', 'one', 'agent', 'relay', 'land', 'update-branch', 'git-sync', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
     const hooks = name === 'multi' ? ['hooks'] : [];
     // ad-auto runs in a forked subagent; its model value is that subagent's.
     const fork = name === 'ad-auto' ? ['context'] : [];
@@ -429,28 +429,32 @@ test('am-auto:one follows the flow files with its own additions', async () => {
 
 test('am-auto:agent follows the shared flow and runs its stages as stage agents instead of stage sessions', async () => {
   const lean = withoutCommon(read('agent'));
+  // The stage agents' flow lives in flow/stage-agents.md, which am-auto:relay and a receiving session read too.
+  const shared = withoutCommon(readFlow('agent'));
+  const stageAgents = flowFile('stage-agents.md');
   const { MARKS, PART_LINE } = await import('../auto/scripts/stage.mjs');
   const cmd = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs"';
-  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '\n## Stage agents (Claude Code)\n', 'step 7']) assert.ok(lean.includes(s), s);
-  for (const s of ['skills/multi/SKILL.md', 'stage-sessions.md', '`## Stage sessions (Claude Code)`', '`HANDED`']) assert.ok(!lean.includes(s), s);
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '${CLAUDE_PLUGIN_ROOT}/flow/stage-agents.md', 'step 7']) assert.ok(lean.includes(s), s);
+  assert.ok(stageAgents.includes('\n## Stage agents (Claude Code)\n'), 'the Stage agents section');
+  for (const text of [lean, stageAgents]) for (const s of ['skills/multi/SKILL.md', 'stage-sessions.md', '`## Stage sessions (Claude Code)`', '`HANDED`']) assert.ok(!text.includes(s), s);
   // The four commands of agent-stage.mjs, the keys of start's JSON line and the fixed prompt of the stage agent.
-  for (const s of [`${cmd} start <stage> <slug>`, `${cmd} end <slug> <runId> failed`, `${cmd} end <slug> <runId> <status>`, `${cmd} card <slug>`, `${cmd} answer <slug> <that file>`]) assert.ok(lean.includes(`\`${s}\``), s);
-  for (const k of ['agent', 'rules', 'skill', 'runId', 'model', 'effort', 'wait', 'note', 'error']) assert.ok(lean.includes(`\`${k}\``), k);
-  assert.ok(lean.includes('exactly this prompt: `slug <slug>; stage <stage>; runId <runId>; rules file <rules>; SKILL.md <skill>`'));
-  assert.ok(lean.includes('`AM_STAGE: <status> <runId>`'));
+  for (const s of [`${cmd} start <stage> <slug>`, `${cmd} end <slug> <runId> failed`, `${cmd} end <slug> <runId> <status>`, `${cmd} card <slug>`, `${cmd} answer <slug> <that file>`]) assert.ok(shared.includes(`\`${s}\``), s);
+  for (const k of ['agent', 'rules', 'skill', 'runId', 'model', 'effort', 'wait', 'note', 'error']) assert.ok(shared.includes(`\`${k}\``), k);
+  assert.ok(shared.includes('exactly this prompt: `slug <slug>; stage <stage>; runId <runId>; rules file <rules>; SKILL.md <skill>`'));
+  assert.ok(shared.includes('`AM_STAGE: <status> <runId>`'));
   // Every status but the hand-over's: am-auto:agent never hands over.
-  for (const status of [...new Set([...Object.values(MARKS).flat(), 'BLOCKED', 'failed'])].filter((s) => s !== 'HANDED')) assert.ok(lean.includes(`\`${status}\``), `status ${status}`);
-  for (const f of ['--push', '--fix', '--part']) assert.ok(lean.includes(`\`${f}\``), f);
+  for (const status of [...new Set([...Object.values(MARKS).flat(), 'BLOCKED', 'failed'])].filter((s) => s !== 'HANDED')) assert.ok(shared.includes(`\`${status}\``), `status ${status}`);
+  for (const f of ['--push', '--fix', '--part']) assert.ok(shared.includes(`\`${f}\``), f);
   // The driver stays independent of the stages' files; the user decisions allow only these Grep patterns and writes.
-  assert.ok(lean.includes('until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.'));
-  for (const s of ['`^(- )?(Scale: [0-9]+ implementation run|규모: 구현 [0-9]+회)`', '`^- Part [0-9]+: Steps`', '`^- Part [0-9]+ done: `', '`.am/<slug>.answer-<n>.md`', 'Continue the existing plan in .am/<slug>/plan.md.']) assert.ok(lean.includes(s), s);
-  for (const s of ['`"ev":"end"`', 'stage: "handover"']) assert.ok(lean.includes(s), s);
+  assert.ok(shared.includes('until the last stage ends or you stop, never read the reply files, check.md, do-result.md, opinion or codex files or plan.md; only the commands and Grep patterns below touch them, and you write no brief.'));
+  for (const s of ['`^(- )?(Scale: [0-9]+ implementation run|규모: 구현 [0-9]+회)`', '`^- Part [0-9]+: Steps`', '`^- Part [0-9]+ done: `', '`.am/<slug>.answer-<n>.md`', 'Continue the existing plan in .am/<slug>/plan.md.']) assert.ok(shared.includes(s), s);
+  for (const s of ['`"ev":"end"`', 'stage: "handover"']) assert.ok(shared.includes(s), s);
   const flow = readFlow('agent');
   assert.ok(flow.includes(PART_LINE), 'PART_LINE');
   for (const s of ['## Parts', '- Part <k> done:', '`Part <k> of <N> of .am/<slug>/plan.md:`', '`Part <k> of <N> of .am/<parent>/plan.md:`']) assert.ok(flow.includes(s), s);
   assert.ok(lean.includes('${CLAUDE_PLUGIN_ROOT}/flow/parts.md'), 'reads flow/parts.md');
   // It copies the Parts rules instead of reading am-auto:one, and runs neither the orchestrator nor stage sessions.
-  for (const s of ['skills/one/SKILL.md', 'skills/run/SKILL.md', 'scripts/stage.mjs', 'progress.mjs', '--solo']) assert.ok(!lean.includes(s), s);
+  for (const text of [lean, stageAgents]) for (const s of ['skills/one/SKILL.md', 'skills/run/SKILL.md', 'scripts/stage.mjs', 'progress.mjs', '--solo']) assert.ok(!text.includes(s), s);
   // The fixed command that logs a part as done, run as written on copies of a parent plan.
   const m = /`node -e '([^']*)' \.am\/<slug>\/plan\.md '- Part <k> done: <slug>-p<k>'`/.exec(lean);
   assert.ok(m, 'the Part done command');
@@ -474,6 +478,36 @@ test('am-auto:agent follows the shared flow and runs its stages as stage agents 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The Part done command of am-auto:agent and am-auto:relay (a copy each; the test above runs am-auto:agent's).
+const PART_DONE = /`node -e '([^']*)' \.am\/<slug>\/plan\.md '- Part <k> done: <slug>-p<k>'`/;
+
+test('am-auto:relay hands each part to the relay agent and acts on every state it ends with', () => {
+  const relay = withoutCommon(read('relay'));
+  const shared = withoutCommon(readFlow('relay'));
+  const cmd = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs"';
+  for (const s of ['${CLAUDE_PLUGIN_ROOT}/flow/run.md', '${CLAUDE_PLUGIN_ROOT}/flow/parts.md', '${CLAUDE_PLUGIN_ROOT}/flow/stage-agents.md', 'step 7', 'the am-auto:relay skill']) assert.ok(relay.includes(s), s);
+  assert.ok(shared.includes('\n## Stage agents (Claude Code)\n'), 'reads the stage agents flow');
+  for (const s of ['skills/multi/SKILL.md', 'skills/one/SKILL.md', 'skills/agent/SKILL.md', 'stage-sessions.md', 'scripts/stage.mjs', 'progress.mjs', '--solo', '`HANDED`']) assert.ok(!relay.includes(s), s);
+  const parts = relay.split('\n## Parts\n')[1];
+  assert.ok(parts.includes('`subagent_type` `am-auto:relay-part` and exactly this prompt: `part <slug>-p<k>; push <yes|no>; script ${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs`'), 'the relay agent call');
+  // The prompt and the result line are the relay agent's (auto/agents/relay-part.md).
+  const agent = readFileSync(path.join(AGENTS_DIR, 'relay-part.md'), 'utf8');
+  for (const s of ['`part <slug>; push <yes|no>; script <path>`', '`AM_RELAY: <state> <status|-> <dispatchId|->`']) assert.ok(agent.includes(s), s);
+  assert.ok(parts.includes('`AM_RELAY: <state> <status|-> <dispatchId|->`'), 'the result line');
+  for (const s of ['ended', 'COMMITTED', 'NOTHING', 'NEEDS_DECISION', 'unable', 'none', 'running', 'closed', 'gone', 'unclaimed', 'stale', 'error', '--part']) assert.ok(parts.includes(`\`${s}\``), s);
+  for (const s of [`${cmd} card <slug>-p<k>`, `${cmd} answer <slug>-p<k> <that file>`]) assert.ok(parts.includes(`\`${s}\``), s);
+  for (const s of ['same permission mode', 'could not run stage agents', 'a stage agent may still be running in the receiving session', 'this skill with the parent slug', 'is not that result, so ignore it']) assert.ok(parts.includes(s), s);
+  // Every state the relay agent and wait can end with is one this skill names.
+  const script = readFileSync(path.join(AUTO, 'scripts', 'agent-stage.mjs'), 'utf8');
+  const waitStates = [...script.matchAll(/(?:waitLine\(\{ state: |closeAs\(d, )'([a-z]+)'/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(waitStates)].sort(), ['closed', 'ended', 'gone', 'running', 'stale', 'unclaimed']);
+  // The Part done command is the same in both skills.
+  const a = PART_DONE.exec(withoutCommon(read('agent')));
+  const r = PART_DONE.exec(relay);
+  assert.ok(a && r, 'the Part done command');
+  assert.equal(r[0], a[0]);
 });
 
 test('the flow files keep the anchors the skills refer to, and am-auto:multi adds its hand-over to steps 2, 4 and 7', () => {
@@ -504,7 +538,7 @@ test('auto/flow holds only flow files, no skill, and the skills name only flow f
   assert.ok(path.relative(path.join(AUTO, 'skills'), FLOW).startsWith('..'), 'auto/flow is outside auto/skills');
   // Plain files only: no SKILL.md and no folder that could be read as a skill.
   const names = readdirSync(FLOW);
-  assert.deepEqual(names.sort(), ['parts.md', 'run.md', 'stage-sessions.md']);
+  assert.deepEqual(names.sort(), ['parts.md', 'relay-part.md', 'run.md', 'stage-agents.md', 'stage-sessions.md']);
   for (const name of names) {
     const text = flowFile(name);
     assert.ok(!text.startsWith('---'), `${name}: no frontmatter`);
@@ -512,18 +546,40 @@ test('auto/flow holds only flow files, no skill, and the skills name only flow f
     assert.doesNotMatch(text, SLASH_NAME, name);
     assert.match(text.split('\n')[0], /^This file is not a skill: /, name);
   }
-  const named = { multi: ['run.md', 'stage-sessions.md'], one: ['run.md', 'parts.md', 'stage-sessions.md'], agent: ['run.md', 'parts.md'] };
+  const named = { multi: ['run.md', 'stage-sessions.md'], one: ['run.md', 'parts.md', 'stage-sessions.md'], agent: ['run.md', 'parts.md', 'stage-agents.md'], relay: ['run.md', 'parts.md', 'stage-agents.md'] };
   for (const [skill, want] of Object.entries(named)) {
     assert.deepEqual(flowNames(read(skill)), want, skill);
     readFlow(skill);
   }
 });
 
-test('the Loop step lines of am-auto:one and am-auto:agent name steps of the parts.md loop', () => {
+// A session that got an am-auto:relay message runs the part with the shared stage agents' flow and answers only through
+// the dispatch record; the message names this file (relayMessage of agent-stage.mjs).
+test('a receiving session claims the dispatch, runs one part with stage agents and records its outcome once', async () => {
+  const text = flowFile('relay-part.md');
+  const { relayMessage } = await import('../auto/scripts/agent-stage.mjs');
+  const message = relayMessage({ cwd: 'C:/repo', ownRoot: AUTO, part: 'big-p1', id: 'abc1-123456', push: false });
+  assert.ok(message.includes(`${AUTO.split(path.sep).join('/')}/flow/relay-part.md`), 'the message names this file');
+  assert.ok(text.includes(`\`${message.split('\n')[0].split(':')[0]}:\``), 'the message prefix');
+  for (const key of ['Part', 'Dispatch', 'Push']) assert.ok(message.includes(`\n${key}: `) && text.includes(`\`${key}\``), key);
+  const cmd = 'node "<plugin root>/scripts/agent-stage.mjs"';
+  for (const s of [`${cmd} claim <part> <id>`, `${cmd} outcome <part> <id> unable -`, `${cmd} outcome <part> <id> <status> <stage>`, '--part --dispatch <id>', '--push', '--fix']) assert.ok(text.includes(`\`${s}\``), s);
+  for (const s of ['`flow/stage-agents.md`', '`## Stage agents (Claude Code)`', '`am-auto:stage-plan`', '`claimed`', '`recorded`', '`reason`', 'in the foreground, never in the background']) assert.ok(text.includes(s), s);
+  assert.ok(flowFile('stage-agents.md').includes('\n## Stage agents (Claude Code)\n'));
+  for (const s of ['Do not reply to the sender', 'Never ask the user', 'Change no file yourself', 'Never switch to the parent slug', 'Do not read `flow/run.md`']) assert.ok(text.includes(s), s);
+  for (const status of ['COMMITTED', 'NOTHING', 'NEEDS_DECISION', 'BLOCKED', 'failed', 'BLOCK', 'error']) assert.ok(text.includes(`\`${status}\``), status);
+  // Every command named here is one agent-stage.mjs takes.
+  const usage = readFileSync(path.join(AUTO, 'scripts', 'agent-stage.mjs'), 'utf8').split('const USAGE = `')[1].split('`;')[0];
+  for (const name of ['claim', 'outcome', 'start']) assert.ok(usage.includes(`node agent-stage.mjs ${name} `), name);
+  for (const flag of ['--part', '--dispatch <id>', '--push', '--fix']) assert.ok(usage.includes(flag), flag);
+  assert.ok(!text.includes('${CLAUDE_PLUGIN_ROOT}/'), 'no plugin root placeholder path: the session was not started as a skill');
+});
+
+test('the Loop step lines of am-auto:one, am-auto:agent and am-auto:relay name steps of the parts.md loop', () => {
   const loop = flowFile('parts.md').split('\n## Parts\n')[1];
   const numbers = [...loop.matchAll(/\n {2}(\d+)\. /g)].map((m) => Number(m[1]));
   assert.deepEqual(numbers, [1, 2, 3, 4]);
-  for (const name of ['one', 'agent']) {
+  for (const name of ['one', 'agent', 'relay']) {
     const parts = read(name).split('\n## Parts\n')[1];
     assert.ok(parts, `${name}: the Parts section`);
     const steps = [...parts.matchAll(/\n- Loop step (\d+): /g)].map((m) => Number(m[1]));
@@ -532,8 +588,8 @@ test('the Loop step lines of am-auto:one and am-auto:agent name steps of the par
   }
 });
 
-test('only am-auto:multi hands over: one and agent read no hand-over rule, multi reads every stage status', async () => {
-  for (const name of ['one', 'agent']) {
+test('only am-auto:multi hands over: one, agent and relay read no hand-over rule, multi reads every stage status', async () => {
+  for (const name of ['one', 'agent', 'relay']) {
     const text = readFlow(name);
     for (const s of ['- Hand-over: am-orchestrator run skill', '`HANDED`', 'claude plugin list --json']) assert.ok(!text.includes(s), `${name}: ${s}`);
   }
@@ -625,7 +681,33 @@ test('am-auto:agent stage agents stay pinned', () => {
 
 test('plugin/agents holds only the reviewer, and auto/agents only the stage agents', () => {
   assert.deepEqual(readdirSync(path.dirname(AGENT)), ['second-opinion.md']);
-  assert.deepEqual(readdirSync(AGENTS_DIR).sort(), STAGE_AGENT_NAMES.map((n) => `${n}.md`).sort());
+  assert.deepEqual(readdirSync(AGENTS_DIR).sort(), [...STAGE_AGENT_NAMES, 'relay-part'].map((n) => `${n}.md`).sort());
+});
+
+// The am-auto:relay hand-over agent: no tools key, so it keeps the driver's tools (SendMessage is loaded through
+// ToolSearch), and disallowedTools takes away writes and subagents; its value is models.json's am-auto.relay-part.
+test('the am-auto:relay hand-over agent stays pinned and drives only the dispatch commands', async () => {
+  const text = readFileSync(path.join(AGENTS_DIR, 'relay-part.md'), 'utf8');
+  const fm = frontmatter(text);
+  assert.deepEqual(Object.keys(fm), ['name', 'description', 'disallowedTools', 'model', 'effort']);
+  assert.equal(fm.name, 'relay-part');
+  assert.equal(fm.disallowedTools, 'Write, Edit, NotebookEdit, Agent');
+  assert.match(fm.model, ALIAS);
+  assert.ok(USER_EFFORTS.includes(fm.effort), fm.effort);
+  assert.match(fm.description, /^"[^"]{40,}"$/);
+  for (const s of ['am-auto:relay 의 ', 'am 스킬이 부를 때만']) assert.ok(fm.description.includes(s), s);
+  const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
+  assert.doesNotMatch(body, /[가-힣]/, 'English body');
+  assert.ok(body.split('\n').includes('# am-auto:relay-part'), 'title');
+  assert.ok(!body.includes('${CLAUDE_PLUGIN_ROOT}'), 'the script path comes in the prompt');
+  for (const s of ['Bash, Read and SendMessage', 'ToolSearch', 'Never ask the user', '`part <slug>; push <yes|no>; script <path>`']) assert.ok(body.includes(s), s);
+  for (const s of ['node "<script>" dispatch <part>', 'node "<script>" wait <part> <id>', 'node "<script>" close <part> <id> <reason>', '--push']) assert.ok(body.includes(`\`${s}\``), s);
+  const { relayMessage } = await import('../auto/scripts/agent-stage.mjs');
+  assert.equal(typeof relayMessage, 'function');
+  for (const k of ['dispatchId', 'message','resume', 'done', 'none', 'error', 'state', 'status', 'reason', 'running', 'ended', 'target.name']) assert.ok(body.includes(`\`${k}\``), k);
+  for (const s of ['AM_RELAY: error - -', 'AM_RELAY: none - -', 'AM_RELAY: ended <done.status> <dispatchId>', 'AM_RELAY: closed - <id>', 'AM_RELAY: running - <id>', 'AM_RELAY: <state> <status|-> <id>', 'AM_RELAY: <state> <status|-> <dispatchId|->']) assert.ok(body.includes(`\`${s}\``), s);
+  const usage = readFileSync(path.join(AUTO, 'scripts', 'agent-stage.mjs'), 'utf8').split('const USAGE = `')[1].split('`;')[0];
+  for (const s of ['dispatch <part> [--push]', 'wait <part> <id>', 'close <part> <id> <reason>']) assert.ok(usage.includes(`node agent-stage.mjs ${s}`), s);
 });
 
 // Skill names before 0.1.67, the git-sync name that moved from am-art to am-util in am-art 0.1.4, and the plugin/ paths

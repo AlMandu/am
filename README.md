@@ -580,6 +580,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-auto:multi` | `opus` | `medium` |
 | `am-auto:one` | `opus` | `medium` |
 | `am-auto:agent` | `opus` | `medium` |
+| `am-auto:relay` | `opus` | `medium` |
 | `am-auto:sessions` | `sonnet` | `low` |
 | `am-util:land` | `opus` | `high` |
 | `am-util:update-branch` | `opus` | `high` |
@@ -596,6 +597,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-auto:agent` 구현 단계 에이전트(`am-auto:stage-do`) | `opus` | `medium` |
 | `am-auto:agent` 점검 단계 에이전트(`am-auto:stage-check`) | `opus` | `high` |
 | `am-auto:agent` 커밋 단계 에이전트(`am-auto:stage-commit`·`am-auto:stage-commit-push`) | `sonnet` | `medium` |
+| `am-auto:relay` 전달 에이전트(`am-auto:relay-part`) | `sonnet` | `low` |
 | Codex 2차 의견 | `gpt-6.1-sol` | `high` |
 
 <!-- am:models:end -->

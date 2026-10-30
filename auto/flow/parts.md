@@ -1,4 +1,4 @@
-This file is not a skill: am-auto:one and am-auto:agent read it while they run, after `flow/run.md`. In it, "this skill" means the skill that reads it, "step N" refers to `flow/run.md`, and "loop step N" to the numbered loop below; each `- Loop step N:` line of the reading skill's `## Parts` section adds to that loop step (`- Loop start:` to the sentence that starts the loop).
+This file is not a skill: am-auto:one, am-auto:agent and am-auto:relay read it while they run, after `flow/run.md`. In it, "this skill" means the skill that reads it, "step N" refers to `flow/run.md`, and "loop step N" to the numbered loop below; each `- Loop step N:` line of the reading skill's `## Parts` section adds to that loop step (`- Loop start:` to the sentence that starts the loop).
 
 ## Parts
 A plan of 2 or more implementation runs is never implemented whole; each part runs as a task of its own.

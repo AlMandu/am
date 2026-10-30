@@ -1,4 +1,4 @@
-This file is not a skill: am-auto:multi, am-auto:one and am-auto:agent read it while they run and follow it as their shared flow. In it, `${CLAUDE_PLUGIN_ROOT}`, "this skill" and "this SKILL.md" mean the skill that reads it, and "the rules above" mean that skill's `Working with the user` rules.
+This file is not a skill: am-auto:multi, am-auto:one, am-auto:agent and am-auto:relay read it while they run and follow it as their shared flow. In it, `${CLAUDE_PLUGIN_ROOT}`, "this skill" and "this SKILL.md" mean the skill that reads it, and "the rules above" mean that skill's `Working with the user` rules.
 
 ## Running without stops
 This skill runs the am:plan, am:do, am:check and am:commit skills, each in a fresh session (the reading skill's stage section) or all in this one. Running it is the user's request for all of them, including the commits. Inside this skill the rules below replace the asking rules above; do not wait for the user between phases.
