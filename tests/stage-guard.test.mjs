@@ -240,7 +240,7 @@ test('file writes by stage', () => {
   assert.equal(plan.write('.am/task/plan.md'), 'allow');
   assert.equal(plan.write('.am/task/scratch/a.mjs'), 'allow');
   assert.equal(plan.write('.am/.active'), 'allow');
-  for (const f of ['stage.json', 'STAGE.JSON', CLAIM_FILE, 'progress.jsonl', 'rules-plan.md', 'skill-plan.md']) assert.equal(plan.write(`.am/task/${f}`), 'deny', f);
+  for (const f of ['stage.json', 'STAGE.JSON', CLAIM_FILE, 'progress.jsonl', 'rules-plan.md', 'skill-plan.md', 'dispatch.json', 'DISPATCH.JSON']) assert.equal(plan.write(`.am/task/${f}`), 'deny', f);
   assert.equal(plan.write('.am/other/plan.md'), 'deny');
   assert.equal(plan.write('src/x.js'), 'deny');
   assert.equal(plan.write('.am/task/plan.md', 'Edit'), 'allow');

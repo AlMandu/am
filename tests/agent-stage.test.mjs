@@ -3,12 +3,12 @@
 // (runId, once, under the lock), card and answer (the cards and answers as written).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANSWER_LINE, CARD_ANSWERED, CARD_END, CARD_OPEN, MAX_ANSWER_BYTES, findCards, main, newRunId, startArgs } from '../auto/scripts/agent-stage.mjs';
+import { ANSWER_LINE, CARD_ANSWERED, CARD_END, CARD_OPEN, MAX_ANSWER_BYTES, findCards, main, newRunId, parseAgents, pickSessions, startArgs } from '../auto/scripts/agent-stage.mjs';
 import { AGENT_RECORD, AGENT_STALE_MS, agentRules, inlineSkill } from '../auto/scripts/stage.mjs';
 import { frontmatterModels } from '../plugin/scripts/user-models.mjs';
 
@@ -60,7 +60,7 @@ function taskEvents(dir, slug, lines) {
 const fm = (name) => frontmatterModels(path.join(OWN, 'agents', `${name}.md`));
 
 test('startArgs and newRunId: the stage, slug and flags, each flag once', () => {
-  assert.deepEqual(startArgs(['do', 'demo', '--fix', '--push']), { stage: 'do', slug: 'demo', push: true, fix: true, part: false });
+  assert.deepEqual(startArgs(['do', 'demo', '--fix', '--push']), { stage: 'do', slug: 'demo', push: true, fix: true, part: false, dispatch: null });
   for (const bad of [['handover', 'demo'], ['plan', 'Demo'], ['plan'], ['plan', 'demo', '--push', '--push'], ['plan', 'demo', '--solo'], ['plan', 'demo', 'x']]) assert.equal(startArgs(bad), null, bad.join(' '));
   assert.match(newRunId(), /^[a-z0-9]+-[a-f0-9]{6}$/);
 });
@@ -346,4 +346,309 @@ test('start: the user models file - none, stage and default keys, broken, not an
   assert.equal(f.effort, 'max');
   assert.match(f.note, /model "claude-opus-4-5" in .*models\.json is not one of opus, sonnet, haiku, fable; the stage agent's \w+ is used/);
   assert.equal(f.error, null);
+});
+
+// ------------------------------------------------------------------ dispatch, claim, outcome, wait, close
+
+const T1 = 201;
+const T2 = 202;
+const T3 = 203;
+const aliveRelay = (pid) => aliveOnly(pid) || [T1, T2, T3].includes(pid);
+const DKEYS = ['dispatchId', 'target', 'message', 'resume', 'done', 'none', 'error'];
+const FLOW = `${OWN.split(path.sep).join('/')}/flow/relay-part.md`;
+
+/** A repository whose task demo has a plan and a part demo-p<k> for each k (request and plan). */
+function makeParts(t, ks = [1]) {
+  const repo = makeRepo(t, { plan: SMALL });
+  for (const k of ks) {
+    mkdirSync(path.join(repo.dir, '.am', `demo-p${k}`), { recursive: true });
+    writeFileSync(path.join(repo.dir, '.am', `demo-p${k}`, 'request.md'), `Part ${k} of 2 of .am/demo/plan.md: steps`);
+    writeFileSync(path.join(repo.dir, '.am', `demo-p${k}`, 'plan.md'), SMALL);
+  }
+  return repo;
+}
+const row = (dir, name, pid, startedAt, fields = {}) => ({ kind: 'interactive', status: 'idle', cwd: dir, pid, sessionId: `s-${name}`, name, startedAt, ...fields });
+const listOf = (rows) => async () => ({ code: 0, stdout: JSON.stringify(rows), stderr: '' });
+let dids = 0;
+const relay = (repo, argv, opts = {}) => run(repo, argv, { alive: aliveRelay, newDispatchId: () => `d${++dids}-abcdef`, relayWaitMs: 60, relayPollMs: 10, ...opts });
+const dispatchFile = (dir, part = 'demo-p1') => path.join(dir, '.am', part, 'dispatch.json');
+const readD = (dir, part) => JSON.parse(readFileSync(dispatchFile(dir, part), 'utf8'));
+const writeD = (dir, part, fields) => writeFileSync(dispatchFile(dir, part), JSON.stringify({ id: 'x1-abcdef', part, target: { name: 'A', sessionId: 's-A', pid: T1 }, driver: { pid: LIVE, sessionId: null }, push: false, t: Date.now(), state: 'open', claimedBy: null, claimedAt: null, reason: null, outcome: null, ...fields }));
+const asPid = (pid) => ({ env: { CLAUDE_PID: String(pid) } });
+
+test('pickSessions and parseAgents: idle interactive sessions of this folder, latest first, unique names, not the driver', (t) => {
+  const { dir } = makeRepo(t);
+  const other = mkdtempSync(path.join(os.tmpdir(), 'am-agent-other-'));
+  t.after(() => rm(other, { recursive: true, force: true }));
+  const rows = [
+    row(dir, 'A', T1, '2026-01-01T00:00:00Z'),
+    row(`${dir}${path.sep}`, 'B', T2, '2026-02-01T00:00:00Z'),
+    row(dir, 'busy', 301, '2026-04-01T00:00:00Z', { status: 'busy' }),
+    row(dir, 'bg', 302, '2026-04-01T00:00:00Z', { kind: 'background' }),
+    row(other, 'away', 303, '2026-04-01T00:00:00Z'),
+    row(dir, 'me', LIVE, '2026-04-01T00:00:00Z'),
+    row(dir, 'dup', 304, '2026-04-01T00:00:00Z'),
+    row(other, 'dup', 305, '2026-04-01T00:00:00Z', { status: 'busy' }),
+    'not a row',
+  ];
+  const names = (o) => pickSessions(rows, { cwd: dir, driverPid: LIVE, ...o }).candidates.map((c) => c.name);
+  assert.deepEqual(names({}), ['B', 'A']);
+  assert.deepEqual(pickSessions(rows, { cwd: dir, driverPid: LIVE }).candidates[0], { name: 'B', sessionId: 's-B', pid: T2 });
+  // Windows compares folders without case.
+  const upper = [...rows, row(dir.toUpperCase(), 'U', T3, '2026-03-01T00:00:00Z')];
+  assert.deepEqual(pickSessions(upper, { cwd: dir, driverPid: LIVE, platform: 'win32' }).candidates.map((c) => c.name), ['U', 'B', 'A']);
+  if (process.platform !== 'win32' && dir !== dir.toUpperCase()) assert.deepEqual(pickSessions(upper, { cwd: dir, driverPid: LIVE, platform: 'linux' }).candidates.map((c) => c.name), ['B', 'A']);
+  assert.match(pickSessions([row(dir, 'dup', 1, 0), row(other, 'dup', 2, 0)], { cwd: dir, driverPid: LIVE }).none, /only sessions whose name another session shares/);
+  assert.match(pickSessions([], { cwd: dir, driverPid: LIVE }).none, /no idle interactive session is open in this folder/);
+  assert.deepEqual(parseAgents('[1]'), { rows: [1] });
+  assert.deepEqual(parseAgents('{"agents":[1],"n":2}'), { rows: [1] });
+  assert.match(parseAgents('{"a":[],"b":[]}').error, /not a list/);
+  assert.match(parseAgents('nope').error, /not JSON/);
+});
+
+test('dispatch: writes an open dispatch.json for the picked session and prints the message', async (t) => {
+  const repo = makeParts(t);
+  const rows = [row(repo.dir, 'A', T1, '2026-01-01T00:00:00Z'), row(repo.dir, 'B', T2, '2026-02-01T00:00:00Z'), row(repo.dir, 'me', LIVE, '2026-03-01T00:00:00Z')];
+  const r = await relay(repo, ['dispatch', 'demo-p1', '--push'], { listAgents: listOf(rows), env: { CLAUDE_PID: String(LIVE), CLAUDE_CODE_SESSION_ID: 'drv' } });
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(Object.keys(r.json), DKEYS);
+  const id = r.json.dispatchId;
+  assert.match(id, /^[a-z0-9]+-[a-f0-9]{6}$/);
+  assert.deepEqual(r.json.target, { name: 'B', sessionId: 's-B', pid: T2 });
+  assert.equal(r.json.message, [`am-auto relay request: run part demo-p1 of ${repo.dir} (dispatch ${id}).`, `Repository root: ${repo.dir}`, `Flow file: ${FLOW}`, 'Part: demo-p1', `Dispatch: ${id}`, 'Push: yes', 'Read the flow file and follow it for this part. Do not reply to the sender.'].join('\n'));
+  assert.deepEqual([r.json.resume, r.json.done, r.json.none, r.json.error], [false, null, null, null]);
+  const d = readD(repo.dir, 'demo-p1');
+  assert.deepEqual({ ...d, t: 0 }, { id, part: 'demo-p1', target: r.json.target, driver: { pid: LIVE, sessionId: 'drv' }, push: true, t: 0, state: 'open', claimedBy: null, claimedAt: null, reason: null, outcome: null });
+  assert.ok(!existsSync(path.join(repo.dir, '.am', '.admission.lock')), 'the lock is released');
+  // An open dispatch that nobody claimed is replaced; its id no longer claims.
+  const again = await relay(repo, ['dispatch', 'demo-p1'], { listAgents: listOf(rows) });
+  assert.notEqual(again.json.dispatchId, id);
+  assert.match(again.json.message, /Push: no/);
+  assert.equal((await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER))).json.claimed, false);
+  // Arguments and the part.
+  assert.equal((await relay(repo, ['dispatch', 'Demo-p1'])).code, 1);
+  assert.equal((await relay(repo, ['dispatch', 'demo-p1', '--fix'])).code, 1);
+  assert.match((await relay(repo, ['dispatch', 'demo'], { listAgents: listOf(rows) })).json.error, /--part needs a part slug/);
+  assert.match((await relay(repo, ['dispatch', 'demo-p1'], { listAgents: listOf(rows), env: { CLAUDE_PID: undefined } })).json.error, /CLAUDE_PID is not a process ID/);
+});
+
+test('dispatch: other dispatches, open stages and the parts already given decide the session', async (t) => {
+  const repo = makeParts(t, [1, 2, 3]);
+  const rows = [row(repo.dir, 'A', T1, '2026-01-01T00:00:00Z'), row(repo.dir, 'B', T2, '2026-02-01T00:00:00Z'), row(repo.dir, 'C', T3, '2026-03-01T00:00:00Z')];
+  const pick = async (list = rows) => (await relay(repo, ['dispatch', 'demo-p1'], { listAgents: listOf(list) })).json;
+  assert.equal((await pick()).target.name, 'C');
+  // The target of another open dispatch, and a pid with an open stage.json, are left out.
+  writeD(repo.dir, 'demo-p2', { target: { name: 'C', sessionId: 's-C', pid: T3 } });
+  assert.equal((await pick()).target.name, 'B');
+  mkdirSync(path.join(repo.dir, '.am', 'other'));
+  const stageRec = path.join(repo.dir, '.am', 'other', AGENT_RECORD);
+  writeFileSync(stageRec, JSON.stringify({ pid: T2, runId: 'r-000000', stage: 'do' }));
+  assert.equal((await pick()).target.name, 'A');
+  writeFileSync(stageRec, JSON.stringify({ pid: T2, runId: 'r-000000', stage: 'do', ended: 1 }));
+  assert.equal((await pick()).target.name, 'B', 'an ended stage holds nothing');
+  // A live claim of another part holds its claimer too.
+  writeD(repo.dir, 'demo-p2', { target: { name: 'C', sessionId: 's-C', pid: T3 }, state: 'claimed', claimedBy: T1, claimedAt: Date.now() });
+  writeFileSync(stageRec, JSON.stringify({ pid: T2, runId: 'r-000000', stage: 'do' }));
+  assert.match((await pick()).none, /every idle session of this folder is the target of another dispatch or runs a stage/);
+  // A session another part of the owner was given comes after one that was not.
+  rmSync(path.join(repo.dir, '.am', 'other'), { recursive: true });
+  writeD(repo.dir, 'demo-p2', { target: { name: 'C', sessionId: 's-C', pid: T3 }, state: 'closed' });
+  writeD(repo.dir, 'demo-p3', { target: { name: 'B', sessionId: 's-B', pid: T2 }, state: 'ended', outcome: { status: 'COMMITTED', stage: 'commit', t: 1 } });
+  assert.equal((await pick()).target.name, 'A');
+  // Every session was given a part: the first one.
+  assert.equal((await pick(rows.slice(1))).target.name, 'C');
+});
+
+test('dispatch: resume a live claim, done after a commit end, a new dispatch after any other end', async (t) => {
+  const repo = makeParts(t);
+  const rows = [row(repo.dir, 'A', T1, '2026-01-01T00:00:00Z')];
+  const go = (o = {}) => relay(repo, ['dispatch', 'demo-p1'], { listAgents: listOf(rows), ...o });
+  const first = (await go()).json;
+  assert.deepEqual((await relay(repo, ['claim', 'demo-p1', first.dispatchId], asPid(OTHER))).json, { claimed: true, reason: '' });
+  const before = readFileSync(dispatchFile(repo.dir));
+  const resumed = (await go()).json;
+  assert.deepEqual(resumed, { dispatchId: first.dispatchId, target: first.target, message: null, resume: true, done: null, none: null, error: null });
+  assert.deepEqual(readFileSync(dispatchFile(repo.dir)), before, 'nothing written');
+  // A recorded commit end: done, nothing written.
+  assert.deepEqual((await relay(repo, ['outcome', 'demo-p1', first.dispatchId, 'COMMITTED', 'commit'], asPid(OTHER))).json, { recorded: true, reason: '' });
+  const ended = readFileSync(dispatchFile(repo.dir));
+  const done = (await go()).json;
+  assert.deepEqual(done.done, { status: 'COMMITTED', stage: 'commit' });
+  assert.deepEqual([done.dispatchId, done.message, done.none], [first.dispatchId, null, null]);
+  assert.deepEqual(readFileSync(dispatchFile(repo.dir)), ended);
+  // A claim whose session died after the commit stage ended NOTHING: done; an end before the claim does not count.
+  const claimedAt = Date.now() - 60000;
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: DEAD, claimedAt });
+  taskEvents(repo.dir, 'demo-p1', [{ ev: 'end', text: 'e', stage: 'commit', status: 'NOTHING' }]);
+  assert.deepEqual((await go()).json.done, { status: 'NOTHING', stage: 'commit' });
+  writeFileSync(path.join(repo.dir, '.am', 'demo-p1', 'progress.jsonl'), `${JSON.stringify({ t: new Date(claimedAt - 1000).toISOString(), ev: 'end', text: 'e', stage: 'commit', status: 'COMMITTED' })}\n`);
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: DEAD, claimedAt });
+  const fresh = (await go()).json;
+  assert.equal(fresh.done, null);
+  assert.equal(readD(repo.dir, 'demo-p1').state, 'open', 'a new dispatch');
+  // NEEDS_DECISION, BLOCKED or unable: a new dispatch.
+  for (const [status, stage] of [['NEEDS_DECISION', 'plan'], ['BLOCKED', 'do'], ['unable', null]]) {
+    writeD(repo.dir, 'demo-p1', { state: 'ended', outcome: { status, stage, t: 1 } });
+    const n = (await go()).json;
+    assert.ok(n.dispatchId && n.dispatchId !== 'x1-abcdef' && n.message && n.done === null, status);
+    assert.equal(readD(repo.dir, 'demo-p1').state, 'open');
+  }
+});
+
+test('dispatch: a list that fails or cannot be read, no session, a fake claude command; close', async (t) => {
+  const repo = makeParts(t);
+  for (const [listed, re] of [
+    [{ code: 1, stdout: '', stderr: 'boom\nmore' }, /^list failed: claude agents --json ended with code 1: boom$/],
+    [{ code: 0, stdout: 'nope' }, /^list failed: the output is not JSON$/],
+    [{ code: null, stdout: '', spawnError: 'spawn claude ENOENT' }, /^list failed: spawn claude ENOENT$/],
+    [{ code: null, stdout: '', timedOut: true }, /^list failed: .*did not end within 120 seconds$/],
+    [{ code: 0, stdout: '[]' }, /^no idle interactive session is open in this folder$/],
+  ]) {
+    const r = await relay(repo, ['dispatch', 'demo-p1'], { listAgents: async () => listed });
+    assert.match(r.json.none, re);
+    assert.equal(r.json.dispatchId, null);
+    assert.ok(!existsSync(dispatchFile(repo.dir)), 'nothing written');
+  }
+  const wrapped = await relay(repo, ['dispatch', 'demo-p1'], { listAgents: async () => ({ code: 0, stdout: JSON.stringify({ agents: [row(repo.dir, 'A', T1, 1)] }) }) });
+  assert.equal(wrapped.json.target.name, 'A');
+  // The default list runs the claude command with `agents --json`.
+  const fake = path.join(repo.dir, 'fake-claude.mjs');
+  writeFileSync(fake, `process.stdout.write(JSON.stringify(process.argv.slice(2).join(' ') === 'agents --json' ? [${JSON.stringify(row(repo.dir, 'F', T2, 5))}] : []));\n`);
+  const real = await relay(repo, ['dispatch', 'demo-p1'], { claude: [process.execPath, fake], listAgents: undefined });
+  assert.equal(real.json.target?.name, 'F', JSON.stringify(real.json));
+  // close: only the open dispatch of that id.
+  const id = real.json.dispatchId;
+  assert.deepEqual((await relay(repo, ['close', 'demo-p1', 'x9-abcdef', 'send failed'])).json, { closed: false, reason: `dispatch x9-abcdef is not the dispatch of demo-p1 (${id})` });
+  assert.deepEqual((await relay(repo, ['close', 'demo-p1', id, 'send failed'])).json, { closed: true, reason: 'send failed' });
+  assert.deepEqual([readD(repo.dir, 'demo-p1').state, readD(repo.dir, 'demo-p1').reason], ['closed', 'send failed']);
+  assert.equal((await relay(repo, ['close', 'demo-p1', id, 'again'])).json.closed, false);
+  assert.equal((await relay(repo, ['close', 'demo-p1', id])).code, 1);
+});
+
+test('claim and outcome: only the open dispatch, by the claiming session, once', async (t) => {
+  const repo = makeParts(t);
+  const id = 'x1-abcdef';
+  writeD(repo.dir, 'demo-p1', { state: 'closed', reason: 'gone: x' });
+  assert.match((await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER))).json.reason, /is closed \(gone: x\)/);
+  writeD(repo.dir, 'demo-p1', {});
+  assert.match((await relay(repo, ['claim', 'demo-p1', 'x2-abcdef'], asPid(OTHER))).json.reason, /is not the dispatch of demo-p1/);
+  assert.match((await relay(repo, ['outcome', 'demo-p1', id, 'COMMITTED', 'commit'], asPid(OTHER))).json.reason, /is open, not claimed/);
+  const c = await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER));
+  assert.deepEqual(c.json, { claimed: true, reason: '' });
+  const d = readD(repo.dir, 'demo-p1');
+  assert.deepEqual([d.state, d.claimedBy, Number.isFinite(d.claimedAt)], ['claimed', OTHER, true]);
+  assert.equal((await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER))).json.claimed, true, 'the same session again');
+  assert.deepEqual((await relay(repo, ['claim', 'demo-p1', id], asPid(LIVE))).json, { claimed: false, reason: `dispatch ${id} is claimed by pid ${OTHER}` });
+  assert.match((await relay(repo, ['outcome', 'demo-p1', id, 'COMMITTED', 'commit'], asPid(LIVE))).json.reason, /claimed by pid 103, not this session \(pid 101\)/);
+  assert.deepEqual((await relay(repo, ['outcome', 'demo-p1', id, 'NEEDS_DECISION', 'plan'], asPid(OTHER))).json, { recorded: true, reason: '' });
+  assert.equal(readD(repo.dir, 'demo-p1').outcome.status, 'NEEDS_DECISION');
+  assert.equal(readD(repo.dir, 'demo-p1').state, 'ended');
+  assert.match((await relay(repo, ['outcome', 'demo-p1', id, 'COMMITTED', 'commit'], asPid(OTHER))).json.reason, /has already ended/);
+  assert.match((await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER))).json.reason, /is ended/);
+  // unable has no stage; a status the stage cannot give is a usage error.
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: OTHER, claimedAt: Date.now() });
+  assert.deepEqual((await relay(repo, ['outcome', 'demo-p1', id, 'unable', '-'], asPid(OTHER))).json, { recorded: true, reason: '' });
+  assert.deepEqual({ ...readD(repo.dir, 'demo-p1').outcome, t: 0 }, { status: 'unable', stage: null, t: 0 });
+  for (const bad of [['DONE', 'commit'], ['unable', 'do'], ['READY', '-'], ['READY', 'handover']]) assert.equal((await relay(repo, ['outcome', 'demo-p1', id, ...bad], asPid(OTHER))).code, 1, bad.join(' '));
+  assert.equal((await relay(repo, ['claim', 'demo-p1', 'bad'])).code, 1);
+  // Busy: nothing written.
+  writeD(repo.dir, 'demo-p1', {});
+  writeFileSync(path.join(repo.dir, '.am', '.admission.lock'), JSON.stringify({ pid: OTHER, t: Date.now() }));
+  assert.match((await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER))).json.reason, /^busy: the start lock is held \(pid 103\)/);
+  assert.equal(readD(repo.dir, 'demo-p1').state, 'open');
+});
+
+test('start: a part another session claimed refuses other starts at once; --dispatch only for its claimer', async (t) => {
+  assert.deepEqual(startArgs(['do', 'demo-p1', '--part', '--dispatch', 'x1-abcdef', '--push']), { stage: 'do', slug: 'demo-p1', push: true, fix: false, part: true, dispatch: 'x1-abcdef' });
+  for (const bad of [['do', 'demo', '--dispatch'], ['do', 'demo', '--dispatch', 'bad'], ['do', 'demo', '--dispatch', 'x1-abcdef', '--dispatch', 'x1-abcdef']]) assert.equal(startArgs(bad), null, bad.join(' '));
+  const repo = makeParts(t);
+  const id = 'x1-abcdef';
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: OTHER, claimedAt: Date.now() });
+  const plain = await relay(repo, ['start', 'do', 'demo-p1', '--part']);
+  assert.equal(plain.json.error, `part demo-p1 is being run by session A (dispatch ${id}); no other run starts its stages while that session holds it`);
+  assert.equal(plain.json.wait, null, 'refused, not waited for');
+  const otherPid = await relay(repo, ['start', 'do', 'demo-p1', '--part', '--dispatch', id]);
+  assert.match(otherPid.json.error, /claimed by pid 103, not this session \(pid 101\)/);
+  assert.match((await relay(repo, ['start', 'do', 'demo-p1', '--part', '--dispatch', 'x2-abcdef'], asPid(OTHER))).json.error, /the dispatch of demo-p1 is x1-abcdef now/);
+  assert.ok(!existsSync(path.join(repo.dir, '.am', 'demo-p1', AGENT_RECORD)));
+  assert.deepEqual(events(repo.dir, 'demo-p1'), []);
+  assert.ok(!existsSync(path.join(repo.dir, '.am', '.admission.lock')), 'the lock is released');
+  const ok = await relay(repo, ['start', 'do', 'demo-p1', '--part', '--dispatch', id], asPid(OTHER));
+  assert.equal(ok.json.error, null, ok.json.error);
+  assert.equal(ok.json.agent, 'am-auto:stage-do');
+  assert.equal(JSON.parse(read(repo.dir, `.am/demo-p1/${AGENT_RECORD}`)).pid, OTHER);
+  await relay(repo, ['end', 'demo-p1', ok.json.runId, 'DONE'], asPid(OTHER));
+  for (const state of ['closed', 'ended', 'open']) {
+    writeD(repo.dir, 'demo-p1', { state, claimedBy: state === 'open' ? null : OTHER });
+    assert.match((await relay(repo, ['start', 'check', 'demo-p1', '--part', '--dispatch', id], asPid(OTHER))).json.error, new RegExp(`the dispatch is ${state}, not claimed`));
+  }
+  // A dead claim no longer holds a start without --dispatch.
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: DEAD, claimedAt: Date.now() });
+  assert.equal((await relay(repo, ['start', 'check', 'demo-p1', '--part'])).json.error, null);
+});
+
+test('wait: ended, closed, gone, unclaimed, stale, running and superseded', async (t) => {
+  const repo = makeParts(t);
+  const id = 'x1-abcdef';
+  const w = async (o = {}) => (await relay(repo, ['wait', 'demo-p1', id], o)).json;
+  writeD(repo.dir, 'demo-p1', { state: 'ended', outcome: { status: 'COMMITTED', stage: 'commit', t: 1 } });
+  assert.deepEqual(await w(), { state: 'ended', status: 'COMMITTED', stage: 'commit', reason: null });
+  writeD(repo.dir, 'demo-p1', { state: 'closed', reason: 'send failed' });
+  assert.deepEqual(await w(), { state: 'closed', status: null, stage: null, reason: 'send failed' });
+  // The claimer died after the commit stage ended: ended, nothing written.
+  const claimedAt = Date.now() - 60000;
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: DEAD, claimedAt });
+  taskEvents(repo.dir, 'demo-p1', [{ ev: 'end', text: 'e', stage: 'commit', status: 'COMMITTED' }]);
+  assert.deepEqual(await w(), { state: 'ended', status: 'COMMITTED', stage: 'commit', reason: null });
+  assert.equal(readD(repo.dir, 'demo-p1').state, 'claimed');
+  // Gone: the claimer, or before a claim the target, is not running; the dispatch is closed.
+  rmSync(path.join(repo.dir, '.am', 'demo-p1', 'progress.jsonl'));
+  const gone = await w();
+  assert.equal(gone.state, 'gone');
+  assert.match(gone.reason, /the session that claimed it \(pid 102\) is not running/);
+  assert.deepEqual([readD(repo.dir, 'demo-p1').state, readD(repo.dir, 'demo-p1').reason], ['closed', `gone: ${gone.reason}`]);
+  assert.equal((await relay(repo, ['claim', 'demo-p1', id], asPid(OTHER))).json.claimed, false, 'a closed dispatch is not claimed');
+  writeD(repo.dir, 'demo-p1', { target: { name: 'A', sessionId: 's-A', pid: DEAD } });
+  assert.match((await w()).reason, /the target session \(pid 102\) is not running/);
+  // Unclaimed for claimMs.
+  writeD(repo.dir, 'demo-p1', { t: Date.now() - 5000 });
+  assert.equal((await w({ claimMs: 1000 })).state, 'unclaimed');
+  assert.match(readD(repo.dir, 'demo-p1').reason, /^unclaimed: /);
+  // Stale: claimed by a live session but nothing touched for agentStaleMs.
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: OTHER, claimedAt: Date.now() });
+  const old = new Date(Date.now() - AGENT_STALE_MS - 60000);
+  utimesSync(dispatchFile(repo.dir), old, old);
+  assert.equal((await w()).state, 'stale');
+  assert.match((await relay(repo, ['start', 'do', 'demo-p1', '--part', '--dispatch', id], asPid(OTHER))).json.error, /the dispatch is closed, not claimed/);
+  // A stage that started while wait waited for the lock keeps the claim: staleness is checked again under the lock.
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: OTHER, claimedAt: Date.now() });
+  utimesSync(dispatchFile(repo.dir), old, old);
+  const lockFile = path.join(repo.dir, '.am', '.admission.lock');
+  const stageFile = path.join(repo.dir, '.am', 'demo-p1', AGENT_RECORD);
+  writeFileSync(lockFile, JSON.stringify({ pid: OTHER, t: Date.now() }));
+  setTimeout(() => {
+    writeFileSync(stageFile, '{}');
+    rmSync(lockFile);
+  }, 100);
+  assert.equal((await w({ lockWaitMs: 2000, relayWaitMs: 600 })).state, 'running');
+  assert.equal(readD(repo.dir, 'demo-p1').state, 'claimed', 'not closed');
+  rmSync(stageFile);
+  // Running: a live claim past the wait.
+  writeD(repo.dir, 'demo-p1', { state: 'claimed', claimedBy: OTHER, claimedAt: Date.now() });
+  const began = Date.now();
+  assert.deepEqual(await w({ relayWaitMs: 100 }), { state: 'running', status: null, stage: null, reason: null });
+  assert.ok(Date.now() - began >= 90);
+  // An open dispatch whose target is alive, within claimMs: running too.
+  writeD(repo.dir, 'demo-p1', {});
+  assert.equal((await w()).state, 'running');
+  // Superseded: another id, or no record.
+  writeD(repo.dir, 'demo-p1', { id: 'x2-abcdef' });
+  assert.deepEqual(await w(), { state: 'closed', status: null, stage: null, reason: 'superseded' });
+  assert.equal(readD(repo.dir, 'demo-p1').state, 'open', 'the newer dispatch is left alone');
+  rmSync(dispatchFile(repo.dir));
+  assert.equal((await w()).reason, 'superseded');
+  // An unreadable record is looked at again.
+  writeFileSync(dispatchFile(repo.dir), '{');
+  assert.equal((await w()).state, 'running');
+  assert.equal((await relay(repo, ['wait', 'demo-p1'])).code, 1);
 });

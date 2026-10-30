@@ -66,6 +66,8 @@
 // The subagent stages of am-auto:agent (agent-stage.mjs) hold .am/<slug>/stage.json instead of a worker record; another task's
 // live stage goes stale by the record whose pid is its start's pid (AGENT_STALE_MS for stage.json). agentRules() writes
 // the unattended rules of this file for such a subagent: the same sentences, exactly swapped where a session is meant.
+// A task whose .am/<slug>/dispatch.json another open session claimed and still runs (liveClaim) starts no stage here: it ends
+// `failed` at once under the start lock, with no session and no start or end line.
 // status `unavailable`: no session could be started (no claude command); `failed`: one
 // started but did not finish with a marker, or the user models or settings file is broken; `WAIT`: another run of this working tree kept going for
 // the whole wait, or this PC stayed short of free memory while other sessions ran (no session, no start or end line; am-auto:multi starts the
@@ -660,6 +662,44 @@ function readJson(file) {
     return null;
   }
 }
+
+// The record of a part handed to another open session (agent-stage.mjs dispatch): {id, part, target: {name, sessionId,
+// pid}, driver: {pid, sessionId}, push, t, state, claimedBy, claimedAt, reason, outcome: {status, stage, t} | null}.
+export const DISPATCH_FILE = 'dispatch.json';
+export const DISPATCH_STATES = ['open', 'claimed', 'ended', 'closed'];
+
+/** A task's dispatch.json, or null when it cannot be read or is not an object. */
+export function readDispatch(dir) {
+  const d = readJson(path.join(dir, DISPATCH_FILE));
+  return d && typeof d === 'object' && !Array.isArray(d) ? d : null;
+}
+
+/** The latest modification time (ms) of a task's dispatch.json, stage.json and progress.jsonl; 0 when none exists. */
+export function dispatchActivity(dir) {
+  let latest = 0;
+  for (const name of [DISPATCH_FILE, AGENT_RECORD, 'progress.jsonl']) {
+    try {
+      latest = Math.max(latest, statSync(path.join(dir, name)).mtimeMs);
+    } catch {
+      // Missing: no activity from it.
+    }
+  }
+  return latest;
+}
+
+/**
+ * The live claim on a task: {id, pid, name} when its dispatch.json is `claimed` by a live pid and the task was active
+ * (dispatchActivity) within staleMs; else null. dispatch.json is not touched while a stage runs, so it alone would go stale.
+ */
+export function liveClaim(dir, { now = Date.now, alive = pidAlive, staleMs = AGENT_STALE_MS } = {}) {
+  const d = readDispatch(dir);
+  if (!d || d.state !== 'claimed' || !Number.isInteger(d.claimedBy) || d.claimedBy <= 0 || !alive(d.claimedBy)) return null;
+  if (now() - dispatchActivity(dir) > staleMs) return null;
+  return { id: d.id ?? null, pid: d.claimedBy, name: d.target?.name ?? null };
+}
+
+/** Why a stage of slug does not start while claim (liveClaim) holds it. */
+export const claimedText = (slug, claim) => `part ${slug} is being run by session ${claim.name ?? '?'} (dispatch ${claim.id ?? '?'}); no other run starts its stages while that session holds it`;
 
 // How long this process trusts a record that a live pid holds but stopped touching (a task's stage worker record, an
 // orchestrator lock that carries its `leaseMs`): from its start and again after it woke from sleep, so that an owner that
@@ -1371,6 +1411,12 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, claud
     if (Date.now() - looked > pollMs * 2 + settleMs) settleUntil = Date.now() + settleMs;
     looked = Date.now();
     const lock = takeLock(lockFile, { now, alive });
+    // A part another session claimed (agent-stage.mjs dispatch) is refused at once, before anything else is held.
+    const claim = !lock || lock.busy === undefined ? liveClaim(dir, { now, alive }) : null;
+    if (claim) {
+      lock?.release();
+      return done({ reason: claimedText(slug, claim) });
+    }
     let blocked;
     if (!lock) {
       const short = joins ? memoryCheck() : null;

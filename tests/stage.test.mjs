@@ -9,7 +9,7 @@ import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_LIMIT, SOLO_CONTEXT_PROMPT, SOLO_COMPACT_PROMPT, contextShare, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand } from '../auto/scripts/stage.mjs';
+import { MARKS, STAGES, claudeArgs, doKind, instructions, lastMark, main, parseResult, permissions, pluginDirFor, estimateTokens, contextFiles, pickCompaction, CONTEXT_LIMIT, CONTEXT_TARGET, COMPACT_MARKS, COMPACT_MODEL, TIMEOUT_MIN, compactInstructions, compactionProblem, cmdExeArgs, interrupt, runRelay, RELAY_MS, CACHE_5M_KINDS, otherRuns, takeLock, ownerState, GRACE_MS, POLL_MS, WAIT_MS, skillDefaults, inlineSkill, inlinePrompt, skillCall, CODEX_STAGES, SECOND_MARK, secondOpinionLines, opinionWatch, OPINION_MS, worker, WORKER_FILES, HANDOVER_OWNER, follow, stageArgs, stageLine, sessionEnv, stopHandedRun, DELIVERED_PREFIX, claimResult, fileState, FOLLOW_LIMIT_MS, hhmm, stillRunning, COMPACT_PENDING, recoverCompaction, RECORD_SETTLE_MS, WORKER_STALE_MS, exec, CLEANUP_MS, cleanedNote, STAGE_MCP_FILE, EMPTY_MCP_CONFIG, PART_LINE, SOLO_CONTEXT_LIMIT, SOLO_CONTEXT_PROMPT, SOLO_COMPACT_PROMPT, contextShare, GIT_PLAIN, GIT_PLAIN_STAGES, AGENT_RECORD, AGENT_STALE_MS, AGENT_STAGES, agentRules, agentBase, agentSwaps, applySwaps, leaseOf, coreCommand, DISPATCH_FILE, DISPATCH_STATES, readDispatch, dispatchActivity, liveClaim, claimedText } from '../auto/scripts/stage.mjs';
 import { DEFAULTS, formatEvent, pidAlive, stateLine } from '../auto/scripts/progress.mjs';
 import { handedStartBranch, readPlan } from '../auto/hooks/handover.mjs';
 import { CODEX_EFFORTS, OPINION_MODELS, USER_EFFORTS, USER_MODEL_KEYS, readUserModels, resolveOwn, resolveUser, userModelsFile } from '../plugin/scripts/user-models.mjs';
@@ -4581,4 +4581,54 @@ test('wait: a stage worker record left untouched by a live pid holds a new stage
   assert.equal(result.status, 'READY');
   assert.ok(Date.now() - began >= 300, 'held while it may still be an owner that just woke');
   assert.deepEqual(evs(events(dir)), ['note', 'start', 'end']);
+});
+
+test('a part another session claimed and still runs refuses a stage at once; a dead, stale, closed or ended claim does not', async (t) => {
+  assert.equal(DISPATCH_FILE, 'dispatch.json');
+  assert.deepEqual(DISPATCH_STATES, ['open', 'claimed', 'ended', 'closed']);
+  const claimed = { id: 'abc-123456', part: 'demo', target: { name: 'other-session', sessionId: 's-1', pid: LIVE }, driver: { pid: 7, sessionId: 'd-1' }, push: false, t: Date.now(), state: 'claimed', claimedBy: LIVE, claimedAt: Date.now(), reason: null, outcome: null };
+  const setUp = (fields, { age = 0 } = {}) => {
+    const dir = makeRepo(t, { fake: PLANNED });
+    const file = path.join(dir, '.am', 'demo', DISPATCH_FILE);
+    writeFileSync(file, JSON.stringify({ ...claimed, ...fields }));
+    if (age) {
+      const old = new Date(Date.now() - age);
+      utimesSync(file, old, old);
+    }
+    return dir;
+  };
+  const live = setUp({});
+  assert.deepEqual(liveClaim(path.join(live, '.am', 'demo'), { alive: aliveOnly }), { id: 'abc-123456', pid: LIVE, name: 'other-session' });
+  const { code, result, calls } = await run(live, ['plan', 'demo'], { alive: aliveOnly, waitMs: 10000, pollMs: 20 });
+  assert.equal(code, 0);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, claimedText('demo', { id: 'abc-123456', name: 'other-session' }));
+  assert.ok(result.reason.includes('part demo is being run by session other-session (dispatch abc-123456)'), result.reason);
+  assert.equal(calls.length, 0, 'no session');
+  assert.deepEqual(events(live), [], 'no start or end line');
+  assert.ok(!existsSync(path.join(live, '.am', '.admission.lock')), 'the start lock is released');
+  for (const [name, fields, opts] of [
+    ['a dead claimer', { claimedBy: DEAD }, {}],
+    ['activity older than AGENT_STALE_MS', {}, { age: AGENT_STALE_MS + 60000 }],
+    ['a closed dispatch', { state: 'closed', reason: 'superseded' }, {}],
+    ['an ended dispatch', { state: 'ended', outcome: { status: 'COMMITTED', stage: 'commit', t: Date.now() } }, {}],
+  ]) {
+    const dir = setUp(fields, opts);
+    assert.equal(liveClaim(path.join(dir, '.am', 'demo'), { alive: aliveOnly }), null, name);
+    const r = await run(dir, ['plan', 'demo'], { alive: aliveOnly, waitMs: 10000, pollMs: 20 });
+    assert.equal(r.result.status, 'READY', `${name}: ${r.result.reason}`);
+    assert.equal(r.calls.length, 1, name);
+    assert.deepEqual(evs(events(dir)), ['start', 'end'], name);
+  }
+  // Activity is the latest of dispatch.json, stage.json and progress.jsonl.
+  const dir = setUp({}, { age: AGENT_STALE_MS + 60000 });
+  const tdir = path.join(dir, '.am', 'demo');
+  assert.equal(liveClaim(tdir, { alive: aliveOnly }), null);
+  writeFileSync(path.join(tdir, AGENT_RECORD), '{}');
+  assert.ok(liveClaim(tdir, { alive: aliveOnly }), 'a fresh stage.json keeps the claim live');
+  assert.ok(dispatchActivity(tdir) >= statSync(path.join(tdir, AGENT_RECORD)).mtimeMs);
+  assert.equal(liveClaim(tdir, { alive: aliveOnly, staleMs: -1 }), null);
+  writeFileSync(path.join(tdir, DISPATCH_FILE), '{not json');
+  assert.equal(readDispatch(tdir), null);
+  assert.equal(liveClaim(tdir, { alive: aliveOnly }), null);
 });
