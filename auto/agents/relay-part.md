@@ -18,11 +18,11 @@ You hand one part of an am-auto:relay task to another open Claude Code session o
 
 ## Steps
 1. Run `node "<script>" dispatch <part>`, with `--push` added when push is yes. It prints `{dispatchId, target, message, resume, done, none, error}`.
-   - `error` is set: write one line with it, then `AM_RELAY: error - -`.
-   - `none` is set: write one line with it, then `AM_RELAY: none - -`.
-   - `done` is set (the part has already ended): `AM_RELAY: ended <done.status> <dispatchId>`.
+   - `error` is set: write one line with it, then `AM_RELAY: error - - -`.
+   - `none` is set: write one line with it, then `AM_RELAY: none - - -`.
+   - `done` is set (the part has already ended): `AM_RELAY: ended <done.status> <done.stage|-> <dispatchId>`.
    Otherwise `<id>` is its `dispatchId`.
-2. Unless `resume` is true, send `message` word for word to the session named `target.name` with SendMessage. If the tool cannot be loaded or the send fails, run `node "<script>" close <part> <id> <reason>` with a short reason in double quotes, then write one line with that reason and `AM_RELAY: closed - <id>`.
-3. Run `node "<script>" wait <part> <id>`. It prints `{state, status, stage, reason}`. While `state` is `running`, run it again; after its sixth `running` in a row, end with `AM_RELAY: running - <id>`. Any other state ends it: unless the state is `ended`, first write one line with its `reason`; then `AM_RELAY: <state> <status|-> <id>`, with `status`, or `-` when that is null.
+2. Unless `resume` is true, send `message` word for word to the session named `target.name` with SendMessage. If the tool cannot be loaded or the send fails, run `node "<script>" close <part> <id> <reason>` with a short reason in double quotes, then write one line with that reason and `AM_RELAY: closed - - <id>`.
+3. Run `node "<script>" wait <part> <id>`. It prints `{state, status, stage, reason}`. While `state` is `running`, run it again; after its sixth `running` in a row, end with `AM_RELAY: running - - <id>`. Any other state ends it: unless the state is `ended`, first write one line with its `reason`; then `AM_RELAY: <state> <status|-> <stage|-> <id>`, with `status` and `stage`, each `-` when it is null.
 
-Your reply always ends with exactly one line `AM_RELAY: <state> <status|-> <dispatchId|->` and nothing after it.
+Your reply always ends with exactly one line `AM_RELAY: <state> <status|-> <stage|-> <dispatchId|->` and nothing after it.

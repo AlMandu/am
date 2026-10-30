@@ -494,11 +494,11 @@ test('am-auto:relay hands each part to the relay agent and acts on every state i
   assert.ok(parts.includes('`subagent_type` `am-auto:relay-part` and exactly this prompt: `part <slug>-p<k>; push <yes|no>; script ${CLAUDE_PLUGIN_ROOT}/scripts/agent-stage.mjs`'), 'the relay agent call');
   // The prompt and the result line are the relay agent's (auto/agents/relay-part.md).
   const agent = readFileSync(path.join(AGENTS_DIR, 'relay-part.md'), 'utf8');
-  for (const s of ['`part <slug>; push <yes|no>; script <path>`', '`AM_RELAY: <state> <status|-> <dispatchId|->`']) assert.ok(agent.includes(s), s);
-  assert.ok(parts.includes('`AM_RELAY: <state> <status|-> <dispatchId|->`'), 'the result line');
+  for (const s of ['`part <slug>; push <yes|no>; script <path>`', '`AM_RELAY: <state> <status|-> <stage|-> <dispatchId|->`']) assert.ok(agent.includes(s), s);
+  assert.ok(parts.includes('`AM_RELAY: <state> <status|-> <stage|-> <dispatchId|->`'), 'the result line');
   for (const s of ['ended', 'COMMITTED', 'NOTHING', 'NEEDS_DECISION', 'unable', 'none', 'running', 'closed', 'gone', 'unclaimed', 'stale', 'error', '--part']) assert.ok(parts.includes(`\`${s}\``), s);
   for (const s of [`${cmd} card <slug>-p<k>`, `${cmd} answer <slug>-p<k> <that file>`]) assert.ok(parts.includes(`\`${s}\``), s);
-  for (const s of ['same permission mode', 'could not run stage agents', 'a stage agent may still be running in the receiving session', 'this skill with the parent slug', 'is not that result, so ignore it']) assert.ok(parts.includes(s), s);
+  for (const s of ['same permission mode', 'could not run stage agents', 'a stage agent may still be running in the receiving session', 'this skill with the parent slug', 'is not that result, so ignore it', '`card` ending with exit code 2 (no open card) goes to loop step 3 again, once; a second time stops', 'the stage from the line, or that it is unknown when `-`']) assert.ok(parts.includes(s), s);
   // Every state the relay agent and wait can end with is one this skill names.
   const script = readFileSync(path.join(AUTO, 'scripts', 'agent-stage.mjs'), 'utf8');
   const waitStates = [...script.matchAll(/(?:waitLine\(\{ state: |closeAs\(d, )'([a-z]+)'/g)].map((m) => m[1]);
@@ -705,7 +705,7 @@ test('the am-auto:relay hand-over agent stays pinned and drives only the dispatc
   const { relayMessage } = await import('../auto/scripts/agent-stage.mjs');
   assert.equal(typeof relayMessage, 'function');
   for (const k of ['dispatchId', 'message','resume', 'done', 'none', 'error', 'state', 'status', 'reason', 'running', 'ended', 'target.name']) assert.ok(body.includes(`\`${k}\``), k);
-  for (const s of ['AM_RELAY: error - -', 'AM_RELAY: none - -', 'AM_RELAY: ended <done.status> <dispatchId>', 'AM_RELAY: closed - <id>', 'AM_RELAY: running - <id>', 'AM_RELAY: <state> <status|-> <id>', 'AM_RELAY: <state> <status|-> <dispatchId|->']) assert.ok(body.includes(`\`${s}\``), s);
+  for (const s of ['AM_RELAY: error - - -', 'AM_RELAY: none - - -', 'AM_RELAY: ended <done.status> <done.stage|-> <dispatchId>', 'AM_RELAY: closed - - <id>', 'AM_RELAY: running - - <id>', 'AM_RELAY: <state> <status|-> <stage|-> <id>', 'AM_RELAY: <state> <status|-> <stage|-> <dispatchId|->']) assert.ok(body.includes(`\`${s}\``), s);
   const usage = readFileSync(path.join(AUTO, 'scripts', 'agent-stage.mjs'), 'utf8').split('const USAGE = `')[1].split('`;')[0];
   for (const s of ['dispatch <part> [--push]', 'wait <part> <id>', 'close <part> <id> <reason>']) assert.ok(usage.includes(`node agent-stage.mjs ${s}`), s);
 });
