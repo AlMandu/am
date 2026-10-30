@@ -546,6 +546,9 @@ const itemText = (item) => {
   return item.content.map((c) => (typeof c?.text === 'string' ? c.text : '')).join('\n');
 };
 const newestFirst = (threadId) => ({ threadId, limit: PAGE_LIMIT, sortDirection: 'desc' });
+/** The session's items, newest first; each entry is { turnId, item, ... }, so the turn id is copied into the item. */
+const itemsOf = async (rpc, threadId, deadline) =>
+  (await listAll(rpc, 'thread/items/list', newestFirst(threadId), deadline)).map((e) => ({ ...e?.item, turnId: e?.turnId }));
 
 /** The newest completed turn of the session whose user message starts with the full-instructions header, or null. */
 async function earlierInstructions(rpc, threadId, deadline) {
@@ -554,7 +557,7 @@ async function earlierInstructions(rpc, threadId, deadline) {
   turns.forEach((t, i) => {
     if (statusType(t?.status) === 'completed' && !rank.has(t.id)) rank.set(t.id, i);
   });
-  const items = await listAll(rpc, 'thread/items/list', newestFirst(threadId), deadline);
+  const items = await itemsOf(rpc, threadId, deadline);
   let best = null;
   for (const item of items) {
     if (item?.type !== 'userMessage' || !rank.has(item.turnId) || !itemText(item).startsWith(PEER_HEADERS.full)) continue;
@@ -691,7 +694,7 @@ async function askPeer({ peer, codex, cwd, env, say, agentText, brief, marker, c
       }
       settled = true;
 
-      const items = (await listAll(rpc, 'thread/items/list', newestFirst(threadId), deadline)).filter((i) => i?.turnId === turn);
+      const items = (await itemsOf(rpc, threadId, deadline)).filter((i) => i.turnId === turn);
       const asked = items.filter((i) => i.type === 'userMessage');
       if (asked.length !== 1 || !itemText(asked[0]).includes(marker)) {
         say(`Codex failed: another message joined the request's turn in session ${threadId}; no answer is taken.`);

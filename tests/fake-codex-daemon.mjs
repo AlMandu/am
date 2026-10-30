@@ -81,7 +81,9 @@ export function createDaemon(scenario = {}, { onLog = () => {} } = {}) {
       if (running && running.thread === t && onStart.kind !== 'never' && ++running.reads >= onStart.reads) finish();
       return page(ordered(t.turns.map(({ id, status }) => ({ id, status })), params), params);
     },
-    'thread/items/list': (params) => page(ordered(threadOf(params).turns.flatMap((turn) => turn.items), params), params),
+    // Like the real daemon: each entry wraps the item, and the turn id sits beside it, not inside.
+    'thread/items/list': (params) =>
+      page(ordered(threadOf(params).turns.flatMap((turn) => turn.items.map(({ turnId, ...item }) => ({ turnId, item, startedAtMs: 0, completedAtMs: 0 }))), params), params),
     'turn/start': (params) => {
       const t = threadOf(params);
       const text = params.input?.[0]?.text ?? '';
