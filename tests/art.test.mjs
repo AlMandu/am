@@ -503,7 +503,7 @@ const COMPANY = [
   ['Notion URL', /notion\.(?:so|com)/i],
   ['32-digit hex ID', /\b[0-9a-f]{32}\b/i],
   ['UUID', /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
-  // A personal account must never be named (am-art:ad-execute asks the operator instead).
+  // A personal mail address must never go into the public repository.
   ['mail address', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/],
 ];
 // The README's generic examples (a placeholder user folder, the developer's own checkout), built so this file holds no hit.

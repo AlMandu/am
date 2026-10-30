@@ -1,5 +1,10 @@
 # Changelog
 
+## am-art 0.1.6 (2026-10-30)
+
+- `am-art:ad-execute`(Codex): 첫 생성 전에 로그인된 계정을 보여 주고 회사 계정이 맞는지 묻던 확인을 없앴다. 계정 때문에 생성을 멈추지 않는다. `대기` 모드도 계정 질문 없이 바로 시작한다.
+- Codex 에서는 `codex plugin remove am-art@am-workflow` 뒤 `codex plugin add am-art@am-workflow` 로 다시 설치해야 반영된다.
+
 ## am-util 0.1.4 (2026-10-29)
 
 - `am-util:update-branch`·`am-util:land` 가 Unity 프로젝트에서 더는 에디터를 닫았는지 묻고 기다리지 않는다. 에디터를 켜 둔 채 바로 진행하고, 시작할 때 "끝날 때까지 에디터 창으로 전환하지 말라"는 안내를 한 줄 보여 준다(답을 기다리지 않음). 백업으로 되돌리기도 같다.
