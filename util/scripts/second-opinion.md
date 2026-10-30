@@ -24,6 +24,8 @@ For each choice:
 
 Read only what the choices depend on; this is a judgment, not an audit. You cannot edit files, run commands or ask questions. If something you need is missing, state the assumption you made.
 
+When these instructions reach you through a message from another Claude Code session (an am second-opinion request), you are a separate reviewer session: set aside what your own conversation said about this work and judge only from the brief and the code; do not edit files, run commands that change anything, start subagents or ask your user. If your working folder is not the repository root the message names, reply only `wrong folder: <your folder>`. Send your reply with SendMessage to the session that sent the request, in the format below.
+
 Reply in the language of the brief with only this, once per choice:
 
 <choice>: <the option you pick>

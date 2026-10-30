@@ -707,6 +707,50 @@ test('without Codex, the common rules have two Claude reviewers debate the same 
   assert.match(agent, /This rule does not apply when you run as Claude 1 or through Codex\./);
 });
 
+test('with a person present, the common rules use the newest idle peer sessions as the Claude reviewers', () => {
+  const block = common(read('plan'));
+  // Unattended runs keep the subagent: a claude -p session ends before a reply, and a subagent's replies go to its parent.
+  assert.match(block, /only when a person is in this session to answer \(not in a subagent, not while running without stops, not when your instructions say no human is present\), each Claude reviewer is another open session/);
+  // ListAgents shows no folder, and a name only starts with the folder's name (a worktree's name matches too); its
+  // `waiting` also covers a session held at a permission prompt. `claude agents --json` gives cwd and idle status.
+  assert.ok(block.includes('Run `claude agents --json` (2-minute timeout; if it fails, use the subagent)'));
+  assert.match(block, /rows with `kind` `interactive`, `status` `idle` \(not `waiting`, which can be a pending prompt\) and `cwd` equal to the repository root \(ignoring case on Windows\), newest `startedAt` first/);
+  assert.match(block, /asking the user to open that many new Claude Code sessions in this repository and leave them idle, and wait for the answer; after a yes, list again and go on, after a no, use the subagent/);
+  // auto/ and util/ ship the instructions as scripts/second-opinion.md; the orchestrator ships neither.
+  assert.ok(block.includes('`${CLAUDE_PLUGIN_ROOT}/agents/second-opinion.md` (else `${CLAUDE_PLUGIN_ROOT}/scripts/second-opinion.md`; with neither, use the subagent)'));
+  assert.match(block, /with `notify_when_idle`/);
+  assert.match(block, /Later rounds go to the same sessions/);
+  // The peer rule comes after the subagent rule it replaces, so the order pinned above still holds.
+  assert.ok(block.indexOf('Then send the brief to the am:second-opinion subagent') < block.indexOf('Peer sessions instead of the subagent'));
+  const agent = readFileSync(AGENT, 'utf8');
+  assert.match(agent, /set aside what your own conversation said about this work and judge only from the brief and the code/);
+  assert.match(agent, /reply only `wrong folder: <your folder>`/);
+  assert.match(agent, /Send your reply with SendMessage to the session that sent the request/);
+});
+
+test('with a person present, the common rules ask an open Codex session with --peer, as the script reads it', async () => {
+  const { EXIT_NO_SESSION } = await import('../plugin/scripts/codex-opinion.mjs');
+  const block = common(read('plan'));
+  // The script only reads the files and the Codex daemon, so the tool condition of the Claude sessions does not apply.
+  assert.match(block, /Codex session instead of a new `codex exec`: under the same person condition \(the tools are not needed\), run the script with `--peer` after the brief file/);
+  // The card says what the user gives up: the turn stays in that session's history and runs with its settings.
+  assert.equal(EXIT_NO_SESSION, 3);
+  assert.match(block, /Exit code 3 means there is none: give a decision card asking the user to open a Codex session in this repository and leave it idle, saying that the request and the answer stay in that session's history and run with its permissions/);
+  // A first-time user gets one card, not one per reviewer kind.
+  assert.match(block, /one card together with the Claude sessions when those are also too few/);
+  // A no lasts for the task, so the summary of every round does not ask again.
+  assert.match(block, /after a yes, run it again with `--peer`, after a no or a second exit code 3, leave `--peer` out until this task ends/);
+  // A later round stays with the session that answered; without that line it never meets a new session mid-debate.
+  assert.match(block, /Later rounds pass `--peer=<id>` with the id from the previous run's `Codex session: <id>` line, or no `--peer` when that line was missing/);
+  // The full command is written once, so the order tests above still find the first run.
+  assert.equal(block.split('codex-opinion.mjs" <brief file>`').length, 2);
+  assert.ok(block.indexOf('Peer sessions instead of the subagent') < block.indexOf('Codex session instead of a new `codex exec`'));
+  // The script side of the same words: change the rule, the script and this test together.
+  const script = readFileSync(path.resolve(ROOT, '..', 'scripts', 'codex-opinion.mjs'), 'utf8');
+  assert.ok(script.includes('`Codex session: ${'));
+  assert.ok(script.includes("const USAGE = 'usage: node codex-opinion.mjs <brief .md file under .am/> [--peer | --peer=<Codex session id>]';"));
+});
+
 test("the common rules pass the script's Claude reviewer line to the subagent, only from the first line", async () => {
   const { reviewerLine } = await import('../plugin/scripts/codex-opinion.mjs');
   const block = common(read('plan'));
