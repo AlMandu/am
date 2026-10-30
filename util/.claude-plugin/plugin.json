@@ -1,6 +1,6 @@
 {
   "name": "am-util",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "지금 브랜치를 대상 브랜치에 합쳐 push 한 뒤 합친 커밋으로 옮기는 land. 커밋하지 않은 변경은 보존한다. 지금 브랜치를 최신 기준 브랜치 위로 옮기는 update-branch. 이 둘은 Claude Code·Codex 공용. 아티스트용 git 상태·선별 커밋·push 도우미 git-sync 는 Claude Code 전용.",
   "author": { "name": "Seonghun" },
   "homepage": "https://github.com/AlMandu/am",

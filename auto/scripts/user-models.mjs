@@ -5,7 +5,8 @@
 // Keys starting with `_` are notes, allowed at the top and inside model/effort, and dropped from the result.
 // Order, model and effort apart: stage key, then default, then built-in; the two opinion keys skip default.
 // second-opinion takes OPINION_MODELS; codex-opinion takes CODEX_MODEL names and CODEX_EFFORTS.
-// A broken file is an error (one English line `<file>: <problem>`), never a silent fallback.
+// A broken file is an error (one English line `<file>: <problem>`), never a silent fallback; the callers
+// decide what follows (the reviewer scripts print it and go on with built-in values).
 // Reads no environment variable itself (the caller passes env). Node only, no dependencies.
 // frontmatterModels reads a plugin file's (agent, skill) built-in values; the orchestrator's copy lacks it (it uses STAGE_DEFAULTS).
 

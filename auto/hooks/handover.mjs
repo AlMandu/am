@@ -106,7 +106,7 @@ export function findAm(list = pluginList) {
 }
 
 // The lowest am version am-auto relies on. Raise it in the am commit that changes a shared contract; never above am's plugin.json version.
-export const AM_MIN_VERSION = '0.1.68';
+export const AM_MIN_VERSION = '0.1.69';
 const OWN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = /^\d+(\.\d+)*$/;
 const UPDATE = 'run `claude plugin marketplace update am-workflow`, then `claude plugin update am@am-workflow`, and start a new session';
