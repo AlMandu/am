@@ -30,6 +30,7 @@ Before editing files in an area below, read its entry in `CLAUDE.full.md`; keep 
 - `models.json`, `scripts/models.mjs`, skill frontmatter -> Rules, `Model and effort:` and `One source for model and effort:`
 - `plugin/scripts/user-files.mjs`, `user-models.mjs`, `user-settings.mjs`, `plugin/hooks/hook.mjs` -> Rules, `User files:`
 - am-auto:multi's hand-over hook (`auto/hooks/handover.mjs`) -> Rules, `Hand-over hook:`
+- am-auto:relay (`auto/skills/relay/`, `auto/flow/relay-part.md`, `auto/agents/relay-part.md`), `dispatch.json` and the dispatch commands of `auto/scripts/agent-stage.mjs` -> Rules, `Relay:`
 - `auto/scripts/stage.mjs`, `memory-guard.mjs`, `proc-tree.mjs`, solo mode (am-auto:one) -> Rules, `Stage sessions:`
 - `progress.jsonl`, `auto/scripts/progress.mjs` -> Rules, `Progress news:`
 - `auto/scripts/sessions.mjs`, the am-auto:sessions skill -> Rules, `Sessions report:`

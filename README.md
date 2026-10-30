@@ -19,6 +19,8 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 `am-auto:agent` 도 같은 일을 하되, Claude Code 에서 단계마다 별도 `claude` 세션 대신 지금 세션의 서브에이전트(단계 에이전트)를 띄우고, 단계가 끝날 때마다 채팅에 한 줄(단계와 상태)만 남깁니다. 큰 작업은 `am-auto:one` 처럼 부분으로 나눠 돕니다.
 
+`am-auto:relay` 는 `am-auto:agent` 와 같되, 구현 2회 이상인 큰 작업의 부분을 이 저장소에 열어 두고 쉬게 둔 다른 Claude Code 세션에 차례로 맡기고, 이 세션에는 부분마다 한 줄만 남습니다(아래 "am-auto:relay").
+
 그 밖의 명령 넷은 필요할 때만 씁니다.
 
 - `am-util:land`(am-util 플러그인, 따로 설치): 지금 브랜치를 대상 브랜치(생략하면 원격 기본 브랜치)에 합쳐 원격에 push 한 뒤, 지금 브랜치를 합친 커밋으로 옮깁니다. 커밋하지 않은 변경은 그대로 두며, 대상 쪽 변경과 겹치면 옮기지 않고 알립니다. 강제 push 는 하지 않습니다.
@@ -49,7 +51,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 - 서브에이전트·2차 의견: 서브에이전트는 작업 세션이 따로 띄우는 보조 AI 실행입니다. am 의 2차 의견은 대화를 보지 못한 서브에이전트가 기술 선택을 따로 고르는 장치입니다.
 - effort: 모델이 답하기 전에 얼마나 깊이 생각할지 정하는 값(`medium`, `high` 등).
 - 단계 세션: Claude Code 에서 `am-auto:multi` 가 계획·구현·점검 같은 단계마다 새로 띄우는 별도 `claude` 세션.
-- 단계 에이전트: Claude Code 에서 `am-auto:agent` 이 단계마다 지금 세션 안에 띄우는 서브에이전트(`am-auto:stage-plan`·`am-auto:stage-do`·`am-auto:stage-check`·`am-auto:stage-commit`·`am-auto:stage-commit-push`). am-auto 를 설치하면 `/agents` 목록에 보입니다.
+- 단계 에이전트: Claude Code 에서 `am-auto:agent`·`am-auto:relay`(와 relay 가 부분을 맡긴 세션)가 단계마다 그 세션 안에 띄우는 서브에이전트(`am-auto:stage-plan`·`am-auto:stage-do`·`am-auto:stage-check`·`am-auto:stage-commit`·`am-auto:stage-commit-push`). am-auto 를 설치하면 `/agents` 목록에 보이고, relay 의 전달 에이전트 `am-auto:relay-part` 도 함께 보입니다.
 
 ## 준비물
 
@@ -67,7 +69,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 | 플러그인 | 담긴 명령 | 도구 |
 |---|---|---|
 | `am` | `am:plan`·`am:do`·`am:check`·`am:commit`, 커밋 게이트, 2차 의견 | Claude Code·Codex |
-| `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
+| `am-auto` | `am-auto:multi`·`am-auto:one`·`am-auto:agent`·`am-auto:relay`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
 | `am-util` | `am-util:land`·`am-util:update-branch`, `am-util:git-sync`(Claude Code 전용) | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
 | `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:ad-auto`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
@@ -149,6 +151,8 @@ Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 �
 | 멈춘 한 세션 진행 이어 가기 | `/am-auto:one <slug>` | Claude Code 전용 |
 | 요청 하나로 단계 에이전트가 계획부터 커밋까지 | `/am-auto:agent 0으로 나누면 오류 문구를 보여 줘` | Claude Code 전용 |
 | 멈춘 단계 에이전트 진행 이어 가기 | `/am-auto:agent <slug>` | Claude Code 전용 |
+| 큰 작업의 부분을 열어 둔 다른 세션에 차례로 맡기기 | `/am-auto:relay 0으로 나누면 오류 문구를 보여 줘` | Claude Code 전용 |
+| 멈춘 relay 진행 이어 가기 | `/am-auto:relay <slug>` | Claude Code 전용 |
 | 지금 브랜치를 기본 브랜치에 합쳐 push | `/am-util:land [브랜치]` | `$am-util:land [브랜치]` |
 | 지금 브랜치를 최신 기본 브랜치 위로 옮기기 | `/am-util:update-branch [브랜치]` | `$am-util:update-branch [브랜치]` |
 | update-branch 전 자리로 되돌리기 | `/am-util:update-branch backup/<브랜치>-<시각>` | `$am-util:update-branch backup/<브랜치>-<시각>` |
@@ -320,6 +324,27 @@ am-auto 플러그인의 명령입니다(Claude Code 전용).
 - 큰 작업(구현 2회 이상)은 `am-auto:one` 처럼 `.am/<slug>-p<k>/` 부분으로 나눠 차례로 돌고, 부분마다 커밋합니다.
 - 사용자 모델 파일의 `plan`·`do`·`check`·`commit` 키가 단계 에이전트에도 적용됩니다.
 - 서브에이전트나 셸 도구를 쓸 수 없는 환경에서는 `am-auto:multi` 처럼 한 세션으로 진행합니다.
+
+### `am-auto:relay`: 큰 작업의 부분을 열어 둔 다른 세션에 맡기기
+
+am-auto 플러그인의 명령입니다(Claude Code 전용).
+
+`am-auto:relay` 는 `am-auto:agent` 와 같은 규칙으로 돌고, 다음만 다릅니다.
+
+- 규모가 1(구현 1회)이면 `am-auto:agent` 와 똑같이 돕니다. 구현 2회 이상이면 부분마다 전달 에이전트(`am-auto:relay-part`)가 받는 세션을 골라 메시지로 부분을 맡기고, 그 부분이 끝날 때까지 기록을 보며 기다립니다. 이 세션에는 계획 단계와 부분마다 한 줄씩만 남습니다. 부분은 한 번에 하나씩 차례로 돕니다.
+- 받는 세션 고르기: `claude agents --json` 이 보여 주는 세션 가운데 작업 폴더가 이 저장소이고 쉬고 있는(`idle`) 대화형 세션을 고릅니다. 이 세션 자신, 다른 전달이 맡긴 세션, 이 저장소에서 단계가 열려 있는 세션은 빼고, 이름이 다른 세션과 겹치지 않는 것만 씁니다. 같은 작업의 다른 부분을 아직 맡지 않은 세션을 먼저, 그다음 가장 최근에 연 세션을 먼저 씁니다.
+- 받는 세션 화면: 그 부분의 계획·구현·점검·커밋이 단계 에이전트로 차례로 돌고, 그 세션 대화에는 단계마다 몇 줄만 쌓입니다. 받는 세션은 보낸 쪽에 답장하지 않고 사용자에게 묻지도 않으며, 끝난 결과를 기록 파일 `.am/<slug>-p<k>/dispatch.json` 에 남깁니다.
+- 받는 세션 준비:
+  - 이 세션과 같은 권한 모드로 열어 둡니다. 다르면 메시지가 그 세션의 승인 대기에 묶일 수 있고, 15분 동안 부분을 잡지 않으면 이 세션은 이유를 말하고 멈춥니다.
+  - 다른 세션의 대화는 비울 방법이 없으므로, 부분 수만큼 세션을 열어 두면 부분마다 새 대화로 돕니다. 모자라면 이미 부분을 맡았던 세션이 다음 부분도 맡습니다.
+  - 받는 세션이 직접 돌리는 명령(전달 잡기, 단계 시작·끝, 결과 기록)은 am-auto 의 `agent-stage.mjs` 스크립트이고 자동으로 승인되지 않습니다. Claude Code 권한 설정(`/permissions`)에서 이 스크립트 실행을 허용해 두세요. 허용하지 않으면 그 세션에 확인 창이 뜨고, 답할 때까지 그 부분이 멈춥니다. 단계 에이전트의 명령은 `am-auto:agent` 처럼 훅이 확인합니다.
+- 같은 부분이 두 곳에서 돌지 않음: 받는 세션이 부분을 잡고 살아 있는 동안 그 부분의 단계를 다른 실행(`am-auto:agent`·`am-auto:multi`·`am-auto:one`)이 시작하면, 맡은 세션 이름과 함께 바로 거절됩니다.
+- 결과에 따라:
+  - 사용자 결정이 필요하면 받는 세션은 묻지 않고 멈춥니다. 이 세션이 결정 카드로 묻고 답을 계획 문서에 적은 뒤 그 부분을 다시 맡깁니다.
+  - 쉬는 세션이 없거나 받는 세션이 단계 에이전트를 돌릴 수 없으면, 같은 권한 모드로 세션을 하나 더 열지 묻는 결정 카드를 보여 줍니다. 열었다고 답하면 다시 찾고, 열지 않겠다고 하면 그 부분을 이 세션에서 단계 에이전트로 돌립니다.
+  - 오래 걸리면 아직 돈다는 한 줄을 남기고 계속 기다립니다.
+- 멈추는 경우: 메시지를 보내지 못함, 받는 세션이 닫힘, 15분 동안 부분을 잡지 않음, 20분 동안 아무 진행이 없음, 그 밖에 부분이 커밋 없이 끝남. 이때 이유를 말하고 멈추며, 받는 세션에서 이미 돌던 단계 에이전트는 멈추지 않을 수 있습니다. 같은 명령에 처음 작업의 slug 를 주면(`am-auto:relay <slug>`) 남은 부분부터 이어 갑니다.
+- 터미널을 닫으면 이 세션의 진행이 멈추는 것, 훅의 허용 목록, 사용자 모델 파일의 `plan`·`do`·`check`·`commit` 키 적용은 `am-auto:agent` 와 같습니다. 모델과 effort 는 아래 "모델과 effort 기본값" 표에 있습니다.
 
 ### `am-util:land`: 지금 브랜치를 대상 브랜치에 합쳐 push
 
@@ -718,14 +743,14 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 저장소 루트가 마켓플레이스이고, 플러그인 넷이 각자의 폴더에 있습니다. 설치하면 플러그인마다 따로 복사되므로, 여러 플러그인이 쓰는 파일은 폴더마다 사본을 둡니다.
 
 - `plugin/`(am): 스킬 넷(`plan`·`do`·`check`·`commit`), 2차 의견 서브에이전트(`agents/second-opinion.md`), 커밋 게이트 훅(`hooks/hook.mjs`·`gate.mjs`·`hooks.json`), Codex 2차 의견 스크립트(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)과 PC 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트(`user-models.mjs`·`user-settings.mjs`), 두 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트(`user-files.mjs`).
-- `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 넷(`multi`·`one`·`agent`·`sessions`), 세 실행 명령이 실행 중에 읽는 진행 규칙 글(`flow/`, 스킬이 아니라 명령 목록에 나오지 않음), 단계 에이전트 다섯(`agents/stage-*.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`)과 오케스트레이터 넘김 훅(`handover.mjs`), 단계 세션 스크립트(`stage.mjs`), 단계 에이전트 시작·끝 스크립트(`agent-stage.mjs`), 진행 소식(`progress.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 남은 메모리 확인(`memory-guard.mjs`), 남은 프로세스 정리(`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
+- `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 다섯(`multi`·`one`·`agent`·`relay`·`sessions`), 네 실행 명령과 relay 의 받는 세션이 실행 중에 읽는 진행 규칙 글(`flow/`, 스킬이 아니라 명령 목록에 나오지 않음), 단계 에이전트 다섯(`agents/stage-*.md`)과 relay 의 전달 에이전트(`agents/relay-part.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`)과 오케스트레이터 넘김 훅(`handover.mjs`), 단계 세션 스크립트(`stage.mjs`), 단계 에이전트 시작·끝과 relay 부분 전달 스크립트(`agent-stage.mjs`), 진행 소식(`progress.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 남은 메모리 확인(`memory-guard.mjs`), 남은 프로세스 정리(`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
 - `util/`(am-util): 스킬 `land`·`update-branch`·`git-sync`, git-sync 의 패턴 목록 스크립트(`git-sync-settings.mjs`).
 - `orchestrator/`(am-orchestrator): 아래 오케스트레이터 플러그인.
 - 사본: `plugin/` 의 게이트·2차 의견·사용자 설정 파일 스크립트를 `auto/`·`util/` 에 복사해 둡니다. `plugin/` 원본만 고치고 `node scripts/sync-shared.mjs` 로 반영합니다(`--check` 는 어긋난 사본만 알려 줍니다).
 
 플러그인을 고치는 사람은 저장소 주소 대신 로컬 경로(예: `C:\Projects\am`)로 설치하면, 커밋하지 않은 수정도 바로 시험할 수 있습니다.
 
-모든 SKILL.md 가 함께 쓰는 공통 규칙 블록은 저장소 루트 `shared/common.md` 원본만 고치고 `node scripts/skills.mjs` 로 반영합니다(`node scripts/skills.mjs --check` 는 어긋난 파일만 알려 줍니다). 세 실행 명령이 함께 쓰는 진행 규칙은 `auto/flow/` 의 글을 바로 고칩니다.
+모든 SKILL.md 가 함께 쓰는 공통 규칙 블록은 저장소 루트 `shared/common.md` 원본만 고치고 `node scripts/skills.mjs` 로 반영합니다(`node scripts/skills.mjs --check` 는 어긋난 파일만 알려 줍니다). 네 실행 명령이 함께 쓰는 진행 규칙은 `auto/flow/` 의 글을 바로 고칩니다.
 
 커밋 전 확인 명령(테스트·`claude plugin validate`)은 [CLAUDE.md](CLAUDE.md) 의 "Before committing" 에 있습니다.
 
