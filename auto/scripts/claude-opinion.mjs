@@ -3,12 +3,13 @@
 // without the calling session's context. The body of scripts/second-opinion.md and the brief go in
 // on stdin, Claude runs with fixed flags (Read, Grep and Glob only, no MCP servers, no skills), on the
 // model and effort of the second-opinion key of the user models file, else the subagent's frontmatter,
-// and its answer is printed under `Claude's answer:`. `--as N` names the reviewer Claude N; `--as 2`
-// also asks it to argue against its first leaning before it picks.
+// and its answer is printed under `Claude's answer:`. `--as N` names the reviewer Claude N; the rule
+// for Claude 2 is in the instructions' body.
 // Called by the am skills:
 //   node claude-opinion.mjs <brief .md file under .am/> [--as 1|2]
-// Exit codes: 0 answer printed, 1 Claude failed, bad input or an unusable user models file
-// (reason printed), 2 Claude is not installed. Node only, no dependencies.
+// Exit codes: 0 answer printed, 1 Claude failed or bad input (reason printed), 2 Claude is not
+// installed; an unusable user models file prints a warning and the built-in model and effort are used.
+// Node only, no dependencies.
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -36,10 +37,6 @@ const PREAMBLE = [
 export const ANSWER_HEADER = "Claude's answer:";
 // The brief check of codex-opinion.mjs, not a copy, so the two scripts accept the same briefs.
 export { checkBrief };
-export const CONTRARIAN = [
-  'Before you pick, for each choice first write the strongest argument against the option you lean toward and the best case for another option, then decide.',
-  'Keep both inside the reply format below, in the Why line of that choice.',
-].join(' ');
 
 /** The line that tells a reviewer which of the two Claude reviewers it is. */
 export const reviewerName = (as) => `You are Claude ${as}, one of two Claude reviewers that answer this brief independently.`;
@@ -62,12 +59,11 @@ export function parseArgs(argv) {
   return { brief, as };
 }
 
-/** The prompt Claude gets: the reviewer's name and the contrarian rule when asked, a short note, the instructions without frontmatter, the brief. */
+/** The prompt Claude gets: the reviewer's name when asked, a short note, the instructions without frontmatter, the brief. */
 export function buildPrompt(agentText, brief, as = null) {
   const body = agentText.replace(FRONTMATTER, '').trim();
   const head = [];
   if (as) head.push(reviewerName(as));
-  if (as === '2') head.push(CONTRARIAN);
   head.push(PREAMBLE);
   return `${head.join('\n\n')}\n\n${body}\n\n# Brief\n\n${brief.trim()}\n`;
 }
@@ -165,10 +161,11 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, timeo
     return 1;
   }
   const file = userModelsFile(env);
-  const cfg = readUserModels(file);
+  let cfg = readUserModels(file);
+  // A broken user models file does not stop the reviewer: it runs on the built-in model and effort.
   if (cfg.error) {
-    say(`the user model settings cannot be used (fix or remove the file): ${cfg.error}`);
-    return 1;
+    say(`the user model settings cannot be used, so the reviewer runs on its built-in model and effort (fix or remove the file): ${cfg.error}`);
+    cfg = { model: {}, effort: {} };
   }
   const builtin = frontmatterModels(agentFile);
   if (builtin.error) {

@@ -6,8 +6,9 @@
 // `Codex's answer:`, after a `Claude reviewer: …` line when the second-opinion key changes the reviewer.
 // Called by the common rules of the am skills:
 //   node codex-opinion.mjs <brief .md file under .am/>
-// Exit codes: 0 answer printed, 1 Codex failed, bad input or an unusable user models file
-// (reason printed), 2 Codex is not installed. Node only, no dependencies.
+// Exit codes: 0 answer printed, 1 Codex failed, bad input or an unusable user models file while
+// Codex is installed (reason printed), 2 Codex is not installed (after the reason a broken user
+// models file gives). Node only, no dependencies.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
@@ -152,13 +153,11 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, timeo
     return 1;
   }
   // The user models file comes first, so the Claude reviewer line shows even on a PC without Codex.
+  // A broken file is reported, but only after the install check decides the exit code.
   const file = userModelsFile(env);
   const cfg = readUserModels(file);
-  if (cfg.error) {
-    say(`the user model settings cannot be used (fix or remove the file): ${cfg.error}`);
-    return 1;
-  }
-  if (cfg.model['second-opinion'] !== undefined || cfg.effort['second-opinion'] !== undefined) {
+  const cfgError = cfg.error ? `the user model settings cannot be used (fix or remove the file): ${cfg.error}` : null;
+  if (!cfgError && (cfg.model['second-opinion'] !== undefined || cfg.effort['second-opinion'] !== undefined)) {
     const builtin = frontmatterModels(agentFile);
     if (builtin.error) {
       say(`the reviewer's built-in model and effort cannot be read: ${builtin.error}`);
@@ -167,11 +166,17 @@ export async function main(argv, { cwd = process.cwd(), env = process.env, timeo
     const own = resolveOwn(cfg, 'second-opinion', builtin);
     if (own.model !== builtin.model || own.effort !== builtin.effort) say(reviewerLine(own, file));
   }
-  // Then the install check: on a PC without Codex the session must see "not installed", whatever the brief.
+  // Then the install check: on a PC without Codex the session must see "not installed", whatever the
+  // brief or the user models file, so it still runs the two Claude reviewers.
   const codex = findCodex(env);
   if (!codex) {
+    if (cfgError) say(cfgError);
     say('Codex is not installed: no codex command on PATH.');
     return 2;
+  }
+  if (cfgError) {
+    say(cfgError);
+    return 1;
   }
   const bad = checkBrief(argv[0], cwd);
   if (bad) {

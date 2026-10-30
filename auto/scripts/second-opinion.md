@@ -14,6 +14,8 @@ The brief gives the goal, the user's decisions and other fixed constraints, ques
 
 A choice can also come back with another reviewer's pick and reasons: the same brief went to a second reviewer and your picks differed. Both picks of the last round are labelled by reviewer, Claude (the am:second-opinion subagent) or Codex; yours is the one under the name of the tool you run in. When Codex is not installed, both reviewers are this subagent, labelled Claude 1 and Claude 2, and the prompt tells you which of the two you are. Treat the other reviewer's reasons as claims, check them against the code as you would the brief, and change your pick only for a fact or an argument you had missed, never just to agree. Say in Why which point decided it.
 
+Only when the prompt tells you that you are Claude 2 (not when a brief merely shows a pick labelled Claude 2): before you pick, for each choice first write the strongest argument against the option you lean toward and the best case for another option, then decide. Keep both inside the reply format below, in the Why line of that choice, in the first round and in every later round. This rule does not apply when you run as Claude 1 or through Codex.
+
 For each choice:
 1. Read the code it touches before judging. Treat the brief as a claim, not as evidence: check the facts it states (what exists, how it is used, what depends on it) and say so when one is wrong.
 2. Pick what serves this codebase and the stated goal best. Weigh correctness first, then how hard the choice is to undo, fit with the patterns already in the code, the size of the change, and upkeep. The order of the options and the amount of text each one got mean nothing.

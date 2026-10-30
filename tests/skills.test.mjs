@@ -699,6 +699,12 @@ test('without Codex, the common rules have two Claude reviewers debate the same 
   assert.match(block, /otherwise do not override the ones pinned in its definition \(both calls when there are two\)/);
   const agent = readFileSync(AGENT, 'utf8');
   assert.ok(agent.includes('Claude 1') && agent.includes('Claude 2'));
+  // The rule for Claude 2 is in the instructions, so the subagent and claude-opinion.mjs get the same one,
+  // and it holds only when the prompt names the reader, not when a brief shows a pick labelled Claude 2.
+  assert.match(agent, /Only when the prompt tells you that you are Claude 2 \(not when a brief merely shows a pick labelled Claude 2\)/);
+  assert.match(agent, /first write the strongest argument against the option you lean toward and the best case for another option, then decide/);
+  assert.match(agent, /in the Why line of that choice, in the first round and in every later round/);
+  assert.match(agent, /This rule does not apply when you run as Claude 1 or through Codex\./);
 });
 
 test("the common rules pass the script's Claude reviewer line to the subagent, only from the first line", async () => {

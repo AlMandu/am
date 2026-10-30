@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANSWER_HEADER, CONTRARIAN, buildPrompt, checkBrief, claudeArgs, main, parseArgs, reviewerName } from '../auto/scripts/claude-opinion.mjs';
+import { ANSWER_HEADER, buildPrompt, checkBrief, claudeArgs, main, parseArgs, reviewerName } from '../auto/scripts/claude-opinion.mjs';
 import { MAX_BRIEF_BYTES, checkBrief as codexCheckBrief } from '../auto/scripts/codex-opinion.mjs'; // the copy claude-opinion.mjs imports
 import { EMPTY_MCP_CONFIG } from '../auto/scripts/stage.mjs';
 import { FRONTMATTER, OPINION_MODELS, USER_EFFORTS, frontmatterModels } from '../plugin/scripts/user-models.mjs';
@@ -18,6 +18,9 @@ const FAKE = path.join(here, 'fake-claude.mjs');
 const WIN = process.platform === 'win32';
 const REVIEWER = frontmatterModels(AGENT);
 const BODY = readFileSync(AGENT, 'utf8').replace(FRONTMATTER, '').trim();
+// The start of the instructions' rule for Claude 2; it lives in the body, never in the prompt's head.
+const CLAUDE2_RULE = 'Only when the prompt tells you that you are Claude 2';
+const PREAMBLE_START = 'You are the second opinion of the am workflow, run as a separate Claude session';
 
 const bases = [];
 after(() => {
@@ -81,11 +84,12 @@ test('answer: the fixed read-only flags on the reviewer frontmatter values, an e
   assert.ok(!existsSync(path.dirname(mcpFile)), 'temporary folder removed');
   assert.equal(c.env.DISABLE_AUTOUPDATER, '1');
   assert.equal(c.env.FORCE_PROMPT_CACHING_5M, '1');
-  assert.ok(c.stdin.startsWith('You are the second opinion of the am workflow, run as a separate Claude session'), c.stdin.slice(0, 120));
+  assert.ok(c.stdin.startsWith(PREAMBLE_START), c.stdin.slice(0, 120));
   assert.ok(c.stdin.includes(BODY), 'second-opinion.md body');
   assert.ok(!c.stdin.includes(`model: ${REVIEWER.model}`), 'frontmatter left out');
   assert.ok(c.stdin.endsWith('# Brief\n\n## Choices\n1. Cache: A or B\n'));
-  assert.ok(!c.stdin.includes(CONTRARIAN));
+  assert.ok(BODY.includes(CLAUDE2_RULE), 'the rule for Claude 2 is in the body');
+  assert.equal(c.stdin.split(CLAUDE2_RULE).length, 2, 'no rule line outside the body');
 });
 
 test('claudeArgs: exact flags, only known model and effort values', () => {
@@ -114,16 +118,27 @@ test('user file second-opinion values go into the flags; default is ignored; no 
   assert.deepEqual(c2.argv, claudeArgs(c2.argv[c2.argv.indexOf('--mcp-config') + 1], REVIEWER));
 });
 
-test('a bad or broken user file: exit 1 with the reason and no claude call, even without Claude', async () => {
+test('a bad or broken user file: a warning, then the built-in model and effort; without Claude, not installed', async () => {
+  const warning = (file) => `the user model settings cannot be used, so the reviewer runs on its built-in model and effort (fix or remove the file): ${file}`;
   for (const text of ['{"model":{"second-opinion":"claude-opus-5-5"}}', '{"effort":{"second-opinion":"minimal"}}', 'not json']) {
-    for (const empty of [false, true]) {
-      const t = setup();
-      const file = userFile(t, text);
-      const r = await call(t, [BRIEF], empty ? { pathDir: t.empty } : {});
-      assert.equal(r.code, 1, r.text);
-      assert.ok(r.text.startsWith(`the user model settings cannot be used (fix or remove the file): ${file}`), r.text);
-      assert.deepEqual(calls(t), []);
-    }
+    const t = setup();
+    const file = userFile(t, text);
+    const r = await call(t, [BRIEF]);
+    assert.equal(r.code, 0, r.text);
+    assert.ok(r.text.startsWith(warning(file)), r.text);
+    assert.ok(r.text.includes(`\n${ANSWER_HEADER}\n`), r.text);
+    const cs = calls(t);
+    assert.equal(cs.length, 1, text);
+    assert.deepEqual(cs[0].argv, claudeArgs(cs[0].argv[cs[0].argv.indexOf('--mcp-config') + 1], REVIEWER));
+
+    const t2 = setup();
+    const file2 = userFile(t2, text);
+    const r2 = await call(t2, [BRIEF], { pathDir: t2.empty });
+    assert.equal(r2.code, 2, r2.text);
+    const lines = r2.text.split('\n');
+    assert.ok(lines[0].startsWith(warning(file2)), r2.text);
+    assert.equal(lines[1], 'Claude is not installed: no claude command on PATH.');
+    assert.deepEqual(calls(t2), []);
   }
 });
 
@@ -164,19 +179,19 @@ test('bad arguments: usage and exit 1 before claude starts', async () => {
   assert.deepEqual(parseArgs([b, '--as', '2']), { brief: b, as: '2' });
 });
 
-test('--as: the name line for 1 and 2, the contrarian rule only for 2', async () => {
+test('--as: the name line for 1 and 2 right before the note; the same body, with the rule for Claude 2, for all', async () => {
   const t = setup();
   for (const argv of [[BRIEF], [BRIEF, '--as', '1'], [BRIEF, '--as', '2']]) assert.equal((await call(t, argv)).code, 0);
   const [none, one, two] = calls(t);
   assert.ok(!none.stdin.includes('You are Claude '), 'no name line without --as');
-  assert.ok(one.stdin.startsWith(`${reviewerName('1')}\n\n`));
-  assert.ok(!one.stdin.includes(CONTRARIAN));
-  assert.ok(two.stdin.startsWith(`${reviewerName('2')}\n\n${CONTRARIAN}\n\n`));
+  assert.ok(one.stdin.startsWith(`${reviewerName('1')}\n\n${PREAMBLE_START}`));
+  assert.ok(two.stdin.startsWith(`${reviewerName('2')}\n\n${PREAMBLE_START}`));
   for (const c of [none, one, two]) {
     assert.ok(c.stdin.includes(BODY));
+    assert.equal(c.stdin.split(CLAUDE2_RULE).length, 2, 'the rule only once, in the body');
     assert.ok(c.stdin.endsWith('# Brief\n\n## Choices\n1. Cache: A or B\n'));
   }
-  assert.equal(buildPrompt('---\nmodel: x\n---\nbody\n', 'b', '2'), `${reviewerName('2')}\n\n${CONTRARIAN}\n\n${buildPrompt('body', 'b').split('\n\n')[0]}\n\nbody\n\n# Brief\n\nb\n`);
+  assert.equal(buildPrompt('---\nmodel: x\n---\nbody\n', 'b', '2'), `${reviewerName('2')}\n\n${buildPrompt('body', 'b').split('\n\n')[0]}\n\nbody\n\n# Brief\n\nb\n`);
 });
 
 test('claude not on PATH: exit 2 and nothing runs, whatever the brief', async () => {

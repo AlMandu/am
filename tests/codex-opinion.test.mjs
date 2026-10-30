@@ -185,14 +185,17 @@ test('a second-opinion value that differs from the built-in one puts the Claude 
   assert.equal((await call(same, ['.am/x/brief.md'])).text.split('\n')[0], ANSWER_HEADER, 'built-in values only: no line');
 });
 
-test('a broken user file: exit 1 with the reason and no codex call, even without Codex', async () => {
+test('a broken user file: the reason, then exit 1 with Codex or not installed and exit 2 without it; no codex call', async () => {
   for (const text of ['{"model":{"plan":1}}', 'not json']) {
     for (const empty of [false, true]) {
       const t = setup();
       const file = userFile(t, text);
       const r = await call(t, ['.am/x/brief.md'], empty ? { pathDir: t.empty } : {});
-      assert.equal(r.code, 1, r.text);
-      assert.ok(r.text.startsWith(`the user model settings cannot be used (fix or remove the file): ${file}`), r.text);
+      assert.equal(r.code, empty ? 2 : 1, r.text);
+      const lines = r.text.split('\n');
+      assert.ok(lines[0].startsWith(`the user model settings cannot be used (fix or remove the file): ${file}`), r.text);
+      if (empty) assert.equal(lines[1], 'Codex is not installed: no codex command on PATH.');
+      else assert.equal(lines.length, 2, r.text);
       assert.deepEqual(calls(t), []);
     }
   }
