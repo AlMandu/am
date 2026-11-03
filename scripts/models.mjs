@@ -21,13 +21,13 @@ const MODEL = {
 };
 const ENTRIES = {
   am: { plan: 'alias', do: 'alias', check: 'alias', commit: 'alias', 'second-opinion': 'alias', 'codex-opinion': 'codex' },
-  'am-auto': { multi: 'alias', one: 'alias', agent: 'alias', relay: 'alias', sessions: 'alias', compact: 'alias', 'relay-part': 'alias' },
+  'am-auto': { agent: 'alias', relay: 'alias', sessions: 'alias', compact: 'alias', 'relay-part': 'alias' },
   'am-util': { land: 'alias', 'update-branch': 'alias', 'git-sync': 'alias' },
   'am-art': { 'ad-review': 'alias', 'ad-auto': 'alias', 'pipe-apply': 'alias', 'log-compare': 'alias', 'log-resume': 'alias', 'ad-execute': 'alias' },
   orchestrator: { run: 'alias', split: 'alias' },
 };
 // Skills per models.json group and the plugin folder that holds them (<folder>/<SKILL_SUBDIR or skills>/<name>/SKILL.md).
-export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['multi', 'one', 'agent', 'relay', 'sessions'], 'am-util': ['land', 'update-branch', 'git-sync'], 'am-art': ['ad-review', 'ad-auto', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
+export const SKILLS = { am: ['plan', 'do', 'check', 'commit'], 'am-auto': ['agent', 'relay', 'sessions'], 'am-util': ['land', 'update-branch', 'git-sync'], 'am-art': ['ad-review', 'ad-auto', 'pipe-apply', 'log-compare', 'log-resume', 'ad-execute'] };
 export const PLUGIN_DIRS = { am: 'plugin', 'am-auto': 'auto', 'am-util': 'util', 'am-art': 'art' };
 // am-art has no default skills/: each tool's manifest names its own folder (art/.claude-plugin and art/.codex-plugin).
 export const SKILL_SUBDIR = { 'ad-review': 'claude-skills', 'ad-auto': 'claude-skills', 'pipe-apply': 'claude-skills', 'log-compare': 'claude-skills', 'log-resume': 'claude-skills', 'ad-execute': 'codex-skills' };
@@ -137,7 +137,7 @@ export function targets() {
     generated('README.md', (m) =>
       table('대상', [
         ...Object.entries(SKILLS).flatMap(([group, names]) => names.map((n) => [code(`${group}:${n}`), m[group][n]])),
-        ['단계 사이 맥락 압축 세션(`am-auto:multi`·`am-auto:one`, Claude Code)', m['am-auto'].compact],
+        ['단계 사이 맥락 압축 세션(지금은 띄우는 am-auto 명령 없음)', m['am-auto'].compact],
         ['2차 의견 서브에이전트(`am:second-opinion`)', m.am['second-opinion']],
         ['`am-auto:agent` 계획 단계 에이전트(`am-auto:stage-plan`)', m.am.plan],
         ['`am-auto:agent` 구현 단계 에이전트(`am-auto:stage-do`)', m.am.do],

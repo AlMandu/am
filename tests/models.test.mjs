@@ -61,7 +61,7 @@ test('apply writes a changed value into every place that carries it, and check i
   const models = edit((m) => {
     m.am.commit.effort = other(m.am.commit.effort, ['low', 'medium']);
     m.am.do.effort = other(m.am.do.effort, ['low', 'high']);
-    m['am-auto'].multi.effort = other(m['am-auto'].multi.effort, ['low', 'high']);
+    m['am-auto'].agent.effort = other(m['am-auto'].agent.effort, ['low', 'high']);
     m['am-auto']['relay-part'].model = other(m['am-auto']['relay-part'].model, ['haiku', 'opus']);
     m['am-util'].land.effort = other(m['am-util'].land.effort, ['low', 'medium']);
     m.am.check.model = other(m.am.check.model, ['sonnet', 'haiku']);
@@ -72,7 +72,7 @@ test('apply writes a changed value into every place that carries it, and check i
     m.am['codex-opinion'] = { model: other(codex.model, ['gpt-5.1-codex', 'o4-mini']), effort: other(codex.effort, ['medium', 'low']) };
   });
   const { commit, 'second-opinion': agent, 'codex-opinion': codex } = models.am;
-  const { multi, 'relay-part': relayPart } = models['am-auto'];
+  const { agent: autoAgent, 'relay-part': relayPart } = models['am-auto'];
   const { run, split } = models.orchestrator;
   assert.equal(check(base, models).length > 0, true, 'drift is reported before apply');
   const { problems, changed } = apply(base, models);
@@ -81,7 +81,7 @@ test('apply writes a changed value into every place that carries it, and check i
   assert.ok(changed.includes('plugin/skills/commit/SKILL.md') && !changed.includes('plugin/skills/plan/SKILL.md'), changed.join(', '));
   const fm = (v) => `\nmodel: ${v.model}\neffort: ${v.effort}\n---\n`;
   assert.ok(read(base, 'plugin/skills/commit/SKILL.md').includes(fm(commit)));
-  assert.ok(changed.includes('auto/skills/multi/SKILL.md') && read(base, 'auto/skills/multi/SKILL.md').includes(fm(multi)));
+  assert.ok(changed.includes('auto/skills/agent/SKILL.md') && read(base, 'auto/skills/agent/SKILL.md').includes(fm(autoAgent)));
   // A skill of another plugin folder takes its own group's values.
   assert.ok(changed.includes('util/skills/land/SKILL.md') && read(base, 'util/skills/land/SKILL.md').includes(fm(models['am-util'].land)));
   assert.ok(read(base, 'plugin/agents/second-opinion.md').includes(fm(agent)));

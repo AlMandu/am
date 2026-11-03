@@ -40,7 +40,7 @@ Request: $ARGUMENTS
 ## How this skill runs
 Read `${CLAUDE_PLUGIN_ROOT}/flow/run.md` (if the placeholder was not replaced, `flow/run.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it (inside the four skill files of its step 2, the folder that step names). If it cannot be read, change no file and stop. Read `${CLAUDE_PLUGIN_ROOT}/flow/parts.md` the same way (if the placeholder was not replaced, `flow/parts.md` under the plugin root) and follow it too; the `## Parts` section below adds to its loop. These additions apply:
 - Read `${CLAUDE_PLUGIN_ROOT}/flow/stage-agents.md` the same way (if the placeholder was not replaced, `flow/stage-agents.md` under the plugin root) and follow its stage agents section; a Scale of 1 implementation run follows it as it is.
-- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am-auto:multi skill.
+- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user that an earlier am-auto version handed this task to am-orchestrator: continue it with the am-orchestrator run skill and an empty request, and when the run is done merge its branch yourself into the start branch that line names, since the run skill never merges.
 - Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am-auto:relay skill.
 
 ## Parts

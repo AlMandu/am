@@ -1,5 +1,5 @@
 // Run: node --test tests/stage.test.mjs
-// The am-auto:multi stage runner (what each stage session may do, what it is told, how its end is read)
+// The am-auto stage runner (what each stage session may do, what it is told, how its end is read)
 // and the user models module it will use.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,8 +19,8 @@ import { DEFAULT_MIN_FREE_MEMORY_MB as NEED_MB, RECORD_NAME, holdRecord, hostNam
 import { withFlow } from './helpers.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// am-auto:multi as it runs: its SKILL.md and the flow files it reads.
-const AUTO = withFlow(path.join(REPO, 'auto', 'skills', 'multi', 'SKILL.md'));
+// am-auto:agent as it runs: its SKILL.md and the flow files it reads (the shared rules of run.md that the stage sessions copy).
+const AUTO = withFlow(path.join(REPO, 'auto', 'skills', 'agent', 'SKILL.md'));
 
 // A fake claude: records its arguments in calls.jsonl (its FORCE_PROMPT_CACHING_5M in env.jsonl, its AM_HANDOVER_OWNER in owner.jsonl, its DISABLE_AUTOUPDATER in autoupdate.jsonl) and answers as fake.json in the working folder says.
 // fake.json: { "replies": ["text of the 1st call", "text of the 2nd call"], "crash": true (writes "stderr" or boom to stderr and exits 3), "write": { "path": "content" },
@@ -298,12 +298,12 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   assert.ok(commit.includes(`${hook}\n${blocked}\n`));
   // The compaction session has no shell tool, so it does not get that line.
   assert.ok(!compactInstructions('demo', [{ file: '.am/demo/plan.md', size: 14000, goal: 7000 }]).system.includes(oneCommand));
-  // The same mark rule in am-auto:multi (with code marks there).
+  // The same mark rule in the shared flow of am-auto:agent (with code marks there).
   assert.match(AUTO, /the mark `\(auto-decided\)` translated into the plan's language \(`\(자동 결정\)` in a Korean plan\)/);
-  // The same stop list in am-auto:multi. Two of its stops are left out on purpose: the run skill's Prepare questions
+  // The same stop list in the shared flow. Two of its stops are left out on purpose: the run skill's Prepare questions
   // only reach the handover stage, whose rules name them on their own ("any question of its Prepare step, are stops");
   // an empty request, an unclear push keyword, an unreadable skill file and BLOCK after the retry belong to the
-  // session running am-auto:multi, so a stage session has them as "this stage cannot finish" or "the request cannot be planned".
+  // session running the skill, so a stage session has them as "this stage cannot finish" or "the request cannot be planned".
   for (const stop of ['delete user data or files that existed before this run, change a saved-data format, or migrate data', 'change anything outside this repository (other folders, external services, installed packages)', "The user's or project's instructions say the next action needs confirmation", 'The two reviewers of a technical choice still split on it after their rounds']) assert.ok(AUTO.includes(stop), stop);
   // Through cmd.exe (claude.cmd) only the unquoted rules for node scripts survive; those sessions are told the form.
   assert.match(instructions('handover', 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/);
@@ -311,9 +311,9 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const s of ['plan']) assert.match(instructions(s, 'demo', { unquoted: true }).system, /Run node scripts with the path unquoted/, s);
   for (const s of ['check', 'commit', 'do']) assert.doesNotMatch(instructions(s, 'demo', { unquoted: true }).system, /path unquoted/, s);
   assert.match(instructions('plan', 'demo').system, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
-  // The size of one implementation run, word for word as in am-auto:multi.
+  // The size of one implementation run, word for word as in the shared flow.
   const oneRun = AUTO.match(/One implementation run is [^\n]*? separately\./);
-  assert.ok(oneRun, 'am-auto:multi defines one implementation run');
+  assert.ok(oneRun, 'the shared flow defines one implementation run');
   assert.ok(instructions('plan', 'demo').system.includes(oneRun[0]), oneRun[0]);
   assert.match(instructions('do', 'demo').system, /do not use the am:check skill/);
   assert.match(instructions('do', 'demo', { fix: true }).system, /Read \.am\/demo\/check\.md first and fix only the causes it reports/);
@@ -322,7 +322,7 @@ test('instructions: slash call of the stage skill, unattended rules written out 
   for (const s of ['plan', 'commit', 'handover']) assert.doesNotMatch(instructions(s, 'demo').system, /scratch\//, s);
   assert.match(instructions('handover', 'demo', { push: true }).system, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`[\s\S]*push the start branch/);
   assert.match(instructions('handover', 'demo').system, /Do not push\./);
-  // The same run fields as the hand-over items of am-auto:multi's step 7.
+  // The hand-over reports every line of the run fields autoDecided and secondOpinions of status --json.
   for (const resume of [true, false]) assert.ok(instructions('handover', 'demo', { resume }).system.includes('every line of `autoDecided` and `secondOpinions`'), `resume ${resume}`);
 });
 
@@ -737,17 +737,16 @@ test('solo session: a record that cannot be saved leaves the result as it is and
   assert.equal(result.solo.sessionId, 'sess-1');
 });
 
-test('am-auto:multi and the hand-over stage log the same fixed hand-over line, and readPlan reads it', () => {
+test('the hand-over stage logs the fixed hand-over line, and readPlan reads it', () => {
   const LINE = /`(- Hand-over: [^`\n]+)`/;
-  const fromAuto = LINE.exec(AUTO);
   const fromStage = LINE.exec(instructions('handover', 'demo').system);
-  assert.ok(fromAuto && fromStage, 'both name the hand-over line');
-  assert.equal(fromStage[1], fromAuto[1]);
-  const filled = fromAuto[1].replace('<run.id>', '20261008-0900').replace('<branch>', 'main');
+  assert.ok(fromStage, 'the hand-over stage names the hand-over line');
+  const filled = fromStage[1].replace('<run.id>', '20261008-0900').replace('<branch>', 'main');
   assert.doesNotMatch(filled, /[<>]/);
   assert.equal(readPlan(`${LARGE}## Change log\n${filled}\n`).handedOver, true);
   assert.equal(readPlan(`${LARGE}## 변경 기록\n${filled} (5 tasks)\n`).handedOver, true);
-  for (const text of [AUTO, instructions('handover', 'demo').system]) {
+  {
+    const text = instructions('handover', 'demo').system;
     assert.match(text, /in English whatever the plan's language/);
     assert.match(text, /\(a stop reason[^)]*\) starts with `Hand-over:`/);
     // The orchestrator's split ends with exit code 4 while it still runs: called again before the run ID is read.
@@ -4410,15 +4409,10 @@ test('permissions: the commit stage only unstages; a hand-over switches only to 
   assert.match(text, /share no file, run \`git stash apply <oid>\`/);
   assert.match(text, /Never drop a stash\./);
   assert.ok(text.includes('switch to the start branch with `git switch <branch>`'));
-  assert.match(AUTO, /- Stash: <oid>, base <commit>/, 'am-auto:multi step 4 keeps the same rule');
-  assert.ok(AUTO.includes('switch to the start branch with `git switch <branch>`'));
   // A resumed hand-over whose merge is logged still puts back the stashes it has not put back.
   const resumed = instructions('handover', 'demo', { orchRoot: '/orch', resume: true }).system;
   assert.ok(resumed.includes('If the log also records the merge, skip the merge: only the push below and each `Stash:` line not yet logged as put back (the stash rule below) are left.'));
   assert.ok(!resumed.includes('only the push below is left'));
-  assert.ok(AUTO.includes('`git stash apply <oid>` and log it only when'), 'am-auto:multi logs a stash it put back');
-  assert.ok(AUTO.includes('only pushes and puts back each `Stash:` line not yet logged as put back, by that rule.'));
-  assert.ok(!AUTO.includes('whose merge is logged only pushes.'));
 });
 
 test('handedStartBranch: the start branch of the last fixed hand-over line', () => {

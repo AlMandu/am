@@ -1,6 +1,6 @@
 // Run: node --test tests/orchestrator-skill.test.mjs
 // The am-orchestrator plugin (orchestrator/): its manifest, its one skill, and the parts of the am plugin its script relies on.
-// Also the other direction: what am-auto:multi relies on when it hands a large task to the run skill.
+// Also the other direction: what the stage runner's hand-over and am-auto:agent rely on in the run skill.
 // And where the am stage runner and the orchestrator must agree: end markers, check.md verdicts, push denial, the path of the run events it follows, the user models file reader.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,14 +16,14 @@ const read = (...parts) => readFileSync(path.join(REPO, ...parts), 'utf8');
 const SKILL = read('orchestrator', 'skills', 'run', 'SKILL.md');
 const SCRIPT = read('orchestrator', 'scripts', 'orchestrator.mjs');
 const amSkill = (name) => read('plugin', 'skills', name, 'SKILL.md');
-// am-auto's skills (multi, one, agent, sessions) as they run: the SKILL.md and the flow files it reads.
+// am-auto's skills (agent, relay, sessions) as they run: the SKILL.md and the flow files it reads.
 const autoSkill = (name) => withFlow(path.join(REPO, 'auto', 'skills', name, 'SKILL.md'));
 // Orchestrator stages that run an am skill: a copy of STAGE_SKILLS of scripts/models.mjs, so this file needs no models.mjs.
 const STAGE_SKILLS = { plan: 'plan', implement: 'do', check: 'check', commit: 'commit' };
 // A model alias and an effort, the form models.json's values take (tests/models.test.mjs checks the values where that file exists).
 const MODEL_EFFORT = "model: [a-z]+(?:\\[1m\\])?\\neffort: (?:low|medium|high|xhigh|max)";
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// The object status --json prints as run; am-auto:multi and the stage runner read its fields.
+// The object status --json prints as run; the stage runner's hand-over reads its fields.
 const RUN = /data\.run = \{([\s\S]*?)\n    \};/.exec(SCRIPT);
 
 /** What a hand-over reads from status --json and the commands and next values it names exist in the script and the skill. */
@@ -106,7 +106,7 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(amSkill('do').trim().split('\n').at(-1), /use the am:check skill/);
   assert.match(SCRIPT, /do not use the am:check skill/);
   // The mark for choices made on the user's behalf, which the report collects.
-  assert.match(autoSkill('multi'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
+  assert.match(autoSkill('agent'), /`\(auto-decided\)`[\s\S]*`\(자동 결정\)`/);
   assert.match(SCRIPT, /auto-decided\|자동 결정/);
   // The second-opinion marks of the common rules, which progress news reads.
   for (const mark of ['(second opinion)', '(second opinion, Codex agreed)', '(second opinion, Claude reviewers agreed)', '(no second opinion)']) assert.ok(amSkill('plan').includes(mark), mark);
@@ -137,39 +137,25 @@ test('the am plugin still offers what the orchestrator script relies on', () => 
   assert.match(SKILL, /edit nothing but `config\.json`, in step 3 `tasks\.json`, and in step 4 the plan\.md of a task blocked on a split choice/);
 });
 
-test('am-auto:multi hands a large task to the run skill only through what is pinned here', () => {
-  const auto = autoSkill('multi');
-  // Finding the run skill: the plugin id in `claude plugin list --json` and the skill's path under its installPath.
+test('the run skill keeps the request forms, the Prepare questions and the task size that a hand-over and am-auto:agent rely on', () => {
+  // The plugin id that the hand-over hook and the stage runner look for.
   const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
   assert.equal(market.plugins.find((p) => p.source === './orchestrator')?.name, 'am-orchestrator');
-  assert.match(auto, /In Claude Code only, also run `claude plugin list --json`: if an `am-orchestrator@` entry has `enabled: true` and `<installPath>\/skills\/run\/SKILL\.md` exists/);
-  // am-auto:multi reads the file rather than invoking the skill, so neither the plugin root placeholder nor $ARGUMENTS is replaced.
+  // A session may read the file rather than invoke the skill, so neither the plugin root placeholder nor $ARGUMENTS is replaced.
   assert.match(SKILL, /If the placeholder was not replaced, the plugin root is the folder two levels above this SKILL\.md\./);
   assert.match(SKILL, /^1\. Request\. [^\n]*A path to an existing file: a new run with that document\./m);
   // A resumed hand-over enters the loop directly, which sends `doctor` back to the Prepare step.
   assert.match(SKILL, /^4\. Loop: read `status --json` and follow `next`[\s\S]*?- `doctor` or `split`: go back to step 2 or 3\./m);
-  assert.match(auto, /with the path of this plan\.md as its request/);
-  // A failed split leaves `status --json` on an earlier run; only a changed run.id proves this split made the run.
-  assert.match(auto, /A new hand-over first notes `run\.id` from `status --json` \(none if `run` is null\)/);
-  // The orchestrator's split ends with exit code 4 while it still runs (process.exitCode = 4, pinned by its own tests).
-  assert.match(auto, /if `split` ends with exit code 4, it is still running: run `split` again with no argument/);
-  assert.match(auto, /once `split` has made the run \(`run\.id` present and not the noted one; otherwise stop and report\), log exactly this one line in the Change log, [^\n]*with `<branch>` the current branch: `- Hand-over: am-orchestrator run skill, run <run\.id>, start branch <branch>`/);
-  assert.match(auto, /check that `status --json` shows the same `run\.id` \(if not, stop and report\), then follow the run skill from its step 4\./);
-  // The step and the rule of the run skill that am-auto:multi names.
+  // Exactly these questions in the Prepare step.
   const prepare = /^2\. Prepare\.[\s\S]*?(?=^3\. )/m.exec(SKILL);
   assert.ok(prepare, 'the run skill has a Prepare step 2');
-  // Exactly these questions: a new one would be auto-decided by am-auto:multi unless it joins its stop list too.
   const asks = /only about these:\n((?:[ \t]+- [^\n]*\n)+)/.exec(prepare[0]);
   assert.ok(asks, 'the Prepare step lists what it asks');
   const qs = ['there is no `am-gate.json`', 'uncommitted changes you did not make', 'the gate already fails before the run'];
   assert.deepEqual(asks[1].trimEnd().split('\n').map((l, i) => l.trim().startsWith(`- ${qs[i]}`)), qs.map(() => true));
-  assert.match(auto, /The run skill asks in its Prepare step \(no `am-gate\.json`, uncommitted changes you did not make, a gate that fails before the run\)/);
   assert.match(SKILL, /Never push or merge\./);
-  assert.match(auto, /Its rule never to merge or push covers its own flow only/);
-  // What am-auto:multi and the stage runner read from `status --json` and the commands and next values they name: one helper for both.
-  readsStatusLikeAuto(auto);
-  assert.match(auto, /`git merge --ff-only <run\.branch>` and `git branch -d <run\.branch>`/);
-  // The scale line and the size of one implementation run, which matches the script's task size.
+  // The scale line and the size of one implementation run in the shared flow, which matches the script's task size.
+  const auto = autoSkill('agent');
   assert.match(auto, /`Scale: N implementation runs, M commits` \(`규모: 구현 N회, 커밋 M개` in a Korean plan\)/);
   const limits = /taskLimits: \{ maxFiles: (\d+), maxPlanLines: (\d+) \}/.exec(SCRIPT);
   assert.ok(limits, 'default task size');
@@ -179,7 +165,7 @@ test('am-auto:multi hands a large task to the run skill only through what is pin
 test('the am stage runner hands a large plan to the run skill only through what is pinned here', async () => {
   const { instructions, permissions } = await import('../auto/scripts/stage.mjs');
   const hook = read('auto', 'hooks', 'handover.mjs');
-  // Finding the run skill: the same plugin id and skill path as am-auto:multi.
+  // Finding the run skill: the plugin id and skill path the hand-over hook looks for.
   assert.match(hook, /startsWith\('am-orchestrator@'\) && p\.enabled === true/);
   assert.match(hook, /path\.join\(p\.installPath, 'skills', 'run', 'SKILL\.md'\)/);
   // The skill is called by slash: the plugin and skill names, a new run with the plan's path, an empty request to continue.

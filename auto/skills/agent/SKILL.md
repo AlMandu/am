@@ -1,6 +1,6 @@
 ---
 name: agent
-description: "am-auto:multi 처럼 요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. Claude Code 에서는 단계마다 이 세션의 서브에이전트(단계 에이전트)를 띄워 진행만 맡고, 단계가 끝날 때마다 채팅에 한 줄만 남깁니다. 터미널을 닫으면 멈추고 기존 slug 를 주면 남은 단계부터 이어 가며, 맨 앞에 push 를 붙이면 push 까지 합니다."
+description: "요청 하나를 계획 → 구현 → 점검 → 커밋까지 중간 질문 없이 이어 갑니다. 화면·범위 질문은 추천안으로 정하고 되돌리기 어려운 일에서만 멈춥니다. Claude Code 에서는 단계마다 이 세션의 서브에이전트(단계 에이전트)를 띄워 진행만 맡고, 단계가 끝날 때마다 채팅에 한 줄만 남깁니다. 터미널을 닫으면 멈추고 기존 slug 를 주면 남은 단계부터 이어 가며, 맨 앞에 push 를 붙이면 push 까지 합니다."
 argument-hint: "[push] <만들거나 고칠 내용 | 기존 slug>"
 disable-model-invocation: true
 model: opus
@@ -40,7 +40,7 @@ Request: $ARGUMENTS
 ## How this skill runs
 Read `${CLAUDE_PLUGIN_ROOT}/flow/run.md` (if the placeholder was not replaced, `flow/run.md` under the plugin root, the folder two levels above this SKILL.md) and follow its rules and Steps, with the Request above as its request and this skill's `${CLAUDE_PLUGIN_ROOT}` wherever that file names it (inside the four skill files of its step 2, the folder that step names). If it cannot be read, change no file and stop. Read `${CLAUDE_PLUGIN_ROOT}/flow/parts.md` the same way (if the placeholder was not replaced, `flow/parts.md` under the plugin root) and follow it too; the `## Parts` section below adds to its loop. These additions apply:
 - Read `${CLAUDE_PLUGIN_ROOT}/flow/stage-agents.md` the same way (if the placeholder was not replaced, `flow/stage-agents.md` under the plugin root) and follow its stage agents section.
-- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user to continue with the am-auto:multi skill.
+- If the plan's Change log has a `Hand-over:` line (with stage agents: `.am/<slug>/progress.jsonl` holds a `stage: "handover"` event, `"stage":"handover"`), stop and tell the user that an earlier am-auto version handed this task to am-orchestrator: continue it with the am-orchestrator run skill and an empty request, and when the run is done merge its branch yourself into the start branch that line names, since the run skill never merges.
 - Read "a fresh session" for each stage as "a fresh stage agent"; "run this skill again" means the am-auto:agent skill.
 
 ## Parts
