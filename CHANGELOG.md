@@ -1,5 +1,24 @@
 # Changelog
 
+## am-auto 0.1.5 (2026-11-04)
+
+- `am-auto:multi`·`am-auto:one` 명령을 없앴다. 요청 하나를 계획부터 커밋까지 맡기려면 `am-auto:agent` 를, 큰 작업의 부분을 열어 둔 다른 세션에 맡기려면 `am-auto:relay` 를, 큰 설계 문서는 am-orchestrator 를 쓴다.
+- 두 명령으로 시작해 멈춘 작업은 같은 slug 로 `am-auto:agent <slug>` 를 부르면 남은 단계부터 이어 간다.
+- `am-auto:multi` 가 오케스트레이터에 넘긴 작업(계획 Change log 칸의 넘김 줄)이면 `am-auto:agent`·`am-auto:relay` 는 멈추고, am-orchestrator run 스킬을 빈 요청으로 불러 이어 간 뒤 끝나면 실행용 브랜치를 넘김 줄의 시작 브랜치로 직접 합치라고 알린다(run 스킬은 합치지 않는다).
+- `am-auto:sessions` 설명이 오케스트레이터 세션 보기로 바뀌었다. 예전 단계 세션이 아직 돌고 있으면 그 작업 줄은 그대로 나오고, 이어 가기 안내는 `am-auto:agent <slug>` 다.
+- README 의 `am-auto:agent` 설명이 다른 명령 없이 홀로 읽히게 바뀌었다(멈추는 경우, push, 큰 작업의 부분 나눔). 동작은 그대로다.
+- 단계 세션 실행기 등 코드는 남아 있다. 사용자 설정 파일의 `compact`·`run` 키와 PC 설정 파일의 `stageMcpServers` 는 지금 쓰는 am-auto 명령이 없지만 적어 두어도 오류가 아니다.
+- am 0.1.71 이상이 필요하다. am-auto 만 먼저 올리면 단계를 시작하지 않고 am 업데이트를 안내한다.
+
+## 0.1.71 (2026-11-04)
+
+- `am:plan` 스킬 글과 새로 만드는 PC 설정 파일의 `_stageMcpServers` 메모에서 없어진 `am-auto:multi`·`am-auto:one` 이름을 뺐다. 동작은 그대로고, 이미 있는 설정 파일은 건드리지 않는다.
+- am-auto 0.1.5 와 함께 업데이트한다.
+
+## am-orchestrator 0.9.15 (2026-11-04)
+
+- README 만 고쳤다: 화면·범위 질문 규칙은 `am-auto:agent` 와 같다고 적고, 예전 am-auto 가 넘긴 실행은 끝나도 대신 합쳐 줄 명령이 없어 직접 합친다고, 사용자 설정 파일의 `run` 키는 지금 쓰는 곳이 없다고 적었다. 동작은 그대로다.
+
 ## am-auto 0.1.4 (2026-10-30)
 
 - 새 명령 `am-auto:relay`: `am-auto:agent` 처럼 요청 하나를 계획부터 커밋까지 단계 에이전트로 이어 가되, 구현 2회 이상인 큰 작업은 부분마다 이 저장소에 열어 두고 쉬게 둔 다른 Claude Code 세션에 차례로 맡긴다. 이 세션에는 계획 단계와 부분마다 한 줄만 남는다. 기존 slug 를 주면 남은 부분부터 이어 간다.
