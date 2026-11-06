@@ -351,7 +351,7 @@ test('am-util:update-branch forces the base like reset --hard without checkout, 
 
 test('am-util:tidy-commits rewrites only through commit-tree and update-ref after a tree check, keeps a backup and never force pushes', () => {
   const skill = withoutCommon(read('tidy-commits'));
-  for (const s of ['backup/<branch>-<ts>', 'git update-ref', 'git commit-tree', '^{tree}', 'GIT_INDEX_FILE', 'git worktree add --detach --no-checkout', 'git worktree remove', 'cherry-pick --continue', 'cherry-pick --abort', 'git merge --ff-only --no-autostash --no-overwrite-ignore', 'git reset -q -- ', 'git merge-base --is-ancestor', 'last fetched', 'Never force push', 'Co-Authored-By', '## Back to the backup', 'WIP 임시 (am-util:tidy-commits <ts>)', 'without waiting for an answer', 'choose reload']) assert.ok(skill.includes(s), s);
+  for (const s of ['backup/<branch>-<ts>', 'git update-ref', 'git commit-tree', '^{tree}', 'GIT_INDEX_FILE', 'git worktree add --detach --no-checkout', 'git worktree remove', 'cherry-pick --continue', 'cherry-pick --abort', 'git merge --ff-only --no-autostash --no-overwrite-ignore', 'git reset -q -- ', 'git merge-base --is-ancestor', 'last fetched', 'Never force push', 'Co-Authored-By', '## Back to the backup', 'WIP 임시 (am-util:tidy-commits <ts>)', 'without waiting for an answer', 'choose reload', '--format=format:%B', '--format=format:%b', '--output=.am/tidy-<ts>.msg', '-F .am/tidy-<ts>.msg', '--no-show-signature --encoding=UTF-8']) assert.ok(skill.includes(s), s);
   // No command that changes this folder's checkout or history outside the checked ref move, and no commit that runs the gate.
   assert.doesNotMatch(skill, /git (stash|rebase|pull|switch)\b/);
   assert.ok(!skill.includes('reset --hard'));

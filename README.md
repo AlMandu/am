@@ -17,10 +17,11 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 
 `am-auto:relay` 는 `am-auto:agent` 와 같되, 구현 2회 이상인 큰 작업의 부분을 이 저장소에 열어 두고 쉬게 둔 다른 Claude Code 세션에 차례로 맡기고, 이 세션에는 부분마다 한 줄만 남습니다(아래 "am-auto:relay").
 
-그 밖의 명령 넷은 필요할 때만 씁니다.
+그 밖의 명령 다섯은 필요할 때만 씁니다.
 
 - `am-util:land`(am-util 플러그인, 따로 설치): 지금 브랜치를 대상 브랜치(생략하면 원격 기본 브랜치)에 합쳐 원격에 push 한 뒤, 지금 브랜치를 합친 커밋으로 옮깁니다. 커밋하지 않은 변경은 그대로 두며, 대상 쪽 변경과 겹치면 옮기지 않고 알립니다. 강제 push 는 하지 않습니다.
 - `am-util:update-branch`(am-util 플러그인, 따로 설치): 지금 브랜치를 최신 기준 브랜치(생략하면 원격 기본 브랜치, 예: `master`) 위로 옮깁니다. 커밋하지 않은 파일은 그대로 돌아오고, 옮기기 전 자리에 백업 브랜치를 남깁니다. push 는 하지 않습니다.
+- `am-util:tidy-commits`(am-util 플러그인, 따로 설치, 직접 입력할 때만): 아직 원격에 올리지 않은 커밋을 합치거나 다시 묶고, 작업 중 파일을 커밋에 접어 넣고, 제목을 고치고, 커밋에서 일부 파일을 나누고, 다른 브랜치로 체리픽합니다. 체리픽을 뺀 정리는 옮기기 전 자리에 백업 브랜치를 남기며, 강제 push 는 하지 않습니다(아래 "am-util:tidy-commits").
 - `am-util:git-sync`(am-util 플러그인, Claude Code 전용, 직접 입력할 때만): git 을 잘 모르는 아티스트용 도우미입니다. git 상태를 쉬운 말로 보여 주고, 내 작업만 골라 승인 뒤 커밋하며, 허락받았을 때만 push 합니다(아래 "am-util:git-sync").
 - `am-auto:sessions`(am-auto 플러그인): 이 PC 에서 오케스트레이터가 띄운 세션이 작업 폴더별로 지금 무엇을 하는지 한 번 보여 줍니다. 아무것도 바꾸거나 멈추지 않습니다.
 
@@ -66,7 +67,7 @@ Claude Code 나 Codex 를 써 봤다면 바로 쓸 수 있습니다. 플러그�
 |---|---|---|
 | `am` | `am:plan`·`am:do`·`am:check`·`am:commit`, 커밋 게이트, 2차 의견 | Claude Code·Codex |
 | `am-auto` | `am-auto:agent`·`am-auto:relay`·`am-auto:sessions`(자동 실행과 세션 보기) | Claude Code 전용, 설치하면 am 이 함께 깔림 |
-| `am-util` | `am-util:land`·`am-util:update-branch`, `am-util:git-sync`(Claude Code 전용) | Claude Code·Codex |
+| `am-util` | `am-util:land`·`am-util:update-branch`·`am-util:tidy-commits`, `am-util:git-sync`(Claude Code 전용) | Claude Code·Codex |
 | `am-orchestrator` | `am-orchestrator:run`(아래 "큰 작업: 오케스트레이터") | Claude Code 전용 |
 | `am-art` | Claude Code 에는 `am-art:ad-review`·`am-art:ad-auto`·`am-art:pipe-apply`·`am-art:log-compare`·`am-art:log-resume`, Codex 에는 `am-art:ad-execute` 만(아래 "아트 작업") | Claude Code·Codex, 아트 PC 에만 |
 
@@ -148,6 +149,8 @@ Claude Code 에서 0으로 나눌 때 오류 문구를 보여 주는 기능을 �
 | 지금 브랜치를 기본 브랜치에 합쳐 push | `/am-util:land [브랜치]` | `$am-util:land [브랜치]` |
 | 지금 브랜치를 최신 기본 브랜치 위로 옮기기 | `/am-util:update-branch [브랜치]` | `$am-util:update-branch [브랜치]` |
 | update-branch 전 자리로 되돌리기 | `/am-util:update-branch backup/<브랜치>-<시각>` | `$am-util:update-branch backup/<브랜치>-<시각>` |
+| 올리지 않은 커밋 정리 | `/am-util:tidy-commits [정리할 내용]` | `$am-util:tidy-commits [정리할 내용]` |
+| tidy-commits 전 자리로 되돌리기 | `/am-util:tidy-commits backup/<브랜치>-<시각>` | `$am-util:tidy-commits backup/<브랜치>-<시각>` |
 | 아티스트용 git 상태·커밋·push·오류 설명 | `/am-util:git-sync [상태\|커밋\|올리기\|설명]` | Claude Code 전용 |
 | 돌고 있는 세션 보기 | `/am-auto:sessions` | Claude Code 전용 |
 
@@ -272,6 +275,33 @@ am-util 플러그인의 명령입니다(Claude Code·Codex).
 - 옮기기 전 자리에 `backup/<브랜치>-<시각>` 브랜치를 남깁니다. 커밋하지 않은 파일이 있었다면 백업은 그 임시 커밋을 가리키므로, 백업 브랜치는 올리거나(push) 합치지 마세요. 같은 대화에서 "백업으로 돌려줘"라고 하거나 `/am-util:update-branch backup/<브랜치>-<시각>` 처럼 백업 이름을 주면, 원래 브랜치를 실행 전 자리로 되돌리고 그때의 작업 중 파일까지 스테이징되지 않은 상태로 돌려줍니다. 되돌리기 직전 상태(옮긴 커밋과 그 뒤 고친 파일)는 새 `backup/` 브랜치로 남기고 그 이름을 알리므로, 그 이름을 주면 되돌리기도 되돌릴 수 있습니다. 백업 브랜치는 지우지 않으니 필요 없으면 직접 지우세요.
 - 충돌이 나면 파일마다 양쪽이 무엇을 바꿨는지 보여 주고 "중단" 또는 "맡기기(어느 쪽을 살릴지)"를 묻습니다. 씬·프리팹·바이너리 파일은 한쪽을 통째로 고릅니다. 확신이 없으면 중단해 원래대로 돌립니다.
 - 지금 브랜치를 이미 원격에 올려 두었다면, 옮긴 뒤 다시 올리려면 강제 push 가 필요하다고 알리기만 합니다.
+
+### `am-util:tidy-commits`: 올리지 않은 커밋 정리
+
+am-util 플러그인의 명령입니다(Claude Code·Codex). 말로는 불리지 않으니 `/am-util:tidy-commits [정리할 내용]`(Codex 는 `$am-util:tidy-commits`)을 직접 입력합니다. 아직 원격에 올리지 않은 커밋만 고칩니다.
+
+할 수 있는 일은 여섯 가지이고, 한 번에 하나를 말로 시킵니다.
+
+- 합치기: "최근 두 커밋 합쳐줘"
+- 작업별로 다시 묶기: "커밋들을 작업별로 하나씩 다시 묶어줘"
+- 작업 중 파일 접어 넣기: "지금 고친 파일을 마지막 커밋에 넣어줘", "맞는 이전 커밋에 넣어줘"
+- 제목 고치기: "최근 세 커밋 제목을 내용에 맞게 고쳐줘"
+- 일부 파일 나누기: "마지막 커밋에서 문서 파일만 따로 나눠줘"
+- 다른 브랜치로 체리픽: "이 커밋을 release 브랜치로 옮겨줘"
+
+동작은 이렇습니다.
+
+- 다시 묶기, 나누기, 맞는 이전 커밋에 접기와 일부 파일을 빼는 정리는 이전 커밋 → 새 커밋 계획을 먼저 보여 주고 승인을 기다립니다. 범위를 말한 합치기와 제목 고치기는 바로 실행하고, 끝난 뒤 이전 → 새 커밋을 보고합니다.
+- 지금 폴더의 파일은 건드리지 않아 Unity 에디터를 켜 둔 채 쓸 수 있습니다. 지금 브랜치로 체리픽할 때만 맨 끝에 이 폴더의 파일이 바뀌고, 그때는 에디터로 돌아가 바뀐 씬을 다시 불러오라고 알립니다.
+- 그대로 두는 커밋의 메시지는 본문까지 한 글자도 바꾸지 않고, 제목을 고칠 때도 본문은 남습니다. 본문까지 바꾸려면 메시지 전체를 바꿔 달라고 요청합니다. 작성자와 작성 시각은 원래 값을 이어받습니다.
+- 체리픽을 뺀 정리는 브랜치를 옮기기 전에 새 커밋의 최종 파일 내용이 예상과 같은지 확인하고, 다르면 아무것도 옮기지 않고 멈춥니다.
+- 체리픽을 뺀 정리는 옮기기 전 자리에 `backup/<브랜치>-<시각>` 브랜치를 남기고 이름을 알립니다. 체리픽은 대상 브랜치에 커밋을 더하기만 해 백업을 남기지 않습니다. `/am-util:tidy-commits backup/<브랜치>-<시각>` 처럼 그 이름을 주면 브랜치를 그 자리로 되돌립니다(파일은 바뀌지 않습니다). 접기의 백업은 "WIP 임시" 커밋을 가리키므로 올리거나(push) 합치지 마세요. 백업 브랜치는 지우지 않으니 필요 없으면 직접 지우세요.
+- 다음 경우에는 고치지 않고 멈춥니다: 범위에 이미 원격에 있는 커밋이 있을 때, 범위에 병합 커밋이 있을 때, rebase·병합·체리픽이 진행 중일 때, 다시 묶을 때 한 파일을 바꾼 커밋들이 두 묶음에 걸칠 때, 접을 파일의 스테이지된 내용과 작업본이 다를 때.
+- 원격을 받아 오지 못하면 멈추지 않고 마지막으로 받아 둔 상태로 확인해 계속하며, 답에 그렇게 했다고 적습니다.
+- 다시 만든 커밋은 서명이 빠집니다. 서명이 있던 커밋은 답에 적습니다.
+- 파일 단위로만 나눕니다. 한 파일 안의 일부 변경만 골라 나누지는 않습니다.
+- 커밋 명령을 쓰지 않으므로 커밋 게이트를 거치지 않습니다.
+- 강제 push 는 하지 않고, push 는 체리픽에서 요청했을 때만 합니다. 거절되면 알리기만 합니다.
 
 ### `am-util:git-sync`: 아티스트용 git 도우미
 
@@ -504,6 +534,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 | `am-auto:sessions` | `sonnet` | `low` |
 | `am-util:land` | `opus` | `high` |
 | `am-util:update-branch` | `opus` | `high` |
+| `am-util:tidy-commits` | `opus` | `high` |
 | `am-util:git-sync` | `opus` | `high` |
 | `am-art:ad-review` | `opus` | `high` |
 | `am-art:ad-auto` | `opus` | `high` |
@@ -634,7 +665,7 @@ Claude Code 에서는 스킬을 부르면 그 차례가 스킬에 정해 둔 모
 
 - `plugin/`(am): 스킬 넷(`plan`·`do`·`check`·`commit`), 2차 의견 서브에이전트(`agents/second-opinion.md`), 커밋 게이트 훅(`hooks/hook.mjs`·`gate.mjs`·`hooks.json`), Codex 2차 의견 스크립트(`codex-opinion.mjs`), 사용자 설정 파일(모델·effort)과 PC 설정 파일(남은 메모리 기준·단계 세션 MCP)을 읽는 스크립트(`user-models.mjs`·`user-settings.mjs`), 두 파일이 없을 때 기본값을 메모로 적어 만드는 스크립트(`user-files.mjs`).
 - `auto/`(am-auto, Claude Code 전용, am 필요): 스킬 셋(`agent`·`relay`·`sessions`), 두 실행 명령과 relay 의 받는 세션이 실행 중에 읽는 진행 규칙 글(`flow/`, 스킬이 아니라 명령 목록에 나오지 않음), 단계 에이전트 다섯(`agents/stage-*.md`)과 relay 의 전달 에이전트(`agents/relay-part.md`), 단계 에이전트 감시 훅(`hooks/stage-hook.mjs`·`stage-guard.mjs`·`hooks.json`), am 플러그인 찾기(`handover.mjs`, 예전 넘김 훅 코드도 남음, 지금은 훅으로 걸려 있지 않음), 단계 에이전트 시작·끝과 relay 부분 전달 스크립트(`agent-stage.mjs`), 계획 단계 에이전트의 Claude 2차 의견(`claude-opinion.mjs`), 단계 세션 실행기(지금은 부르는 명령 없음)와 그 도구(`stage.mjs`·`progress.mjs`·`memory-guard.mjs`·`proc-tree.mjs`), 세션 보고(`sessions.mjs`).
-- `util/`(am-util): 스킬 `land`·`update-branch`·`git-sync`, git-sync 의 패턴 목록 스크립트(`git-sync-settings.mjs`).
+- `util/`(am-util): 스킬 `land`·`update-branch`·`tidy-commits`·`git-sync`, git-sync 의 패턴 목록 스크립트(`git-sync-settings.mjs`).
 - `orchestrator/`(am-orchestrator): 아래 오케스트레이터 플러그인.
 - 사본: `plugin/` 의 게이트·2차 의견·사용자 설정 파일 스크립트를 `auto/`·`util/` 에 복사해 둡니다. `plugin/` 원본만 고치고 `node scripts/sync-shared.mjs` 로 반영합니다(`--check` 는 어긋난 사본만 알려 줍니다).
 

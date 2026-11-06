@@ -16,7 +16,7 @@
     {
       "name": "am-util",
       "source": "./util",
-      "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land, 지금 브랜치를 최신 기준 브랜치 위로 옮기는 update-branch(Claude Code·Codex 공용), 아티스트용 git 상태·선별 커밋·push 도우미 git-sync(Claude Code 전용)"
+      "description": "지금 브랜치를 대상 브랜치에 합쳐 push 하는 land, 지금 브랜치를 최신 기준 브랜치 위로 옮기는 update-branch, 올리지 않은 커밋을 합치고 다시 묶고 고치는 tidy-commits(Claude Code·Codex 공용), 아티스트용 git 상태·선별 커밋·push 도우미 git-sync(Claude Code 전용)"
     },
     {
       "name": "am-art",
