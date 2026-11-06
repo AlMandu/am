@@ -142,8 +142,8 @@ test('permissions: each stage gets only what it needs, push only in push mode', 
   assert.deepEqual(solo.deny, commit.deny);
   assert.match(instructions('commit', 'demo').system, /record it in \.am\/demo\/commits\.md as the skill says; it is the only file this session can write/);
   assert.ok(!/handoff/i.test(instructions('commit', 'demo').system));
-  // The plan stage may also write the current-task mark, which its .am/ allowance already covers.
-  assert.match(instructions('plan', 'demo').system, /only under \.am\/demo\/ and the current-task mark \.am\/\.active with the Write or Edit tool/);
+  assert.match(instructions('plan', 'demo').system, /only under \.am\/demo\/ with the Write or Edit tool/);
+  assert.ok(!instructions('plan', 'demo').system.includes('.am/.active'));
   const hand = permissions('handover', { orchRoot: '/orch' });
   assert.ok(hand.allow.includes('Bash(node "/orch/scripts/orchestrator.mjs" *)') && hand.allow.includes('Bash(git merge --ff-only *)') && hand.allow.includes('Edit(/.orchestrator/**)'));
   assert.ok(!hand.allow.includes('Bash') && hand.deny.includes('Bash(git push *)'));
@@ -374,8 +374,8 @@ test('instructions: solo changes three sentences of the unattended rules (four i
   assert.ok(read.endsWith('- This stage starts in a new session: the shared session of this am-auto:one task could not be continued. Before anything else, read .am/demo/solo-context.md, the memory the earlier stages saved. It may be a stage old; where it differs from the task files or a recorded user answer, those win.\n'));
   assert.ok(!read.includes('.am/demo-p1/solo-context.md'));
   assert.ok(instructions('commit', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('that file and .am/demo/solo-context.md (below) are the only files this session can write'));
-  assert.ok(instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('only under .am/demo-p1/, .am/demo/solo-context.md (below) and the current-task mark'));
-  assert.ok(!instructions('plan', 'demo', { solo: { owner: 'demo' } }).system.includes('(below) and the current-task mark'));
+  assert.ok(instructions('plan', 'demo-p1', { solo: { owner: 'demo' } }).system.includes('only under .am/demo-p1/, .am/demo/solo-context.md (below) with the Write'));
+  assert.ok(!instructions('plan', 'demo', { solo: { owner: 'demo' } }).system.includes('(below) with the Write'));
   // soloRead without solo changes nothing.
   assert.equal(instructions('do', 'demo', { soloRead: true }).system, instructions('do', 'demo').system);
 });
@@ -394,6 +394,7 @@ test('agentRules: the stage rules for an am-auto:agent subagent, with no session
     const text = agentRules(stage, slug, { push, fix, part, owner: 'demo', runId, ownRoot });
     const reply = `.am/${slug}/reply-${stage}.md`;
     assert.doesNotMatch(text, /session/i, name);
+    assert.ok(!text.includes('.am/.active'), name);
     const lines = text.split('\n');
     const status = `- Your final reply is exactly one line and nothing else: AM_STAGE: <status> ${runId}, where <status> is one of ${MARKS[stage].join(', ')}.`;
     assert.deepEqual(lines.filter((l) => /reply/i.test(l.split(reply).join(''))), [status], `${name}: "reply" only in the status line`);

@@ -340,9 +340,8 @@ function fileDecision(input, { stage, slug, root, cwd }) {
   if (where.outside) return deny(`am stage hook: ${file} is outside the repository; a stage writes only inside it.`);
   const parts = where.rel.split('/');
   if (stage === 'plan') {
-    if (where.rel === '.am/.active') return allow('am stage hook: the current-task mark is allowed in the plan stage');
     if (parts.length > 2 && parts[0] === '.am' && parts[1] === slug && !(parts.length === 3 && RECORD_FILES.some((re) => re.test(parts[2])))) return allow(`am stage hook: .am/${slug}/ is writable in the plan stage`);
-    return deny(`am stage hook: the plan stage writes only under .am/${slug}/ (not its stage record files) and .am/.active.`);
+    return deny(`am stage hook: the plan stage writes only under .am/${slug}/ (not its stage record files).`);
   }
   if (stage === 'commit') {
     if (parts.length === 3 && parts[0] === '.am' && parts[1] === slug && COMMIT_FILES.includes(parts[2])) return allow(`am stage hook: ${where.rel} is writable in the commit stage`);

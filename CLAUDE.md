@@ -34,7 +34,7 @@ Before editing files in an area below, read its entry in `CLAUDE.full.md`; keep 
 - `auto/scripts/stage.mjs`, `memory-guard.mjs`, `proc-tree.mjs`, its solo mode -> Rules, `Stage sessions:`
 - `progress.jsonl`, `auto/scripts/progress.mjs` -> Rules, `Progress news:`
 - `auto/scripts/sessions.mjs`, the am-auto:sessions skill -> Rules, `Sessions report:`
-- The am:plan, am:do, am:check and am:commit skills (`commits.md`, `.am/.active`, `do-result.md`) -> Rules, `Commit record:`, `Current task mark:` and `Do result:`
+- The am:plan, am:do, am:check and am:commit skills (`commits.md`, `do-result.md`) -> Rules, `Commit record:` and `Do result:`
 - `art/`, `shared/art.md` -> Rules, ``Art plugin (`art/`):``
 - `orchestrator/`, or anything in `plugin/` or `auto/` it relies on (the gate, `shared/common.md`, the four am skills, `user-models.mjs`, `user-settings.mjs`, `codex-opinion.mjs`, `memory-guard.mjs`, `proc-tree.mjs`, `auto/flow/run.md`, `stage.mjs`) -> the whole Orchestrator plugin section, including its own `Progress news:` and `Worker and follower:`; orchestrator state and record files (`lock.json`, `worker.json`, `state.json`, `tasks.json`, `.gate` records) -> also Rules, `Sessions report:`
 

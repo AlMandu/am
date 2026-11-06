@@ -313,7 +313,7 @@ const STAGE_RULES = {
 - Always write .am/${slug}/plan.md, even when the change looks small: skip the step that offers to do a small change directly.
 - Add one line to the plan's Summary in its language: \`Scale: N implementation runs, M commits\` (\`규모: 구현 N회, 커밋 M개\` in a Korean plan). One implementation run is one am:do run that a fresh session can finish and verify: about 8 files and work that a faithful plan of at most 150 lines can cover. M is the number of logical units the am:commit skill would commit separately.${soloPlanRule(slug, solo)}
 - Do not implement, even where the skill would go on after the plan; the next stage does that.
-- What this session can do: read anything; create or change files only under .am/${slug}/${solo && solo.owner !== slug ? `, .am/${solo.owner}/${SOLO_CONTEXT} (below)` : ''} and the current-task mark .am/.active with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
+- What this session can do: read anything; create or change files only under .am/${slug}/${solo && solo.owner !== slug ? `, .am/${solo.owner}/${SOLO_CONTEXT} (below)` : ''} with the Write or Edit tool; run read-only git commands and the Codex second-opinion command of the skill's rules. Everything else is refused, including writing files through Bash. Work from the repository root.
 - ${MARK('plan')}`,
   do: (slug, { fix }) => `This is the implementation stage for .am/${slug}/plan.md, with the steps of the am:do skill.${fix ? `\n- The am:check skill blocked this task. Read .am/${slug}/check.md first and fix only the causes it reports that lie inside this task; log each fix under Change log in the plan.` : ''}
 - Another session runs the am:check skill after you finish. So run the agent runtime checks you can do here (the last step of the am:do skill), but do not use the am:check skill.
@@ -426,7 +426,7 @@ export function agentSwaps(stage, slug, { part = false, owner = '', runId = '' }
       ['- What this session can do:', '- What this stage can do:'],
       ['run read-only git commands and the Codex second-opinion command of the skill\'s rules.', 'run read-only git commands, the Codex second-opinion command of the skill\'s rules and the Claude reviewer command below.'],
     );
-    if (part) swaps.push([`, .am/${owner}/${SOLO_CONTEXT} (below) and the current-task mark`, ' and the current-task mark']);
+    if (part) swaps.push([`, .am/${owner}/${SOLO_CONTEXT} (below) with the Write or Edit tool`, ' with the Write or Edit tool']);
   }
   if (stage === 'do') swaps.push(
     ['- Another session runs the am:check skill', '- Another stage runs the am:check skill'],
