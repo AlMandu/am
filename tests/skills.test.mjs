@@ -15,14 +15,14 @@ const ROOT = path.join(REPO_ROOT, 'plugin', 'skills');
 const AGENT = path.resolve(ROOT, '..', 'agents', 'second-opinion.md');
 // am-auto's folder: its skills, scripts, hooks and stage agents.
 const AUTO = path.join(REPO_ROOT, 'auto');
-const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, agent: 80, relay: 80, land: 80, 'update-branch': 80, sessions: 80, 'ad-review': 150, 'ad-auto': 40, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
+const LIMITS = { plan: 120, check: 120, commit: 80, do: 80, agent: 80, relay: 80, land: 80, 'update-branch': 80, 'tidy-commits': 100, sessions: 80, 'ad-review': 150, 'ad-auto': 40, 'pipe-apply': 120, 'log-compare': 100, 'log-resume': 120, 'git-sync': 100, 'ad-execute': 120 };
 // am-art's Claude Code skills carry the art owner rules block instead of the common block (scripts/skills.mjs BLOCKS.art).
 const ART = ['ad-review', 'pipe-apply', 'log-compare', 'log-resume'];
 // Every am-art skill: ad-execute is the Codex worker's and ad-auto only runs ad-review in a forked subagent; both carry neither block.
 const ART_PLUGIN = [...ART, 'ad-auto', 'ad-execute'];
 const skillPath = (name) => `${SKILL_HOME[name] ?? 'plugin'}/${SKILL_SUB[name] ?? 'skills'}/${name}/SKILL.md`;
 // Plugin folder of each skill that is not in plugin/ (am); the folders scanned for skill folders.
-const SKILL_HOME = { land: 'util', 'update-branch': 'util', 'git-sync': 'util', agent: 'auto', relay: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
+const SKILL_HOME = { land: 'util', 'update-branch': 'util', 'tidy-commits': 'util', 'git-sync': 'util', agent: 'auto', relay: 'auto', sessions: 'auto', ...Object.fromEntries(ART_PLUGIN.map((n) => [n, 'art'])) };
 const PLUGIN_FOLDERS = ['plugin', 'util', 'auto', 'art'];
 // am-art has no default skills/ (both tools add a manifest's skills path to it): art/claude-skills/ for Claude Code, art/codex-skills/ for Codex (user decision).
 const SKILL_SUB = { ...Object.fromEntries(ART.map((n) => [n, 'claude-skills'])), 'ad-auto': 'claude-skills', 'ad-execute': 'codex-skills' };
@@ -155,8 +155,8 @@ test('skills stay within their line limits and name themselves after their folde
   }
 });
 
-test('am:plan, am:do, am-auto:agent, am-auto:relay, am-util:land, am-util:update-branch and am-util:git-sync are user-invoked only in both tools', () => {
-  for (const name of ['plan', 'do', 'agent', 'relay', 'land', 'update-branch', 'git-sync']) {
+test('am:plan, am:do, am-auto:agent, am-auto:relay, am-util:land, am-util:update-branch, am-util:tidy-commits and am-util:git-sync are user-invoked only in both tools', () => {
+  for (const name of ['plan', 'do', 'agent', 'relay', 'land', 'update-branch', 'tidy-commits', 'git-sync']) {
     assert.match(read(name), /\ndisable-model-invocation: true\n/, name);
     const yaml = readFileSync(path.join(skillDir(name), 'agents', 'openai.yaml'), 'utf8');
     assert.match(yaml, /allow_implicit_invocation: false/, name);
@@ -311,7 +311,7 @@ test('every skill sets the model and effort its turn runs with', () => {
   for (const name of Object.keys(LIMITS)) {
     const fm = frontmatter(read(name));
     // Claude Code ignores a misspelled key without an error, which would silently drop the default.
-    const userOnly = ['plan', 'do', 'agent', 'relay', 'land', 'update-branch', 'git-sync', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
+    const userOnly = ['plan', 'do', 'agent', 'relay', 'land', 'update-branch', 'tidy-commits', 'git-sync', 'ad-execute'].includes(name) ? ['disable-model-invocation'] : [];
     // ad-auto runs in a forked subagent; its model value is that subagent's.
     const fork = name === 'ad-auto' ? ['context'] : [];
     assert.deepEqual(Object.keys(fm).sort(), ['argument-hint', 'description', 'effort', 'model', 'name', ...userOnly, ...fork].sort(), name);
@@ -347,6 +347,18 @@ test('am-util:update-branch forces the base like reset --hard without checkout, 
   for (const s of ['git push', '--force', 'git stash', 'reset --hard']) assert.ok(!skill.includes(s), s);
   // A checkout only takes one side of a conflicted file, never the base branch.
   assert.doesNotMatch(skill, /git checkout (?!--(ours|theirs) -- <path>)/);
+});
+
+test('am-util:tidy-commits rewrites only through commit-tree and update-ref after a tree check, keeps a backup and never force pushes', () => {
+  const skill = withoutCommon(read('tidy-commits'));
+  for (const s of ['backup/<branch>-<ts>', 'git update-ref', 'git commit-tree', '^{tree}', 'GIT_INDEX_FILE', 'git worktree add --detach --no-checkout', 'git worktree remove', 'cherry-pick --continue', 'cherry-pick --abort', 'git merge --ff-only --no-autostash --no-overwrite-ignore', 'git reset -q -- ', 'git merge-base --is-ancestor', 'last fetched', 'Never force push', 'Co-Authored-By', '## Back to the backup', 'WIP 임시 (am-util:tidy-commits <ts>)', 'without waiting for an answer', 'choose reload']) assert.ok(skill.includes(s), s);
+  // No command that changes this folder's checkout or history outside the checked ref move, and no commit that runs the gate.
+  assert.doesNotMatch(skill, /git (stash|rebase|pull|switch)\b/);
+  assert.ok(!skill.includes('reset --hard'));
+  assert.doesNotMatch(skill, /git commit(?!-tree)/);
+  for (const line of skill.split('\n').filter((l) => l.includes('git push'))) assert.doesNotMatch(line, /--force|-f |\+/, line);
+  // A checkout only takes one side of a conflicted file (the temporary worktree's `--no-checkout` is not one).
+  assert.doesNotMatch(skill, /(?<!no-)checkout (?!--(ours|theirs) -- <path>)/);
 });
 
 test('am:commit records its commits outside am-orchestrator', () => {
